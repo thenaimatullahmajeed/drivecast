@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DriveCast Server</title>
+<style>
+:root{--ink:#0E1116;--ink2:#1C222C;--line:#2A313C;--muted:#8E94A0;--coral:#E8492A;--ok:#3DDC97;--warn:#F2B54A;--paper:#F4F3EF}
+*{box-sizing:border-box}
+body{margin:0;background:var(--ink);color:#fff;font-family:system-ui,-apple-system,Roboto,sans-serif;font-size:15px}
+.wrap{padding:22px 18px 40px;display:flex;flex-direction:column;gap:16px;max-width:520px;margin:0 auto}
+.top{display:flex;align-items:center;gap:10px}
+.logo{width:34px;height:34px;border-radius:10px;background:var(--coral);display:inline-flex;align-items:center;justify-content:center}
+.chip{margin-left:auto;display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 10px;border-radius:99px;font:600 11px ui-monospace,monospace;letter-spacing:.08em;color:var(--ink)}
+h1{font-size:30px;line-height:1.05;margin:0;letter-spacing:-.02em}
+.muted{color:var(--muted)}
+.card{background:var(--ink2);border:1px solid var(--line);border-radius:16px;padding:16px}
+.kick{font:500 10px ui-monospace,monospace;letter-spacing:.14em;color:var(--muted);text-transform:uppercase}
+.row{display:flex;align-items:center;gap:12px;padding:11px 0;border-top:1px solid var(--line)}
+.row:first-child{border-top:0}
+.row .t{flex:1;display:flex;flex-direction:column;gap:2px}
+.row .t span{font-size:12px;color:var(--muted)}
+.mark{width:26px;height:26px;border-radius:99px;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;font-size:14px}
+.mark.ok{background:#12352B;color:var(--ok)}.mark.no{border:2px solid var(--coral)}.mark.manual{border:2px dashed var(--warn)}
+button{font:inherit;cursor:pointer}
+.btn{height:44px;padding:0 16px;border-radius:10px;border:1px solid var(--line);background:#232A35;color:#fff;font-weight:600}
+.btn.sm{height:34px;padding:0 12px;font-size:13px}
+.btn.coral{background:var(--coral);border-color:var(--coral);color:var(--ink)}
+.btn.wide{width:100%;height:50px}
+.grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.stat{background:var(--ink2);border:1px solid var(--line);border-radius:12px;padding:12px;display:flex;flex-direction:column;gap:4px}
+.stat span{font-size:11px;color:var(--muted)}.stat b{font-size:17px}
+input{width:100%;height:44px;border-radius:10px;border:1px solid var(--line);background:#0B0E12;color:#fff;padding:0 12px;font:14px ui-monospace,monospace}
+label{display:flex;flex-direction:column;gap:6px;font-size:13px;font-weight:600}
+.mono{font-family:ui-monospace,monospace}
+.bar{height:6px;border-radius:99px;background:#2A313C;display:flex;overflow:hidden}.bar span{background:#fff;border-radius:99px}
+.eq{display:flex;align-items:flex-end;gap:5px;height:70px}.eq span{flex:1;border-radius:99px}
+a{color:#A5B4FC}
+.hidden{display:none}
+</style>
+</head>
+<body>
+<div class="wrap" id="root"><div class="top"><span class="logo"></span><b>DriveCast Server</b></div><p class="muted">Starting…</p></div>
+<script src="/phone.js"></script>
+</body>
+</html>

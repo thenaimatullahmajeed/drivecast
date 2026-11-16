@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+data/
+android/.gradle/
+android/build/
+android/app/build/
+android/app/src/main/jniLibs/
+android/local.properties
+tunnel/go.sum
+*.jks

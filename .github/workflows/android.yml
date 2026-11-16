@@ -1,0 +1,93 @@
+name: Build DriveCast Server APK
+
+on:
+  push:
+    branches: [studio-v1, main]
+    paths: ["studio/**", ".github/workflows/android.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Server tests
+        working-directory: studio/server
+        run: |
+          pip install requests PySocks cryptography tzdata
+          python -m unittest discover -s tests -v
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: false
+
+      - name: Build tunnel (Tailscale Funnel) for Android
+        working-directory: studio/tunnel
+        run: |
+          go get tailscale.com@latest
+          go mod tidy
+          BIN=$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin
+          OUT=../android/app/src/main/jniLibs
+          mkdir -p $OUT/arm64-v8a $OUT/armeabi-v7a
+          CGO_ENABLED=1 GOOS=android GOARCH=arm64 CC=$BIN/aarch64-linux-android26-clang \
+            go build -trimpath -ldflags="-s -w" -o $OUT/arm64-v8a/libdctunnel.so .
+          CGO_ENABLED=1 GOOS=android GOARCH=arm GOARM=7 CC=$BIN/armv7a-linux-androideabi26-clang \
+            go build -trimpath -ldflags="-s -w" -o $OUT/armeabi-v7a/libdctunnel.so .
+          ls -la $OUT/*
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+
+      - name: Signing key
+        env:
+          KS: ${{ secrets.DC_KEYSTORE_B64 }}
+        run: |
+          if [ -n "$KS" ]; then
+            echo "$KS" | base64 -d > $RUNNER_TEMP/drivecast.jks
+            echo "DC_KEYSTORE_FILE=$RUNNER_TEMP/drivecast.jks" >> $GITHUB_ENV
+          else
+            echo "::warning::No DC_KEYSTORE_B64 secret — APK is signed with a temporary key. Add the secret so updates install over the old app."
+          fi
+
+      - name: Build APK
+        working-directory: studio/android
+        env:
+          DC_KEYSTORE_PASS: ${{ secrets.DC_KEYSTORE_PASS }}
+        run: gradle assembleRelease --no-daemon -PdcVersionCode=${{ github.run_number }} -PdcVersionName=1.0.${{ github.run_number }}
+
+      - name: Name APK
+        run: |
+          mkdir -p dist
+          cp studio/android/app/build/outputs/apk/release/*.apk dist/DriveCast-Server-1.0.${{ github.run_number }}.apk
+          ls -la dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DriveCast-Server-1.0.${{ github.run_number }}
+          path: dist/*.apk
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: server-1.0.${{ github.run_number }}
+          name: DriveCast Server 1.0.${{ github.run_number }}
+          target_commitish: ${{ github.sha }}
+          prerelease: true
+          files: dist/*.apk
+          body: Install on the server phone. Allow “install unknown apps” for your browser when asked.
