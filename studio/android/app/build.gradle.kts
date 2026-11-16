@@ -14,7 +14,7 @@ android {
     defaultConfig {
         applicationId = "com.drivecast.server"
         minSdk = 26
-        targetSdk = 34
+        targetSdk = 29 // keeps netlink access for the Tailscale tunnel (Android blocks it for apps targeting 30+)
         versionCode = versionCodeProp
         versionName = versionNameProp
         ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
