@@ -102,6 +102,18 @@ func main() {
 		say("ERROR", "HTTPS certificates are not enabled in the Tailscale admin")
 		os.Exit(4)
 	}
+	// Get the HTTPS certificate before announcing the link, so the browser never
+	// sees a half-ready site. Retry until it works.
+	for attempt := 1; ; attempt++ {
+		cctx, ccancel := context.WithTimeout(context.Background(), 3*time.Minute)
+		_, _, cerr := lc.CertPair(cctx, domains[0])
+		ccancel()
+		if cerr == nil {
+			break
+		}
+		say("ERROR", "HTTPS certificate not ready yet (attempt "+fmt.Sprint(attempt)+"). In the Tailscale admin open DNS and press Enable HTTPS. Details: "+cerr.Error())
+		time.Sleep(30 * time.Second)
+	}
 	say("PUBLIC_URL", "https://"+domains[0])
 	say("STATE", "online")
 
