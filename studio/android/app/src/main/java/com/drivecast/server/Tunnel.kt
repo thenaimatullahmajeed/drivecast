@@ -1,7 +1,6 @@
 package com.drivecast.server
 
 import android.content.Context
-import android.util.Log
 import org.json.JSONObject
 import java.io.File
 import kotlin.concurrent.thread
@@ -95,7 +94,22 @@ class Tunnel(private val ctx: Context) {
                 val s = line.removePrefix("STATE=").trim()
                 if (s != "online" && s != "needs_login") Store.setTunnelState(ctx, s, null, null)
             }
-            else -> Log.d("dctunnel", line)
+            else -> Unit
+        }
+        appendLog(line)
+    }
+
+    private val logFile = File(ctx.filesDir, "tunnel.log")
+
+    @Synchronized
+    private fun appendLog(line: String) {
+        try {
+            logFile.appendText(line.take(600) + "\n")
+            if (logFile.length() > 300_000) {
+                val keep = logFile.readLines().takeLast(800)
+                logFile.writeText(keep.joinToString("\n") + "\n")
+            }
+        } catch (_: Exception) {
         }
     }
 

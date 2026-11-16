@@ -165,6 +165,14 @@ class MainActivity : AppCompatActivity() {
         ).map { (p, c) -> Intent().setComponent(ComponentName(p, c)) }
 
         @JavascriptInterface
+        fun tunnelLog(): String = try {
+            val f = File(ctx.filesDir, "tunnel.log")
+            if (f.exists()) f.readLines().takeLast(80).joinToString("\n") else "No tunnel output yet."
+        } catch (e: Exception) {
+            e.toString()
+        }
+
+        @JavascriptInterface
         fun confirm(id: String) {
             val p = Store.prefs(ctx)
             val c = p.optJSONObject("confirmed") ?: JSONObject()

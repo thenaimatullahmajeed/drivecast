@@ -15,6 +15,7 @@ function checks() {
 
 async function draw() {
   if (document.activeElement && document.activeElement.tagName === 'INPUT') return; // don't wipe what is being typed
+  const open = document.getElementById('tlog'); if (open && open.open) return;
   const c = checks(), s = await status();
   const items = c.items || [];
   const done = items.filter(i => i.ok).length;
@@ -34,6 +35,11 @@ async function draw() {
       <label>Server name<input id="thost" value="${esc(t.hostname || 'drivecast')}" autocomplete="off"></label>
       <button class="btn coral wide" style="margin-top:12px" data-act="tunnel">Sign in to Tailscale</button>
       <details style="margin-top:12px"><summary class="muted" style="font-size:13px">Use an auth key instead</summary><label style="margin-top:10px">Auth key (tskey-auth-…)<input id="tkey" placeholder="tskey-auth-…" autocomplete="off"></label></details>`}</div>`;
+  const urlNow = url || t.url || '';
+  const logBox = `<details class="card" id="tlog"><summary class="muted" style="font-size:13px">Link details (for support)</summary>
+    <p style="font-size:13px;margin:10px 0">State: <b>${esc(t.state || '—')}</b>${urlNow ? ' · ' + esc(urlNow) : ''}${t.error ? '<br><span style="color:#FF9B85">' + esc(t.error) + '</span>' : ''}</p>
+    <button class="btn sm" data-copylog="1">Copy details</button>
+    <pre style="white-space:pre-wrap;word-break:break-all;font-size:10px;line-height:1.4;max-height:320px;overflow:auto;background:#0B0E12;padding:10px;border-radius:10px;margin-top:10px">${esc(B && B.tunnelLog ? B.tunnelLog() : '')}</pre></details>`;
   document.getElementById('root').innerHTML = `
     <div class="top">${LOGO}<b>DriveCast Server</b>${chip}</div>
     ${!ready ? `<div><h1>Get this phone ready</h1><p class="muted" style="margin:8px 0 10px">${done} of ${items.length} done. Each one is checked for you.</p><div class="bar"><span style="width:${items.length ? Math.round(100 * done / items.length) : 0}%"></span></div></div>
@@ -45,12 +51,14 @@ async function draw() {
     ${c.device ? `<div class="grid"><div class="stat"><span>Battery</span><b>${esc(c.device.battery)}%</b></div><div class="stat"><span>Temp</span><b>${esc(c.device.temp)}°C</b></div><div class="stat"><span>Charging</span><b>${c.device.charging ? 'Yes' : 'No'}</b></div></div>` : ''}
     ${ready ? `<p class="muted" style="text-align:center;font-size:12px;margin:4px 0">You can close this app — the server keeps running.</p>` : ''}
     ${url && t.state === 'online' ? `<details><summary class="muted" style="font-size:13px">Change public link</summary>${tunnelForm}</details>` : ''}
+    ${logBox}
     <button class="btn wide" data-act="${running ? 'stop' : 'start'}" style="${running ? 'color:#FF9B85' : 'background:#E8492A;color:#0E1116;border-color:#E8492A'}">${running ? 'Stop server' : 'Start server'}</button>`;
 }
 
 document.addEventListener('click', e => {
   const el = e.target.closest('button');
   if (!el || !B) return;
+  if (el.dataset.copylog) { B.copy('state=' + JSON.stringify(checks().tunnel) + '\n' + B.tunnelLog()); el.textContent = 'Copied'; return; }
   if (el.dataset.fix) B.fix(el.dataset.fix);
   else if (el.dataset.confirm) { B.confirm(el.dataset.confirm); draw(); }
   else if (el.dataset.copy) { B.copy(el.dataset.copy); el.textContent = 'Copied'; }

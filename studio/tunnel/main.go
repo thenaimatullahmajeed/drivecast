@@ -8,7 +8,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"log"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -48,8 +47,8 @@ func main() {
 		Hostname: *host,
 		Dir:      *dir,
 		AuthKey:  os.Getenv("TS_AUTHKEY"),
-		Logf:     func(string, ...any) {},
-		UserLogf: log.Printf,
+		Logf:     func(f string, a ...any) { fmt.Printf("TS: "+f+"\n", a...) },
+		UserLogf: func(f string, a ...any) { fmt.Printf("TSU: "+f+"\n", a...) },
 	}
 	defer srv.Close()
 
