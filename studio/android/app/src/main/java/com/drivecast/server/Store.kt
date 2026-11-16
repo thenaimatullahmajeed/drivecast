@@ -44,6 +44,7 @@ object Store {
         o.put("state", state)
         o.put("hostname", tunnelHost(ctx))
         if (url != null) o.put("url", url)
+        if (state != "needs_login") o.remove("auth_url")
         if (error != null) o.put("error", error) else if (state == "online") o.remove("error")
         o.put("at", System.currentTimeMillis() / 1000)
         write(ctx, "tunnel.json", o)

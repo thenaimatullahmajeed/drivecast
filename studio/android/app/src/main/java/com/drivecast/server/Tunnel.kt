@@ -34,7 +34,8 @@ class Tunnel(private val ctx: Context) {
         while (!stopped) {
             val key = Store.tunnelKey(ctx)
             val hasState = File(ctx.filesDir, "ts/tailscaled.state").exists()
-            if (key == null && !hasState) {
+            val wanted = Store.prefs(ctx).optBoolean("tunnel_wanted", false)
+            if (key == null && !hasState && !wanted) {
                 Store.setTunnelState(ctx, "needs_key", null, null)
                 sleep(5_000)
                 continue
@@ -84,10 +85,15 @@ class Tunnel(private val ctx: Context) {
                     }
                 }
             }
+            line.startsWith("AUTH_URL=") -> {
+                val o = Store.tunnelState(ctx)
+                o.put("state", "needs_login").put("auth_url", line.removePrefix("AUTH_URL=").trim()).remove("error")
+                Store.write(ctx, "tunnel.json", o)
+            }
             line.startsWith("ERROR=") -> Store.setTunnelState(ctx, "error", null, line.removePrefix("ERROR="))
             line.startsWith("STATE=") -> {
                 val s = line.removePrefix("STATE=").trim()
-                if (s != "online") Store.setTunnelState(ctx, s, null, null)
+                if (s != "online" && s != "needs_login") Store.setTunnelState(ctx, s, null, null)
             }
             else -> Log.d("dctunnel", line)
         }

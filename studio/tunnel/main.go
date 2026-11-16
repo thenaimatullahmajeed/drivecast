@@ -53,13 +53,44 @@ func main() {
 	}
 	defer srv.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
-	if _, err := srv.Up(ctx); err != nil {
-		cancel()
-		say("ERROR", "Could not join Tailscale: "+err.Error())
+	// Join the tailnet. With no auth key, print a sign-in link for the app to open.
+	if err := srv.Start(); err != nil {
+		say("ERROR", "Could not start Tailscale: "+err.Error())
 		os.Exit(2)
 	}
-	cancel()
+	lc, err := srv.LocalClient()
+	if err != nil {
+		say("ERROR", "Could not start Tailscale: "+err.Error())
+		os.Exit(2)
+	}
+	deadline := time.Now().Add(20 * time.Minute)
+	lastURL := ""
+	for {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		st, err := lc.StatusWithoutPeers(ctx)
+		cancel()
+		if err == nil {
+			if st.BackendState == "Running" {
+				break
+			}
+			if st.AuthURL != "" && st.AuthURL != lastURL {
+				lastURL = st.AuthURL
+				say("AUTH_URL", st.AuthURL)
+				say("STATE", "needs_login")
+			}
+			if st.BackendState == "NeedsLogin" && st.AuthURL == "" && lastURL == "" {
+				ctx2, cancel2 := context.WithTimeout(context.Background(), 20*time.Second)
+				_ = lc.StartLoginInteractive(ctx2)
+				cancel2()
+			}
+		}
+		if time.Now().After(deadline) {
+			say("ERROR", "Tailscale sign-in was not completed in 20 minutes. Tap Sign in again.")
+			os.Exit(2)
+		}
+		time.Sleep(1500 * time.Millisecond)
+	}
+	say("STATE", "joined")
 
 	ln, err := srv.ListenFunnel("tcp", ":443")
 	if err != nil {

@@ -27,11 +27,13 @@ async function draw() {
   const rows = items.map(i => `<div class="row"><span class="mark ${i.ok ? 'ok' : i.manual ? 'manual' : 'no'}">${i.ok ? '✓' : ''}</span><div class="t"><b>${esc(i.title)}</b><span>${esc(i.help)}</span></div>
     ${i.ok ? '' : `<button class="btn sm" data-fix="${esc(i.id)}">Fix</button>${i.manual ? `<button class="btn sm" data-confirm="${esc(i.id)}">Done</button>` : ''}`}</div>`).join('');
   const setupCode = s && s.setup_code ? `<div class="card"><div class="kick">First time · owner setup code</div><div class="mono" style="font-size:22px;margin:8px 0;letter-spacing:.06em">${esc(s.setup_code)}</div><span class="muted" style="font-size:13px">Open the link below on your laptop, choose “Set up”, and enter this code.</span></div>` : '';
-  const tunnelForm = `<div class="card"><div class="kick">Public link · Tailscale Funnel</div>
-    <p class="muted" style="font-size:13px;margin:8px 0 12px">${t.state === 'online' ? 'Connected.' : t.error ? 'Error: ' + esc(t.error) : 'Paste a Tailscale auth key once. In the Tailscale admin: turn on HTTPS and Funnel, then Settings → Keys → Generate auth key.'}</p>
-    <label>Auth key<input id="tkey" placeholder="tskey-auth-…" autocomplete="off"></label>
-    <label style="margin-top:10px">Server name<input id="thost" value="${esc(t.hostname || 'drivecast')}" autocomplete="off"></label>
-    <button class="btn coral wide" style="margin-top:12px" data-act="tunnel">Connect link</button></div>`;
+  const login = t.state === 'needs_login' && t.auth_url;
+  const tunnelForm = `<div class="card"><div class="kick">Public link · Tailscale</div>
+    ${login ? `<p style="font-size:14px;margin:10px 0 12px">Sign in to Tailscale to finish. After you approve, the link appears here by itself.</p><button class="btn coral wide" data-open="${esc(t.auth_url)}">Open Tailscale sign-in</button>`
+      : `<p class="muted" style="font-size:13px;margin:8px 0 12px">${t.state === 'starting' || t.state === 'joined' ? 'Connecting… this can take a minute.' : t.error ? 'Error: ' + esc(t.error) : 'Sign in with your Tailscale account once. No key needed.'}</p>
+      <label>Server name<input id="thost" value="${esc(t.hostname || 'drivecast')}" autocomplete="off"></label>
+      <button class="btn coral wide" style="margin-top:12px" data-act="tunnel">Sign in to Tailscale</button>
+      <details style="margin-top:12px"><summary class="muted" style="font-size:13px">Use an auth key instead</summary><label style="margin-top:10px">Auth key (tskey-auth-…)<input id="tkey" placeholder="tskey-auth-…" autocomplete="off"></label></details>`}</div>`;
   document.getElementById('root').innerHTML = `
     <div class="top">${LOGO}<b>DriveCast Server</b>${chip}</div>
     ${!ready ? `<div><h1>Get this phone ready</h1><p class="muted" style="margin:8px 0 10px">${done} of ${items.length} done. Each one is checked for you.</p><div class="bar"><span style="width:${items.length ? Math.round(100 * done / items.length) : 0}%"></span></div></div>
@@ -54,9 +56,9 @@ document.addEventListener('click', e => {
   else if (el.dataset.copy) { B.copy(el.dataset.copy); el.textContent = 'Copied'; }
   else if (el.dataset.open) B.open(el.dataset.open);
   else if (el.dataset.act === 'tunnel') {
-    const k = document.getElementById('tkey').value.trim(), h = document.getElementById('thost').value.trim() || 'drivecast';
-    if (!/^tskey-/.test(k)) { alertBox('The key should start with tskey-'); return; }
-    B.setTunnel(k, h); el.textContent = 'Connecting…';
+    const ke = document.getElementById('tkey'), k = ke ? ke.value.trim() : '', h = document.getElementById('thost').value.trim() || 'drivecast';
+    if (k && !/^tskey-auth-/.test(k)) { alertBox('An auth key starts with tskey-auth-. Or leave it empty and sign in.'); return; }
+    B.setTunnel(k, h); el.textContent = 'Connecting…'; setTimeout(draw, 4000);
   } else if (el.dataset.act === 'stop') { if (confirm('Stop the server? Posting pauses until you start it again.')) B.stop(); }
   else if (el.dataset.act === 'start') B.start();
 });

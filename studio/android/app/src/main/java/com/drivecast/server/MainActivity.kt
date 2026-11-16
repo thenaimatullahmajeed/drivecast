@@ -187,7 +187,8 @@ class MainActivity : AppCompatActivity() {
         fun setTunnel(key: String, host: String) {
             val clean = host.lowercase().replace(Regex("[^a-z0-9-]"), "-").trim('-').ifBlank { "drivecast" }.take(40)
             File(ctx.filesDir, "ts").deleteRecursively() // a new key means a fresh Tailscale login
-            Store.setPref(ctx, "tunnel_key", key.trim())
+            Store.setPref(ctx, "tunnel_key", key.trim().ifBlank { null })
+            Store.setPref(ctx, "tunnel_wanted", true)
             Store.setPref(ctx, "tunnel_host", clean)
             Store.setTunnelState(ctx, "starting", null, null)
             ServerService.start(ctx, ServerService.ACTION_TUNNEL)
