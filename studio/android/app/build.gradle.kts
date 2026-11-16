@@ -40,6 +40,12 @@ android {
         }
     }
 
+    lint {
+        // Sideloaded app: the Play Store target-SDK rule does not apply.
+        disable += setOf("ExpiredTargetSdkVersion", "OldTargetApi")
+        checkReleaseBuilds = false
+    }
+
     packaging {
         jniLibs { useLegacyPackaging = true } // keep the tunnel binary extracted and executable
     }
