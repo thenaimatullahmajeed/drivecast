@@ -36,12 +36,22 @@ jobs:
         run: |
           go get tailscale.com@latest
           go mod tidy
-          # Built as a plain Linux binary (Android runs Linux). Tailscale's GOOS=android
-          # build leaves out HTTPS certificate support, which Funnel needs.
+          # Android build of Tailscale (no netlink problems), with the HTTPS certificate
+          # LocalAPI switched on. Tailscale only disables that one file for Android;
+          # the certificate code itself has no Android restriction.
+          go mod vendor
+          sed -i 's#^//go:build !ios \&\& !android \&\& !js#//go:build !ios \&\& !js#' vendor/tailscale.com/ipn/localapi/cert.go
+          sed -i 's#^//go:build ios || android || js#//go:build ios || js#' vendor/tailscale.com/ipn/localapi/disabled_stubs.go
+          head -4 vendor/tailscale.com/ipn/localapi/cert.go | tail -1
+          head -4 vendor/tailscale.com/ipn/localapi/disabled_stubs.go | tail -1
+          grep -q '!android' vendor/tailscale.com/ipn/localapi/cert.go && { echo "cert patch failed"; exit 1; }
+          BIN=$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin
           OUT=../android/app/src/main/jniLibs
           mkdir -p $OUT/arm64-v8a $OUT/armeabi-v7a
-          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o $OUT/arm64-v8a/libdctunnel.so .
-          CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=7 go build -trimpath -ldflags="-s -w" -o $OUT/armeabi-v7a/libdctunnel.so .
+          CGO_ENABLED=1 GOOS=android GOARCH=arm64 CC=$BIN/aarch64-linux-android26-clang \
+            go build -mod=vendor -trimpath -ldflags="-s -w" -o $OUT/arm64-v8a/libdctunnel.so .
+          CGO_ENABLED=1 GOOS=android GOARCH=arm GOARM=7 CC=$BIN/armv7a-linux-androideabi26-clang \
+            go build -mod=vendor -trimpath -ldflags="-s -w" -o $OUT/armeabi-v7a/libdctunnel.so .
           ls -la $OUT/*
 
       - uses: actions/setup-java@v4

@@ -81,7 +81,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun waitForServer() {
         thread(isDaemon = true) {
-            repeat(120) {
+            repeat(900) {
                 if (Local.up()) {
                     main.post { web.loadUrl("${Local.BASE}/phone") }
                     return@thread
