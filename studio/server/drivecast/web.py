@@ -69,6 +69,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_PATCH(self):
         self._handle()
 
+    def do_PUT(self):
+        self._handle()
+
     def do_DELETE(self):
         self._handle()
 
@@ -127,7 +130,7 @@ class Handler(BaseHTTPRequestHandler):
                         raise api.HttpError(401, "Please sign in")
                     if auth == "owner" and req.user["role"] != "owner":
                         raise api.HttpError(403, "Owner only")
-                if self.command in ("POST", "PATCH", "DELETE") and path.startswith("/api/") \
+                if self.command in ("POST", "PATCH", "PUT", "DELETE") and path.startswith("/api/") \
                         and self.headers.get("X-DC") != "1":
                     raise api.HttpError(403, "Missing request header")
                 out = fn(req, *m.groups())

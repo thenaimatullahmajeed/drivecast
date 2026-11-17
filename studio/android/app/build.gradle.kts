@@ -29,6 +29,10 @@ android {
                 keyAlias = System.getenv("DC_KEY_ALIAS") ?: "drivecast"
                 keyPassword = System.getenv("DC_KEYSTORE_PASS")
             }
+            // all signature schemes, so every Android version and phone brand accepts the APK
+            enableV1Signing = true
+            enableV2Signing = true
+            enableV3Signing = true
         }
     }
 

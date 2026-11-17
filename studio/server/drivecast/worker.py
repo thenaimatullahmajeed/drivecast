@@ -13,6 +13,7 @@ import time
 from . import db, drive, store
 from .net import (AuthRevoked, DriveCastError, Permanent, ProxyDown, QuotaExceeded, Transient, Uncertain,
                   outgoing_ip, session_for)
+from .errors import CodedError
 from .platforms import get as platform
 from .timeplan import next_pacific_midnight
 
@@ -137,64 +138,98 @@ def run(job, adapters=None):
 
         dbox = store.drive_box(ws)
         cbox = store.channel_box(ch)
-        # --- pick the next file that has never been reserved for this destination ---
+        # --- pick the next file: Fresh → Drive (your edits / Inbox) → Backfill → Encore ---
         dest = f"{ch['platform']}:{ch['external_id']}"
-        files = dmod.videos(session, dbox, ch["folder_id"])
+        files = order_queue(dmod.videos(session, dbox, ch["folder_id"]))
         db.run("UPDATE channels SET queue_count=?, queue_checked_at=? WHERE id=?", (len(files), now, ch["id"]))
-        chosen = None
+        chosen, encore = None, None
         for f in files:
+            mid = _media_id(f)
             try:
                 with db.tx() as c:
                     cur = c.execute("""INSERT INTO uploads(workspace_id,channel_id,destination,file_id,file_name,title,
-                                       status,reserved_at,outgoing_ip) VALUES(?,?,?,?,?,?,'reserved',?,?)""",
+                                       status,reserved_at,outgoing_ip,media_id) VALUES(?,?,?,?,?,?,'reserved',?,?,?)""",
                                     (ws["id"], ch["id"], dest, f["id"], f["name"], pmod.title_from_filename(f["name"]),
-                                     now, ip))
+                                     now, ip, mid))
                     upload_id = cur.lastrowid
                 chosen = f
                 break
             except Exception:  # UNIQUE(file_id,destination): already handled before
                 continue
+        if not chosen and ch.get("encore", 1):
+            encore = encore_pick(ch, dest, now)
+            if encore:
+                with db.tx() as c:
+                    cur = c.execute("""INSERT INTO uploads(workspace_id,channel_id,destination,file_id,file_name,title,
+                                       status,reserved_at,outgoing_ip,media_id,encore_of) VALUES(?,?,?,?,?,?,'reserved',?,?,?,?)""",
+                                    (ws["id"], ch["id"], dest, encore["key"], encore["file_name"], encore["title"], now, ip,
+                                     encore["media_id"], encore["original"]))
+                    upload_id = cur.lastrowid
+                chosen = {"id": encore["file_id"], "name": encore["file_name"], "size": None, "appProperties": {}}
         if not chosen:
             if not files:
-                db.event("warn", "empty", f"{ch['title']}: Drive folder is empty — add videos.", ws["id"], ch["id"])
+                db.event("warn", "empty", f"{ch['title']}: nothing left to post — add videos or connect Instagram.", ws["id"], ch["id"], "QUEUE_EMPTY")
             return finish(job, "done", None, "skipped", "No new video in the Drive folder")
 
-        # --- stage in Drive, download to a private temp file ---
-        title0 = pmod.title_from_filename(chosen["name"])
-        _stage(ch["id"], "Downloading from Drive", 0, title0)
-        processing = dmod.child_folder(session, dbox, ch["folder_id"], "Processing")
-        dmod.move(session, dbox, chosen["id"], ch["folder_id"], processing)
+        # --- the video file: the phone copy when we still have it, else from Drive ---
+        m = db.one("SELECT * FROM media WHERE id=?", (_media_id(chosen),)) if _media_id(chosen) else None
+        title0 = encore["title"] if encore else (m and m.get("title")) or pmod.title_from_filename(chosen["name"])
         tmp = tempfile.mkdtemp(prefix="dc-", dir=TMP_DIR)
         path = os.path.join(tmp, "video" + (os.path.splitext(chosen["name"])[1] or ".mp4"))
-        size = int(chosen.get("size") or 0)
-        try:
-            dmod.download(session, dbox, chosen["id"], path,
-                          on_progress=(lambda n: _stage(ch["id"], "Downloading from Drive", n / size)) if size else None)
-        except TypeError:  # test doubles without progress support
-            dmod.download(session, dbox, chosen["id"], path)
+        processing = None
+        if not encore:
+            _stage(ch["id"], "Downloading from Drive", 0, title0)
+            processing = dmod.child_folder(session, dbox, ch["folder_id"], "Processing")
+            dmod.move(session, dbox, chosen["id"], ch["folder_id"], processing)
+        local = m and m.get("local_path") and not m.get("local_deleted_at") and os.path.isfile(m["local_path"]) and m["local_path"]
+        if local:
+            _stage(ch["id"], "Using the phone copy", 1.0, title0)
+            shutil.copyfile(local, path)
+        else:
+            _stage(ch["id"], "Downloading from Drive", 0, title0)
+            size = int(chosen.get("size") or 0)
+            try:
+                dmod.download(session, dbox, chosen["id"], path,
+                              on_progress=(lambda n: _stage(ch["id"], "Downloading from Drive", n / size)) if size else None)
+            except TypeError:  # test doubles without progress support
+                dmod.download(session, dbox, chosen["id"], path)
 
-        title = pmod.title_from_filename(chosen["name"])
-        db.run("UPDATE uploads SET status='uploading' WHERE id=?", (upload_id,))
+        # --- privacy: anything that did not come through DriveCast is cleaned before it leaves ---
+        props = chosen.get("appProperties") or {}
+        if not props.get("dc_ref") and not encore and CLEAN_BEFORE_PUBLISH:
+            from . import cleaner, igsync
+            _stage(ch["id"], "Removing hidden data", None)
+            ref = igsync.new_ref()
+            cleaned = os.path.join(tmp, "clean.mp4")
+            cleaner.clean_video(path, cleaned, ref, _version())
+            path = cleaned
+
+        title, desc = _title_and_description(ch, chosen, m, encore)
+        db.run("UPDATE uploads SET status='uploading', title=? WHERE id=?", (title, upload_id))
         phase = "upload"
-        _stage(ch["id"], "Uploading to YouTube", 0)
+        _stage(ch["id"], "Uploading to YouTube", 0, title)
         try:
-            res = pmod.publish(session, cbox, path, title, title,
+            res = pmod.publish(session, cbox, path, title, desc,
                                on_progress=lambda f: _stage(ch["id"], "Uploading to YouTube", f))
         except TypeError as te:
             if "on_progress" not in str(te):
                 raise
-            res = pmod.publish(session, cbox, path, title, title)
+            res = pmod.publish(session, cbox, path, title, desc)
         phase = "after"
         db.run("UPDATE uploads SET status='published', external_video_id=?, visibility=?, published_at=? WHERE id=?",
                (res["video_id"], res["visibility"], time.time(), upload_id))
         # stats for this channel come back ~5 minutes after the post, then every 20 minutes
         db.run("UPDATE channels SET consecutive_failures=0, paused_until=NULL, state='live', state_reason=NULL, stats_at=? WHERE id=?",
                (time.time() - 15 * 60, ch["id"]))
-        try:
-            done = dmod.child_folder(session, dbox, ch["folder_id"], "Done")
-            dmod.move(session, dbox, chosen["id"], processing, done)
-        except Exception as e:  # the post is live; a failed tidy-up must not undo that
-            db.event("warn", "drive", f"Published, but could not move the file to Done: {e}", ws["id"], ch["id"])
+        if m:
+            db.run("UPDATE media SET state='published', published_at=?, updated_at=? WHERE id=? AND state!='published'",
+                   (time.time(), time.time(), m["id"]))
+        if processing:
+            try:
+                done = dmod.child_folder(session, dbox, ch["folder_id"], "Done")
+                dmod.move(session, dbox, chosen["id"], processing, done)
+            except Exception as e:  # the post is live; a failed tidy-up must not undo that
+                db.event("warn", "drive", f"Published, but could not move the file to Done: {e}", ws["id"], ch["id"])
         if res["visibility"] != "public":
             db.event("warn", "visibility", f"“{title}” was accepted but YouTube shows it as {res['visibility']}.",
                      ws["id"], ch["id"])
@@ -205,6 +240,15 @@ def run(job, adapters=None):
         db.event("error", "uncertain", f"{ch['title']}: {e.user_message}. Check YouTube Studio — it will not be retried.",
                  ws["id"], ch["id"])
         return finish(job, "failed", str(e), "uncertain", e.user_message, upload_id)
+    except CodedError as e:  # cleaning problems: privacy first, never post an uncleaned file
+        inf = e.info()
+        if e.code == "CLEAN_FAILED":
+            _release(upload_id, session, dmod, ch, permanent=True)
+            db.event("error", "clean", f"{ch['title']}: {inf['message']} File moved to Failed.", ws["id"], ch["id"], e.code, e.detail)
+            return finish(job, "failed", inf["title"], "failed", inf["title"])
+        _release(upload_id, session, dmod, ch)
+        db.event("error", "server", inf["message"], ws["id"], ch["id"], e.code, e.detail)
+        return finish(job, "failed", inf["title"], "held", inf["title"])
     except Exception as e:
         err = e.user_message if isinstance(e, DriveCastError) else f"Unexpected error: {e}"
         if phase == "upload" and not isinstance(e, DriveCastError):
@@ -236,6 +280,71 @@ def run(job, adapters=None):
             shutil.rmtree(tmp, ignore_errors=True)
 
 
+CLEAN_BEFORE_PUBLISH = True
+ENCORE_COOLDOWN = 60 * 86400
+ENCORE_MAX = 3
+LANE_RANK = {"fresh": 0, "drive": 1, None: 1, "backfill": 2}
+
+
+def _version():
+    from . import VERSION
+    return VERSION
+
+
+def _media_id(f):
+    try:
+        return int((f.get("appProperties") or {}).get("dc_media") or 0) or None
+    except (TypeError, ValueError):
+        return None
+
+
+def order_queue(files):
+    """Fresh first (oldest fresh first), then your own files (oldest first),
+    then older Instagram posts (newest first)."""
+    def key(f):
+        p = f.get("appProperties") or {}
+        lane = p.get("dc_lane")
+        rank = LANE_RANK.get(lane, 1)
+        if lane == "backfill":
+            return (rank, -int(p.get("dc_taken") or 0), f.get("createdTime") or "")
+        return (rank, 0, f.get("createdTime") or "")
+    return sorted(files, key=key)
+
+
+def encore_pick(ch, dest, now):
+    """Best performer that is allowed to run again: 60-day cooldown, max 3 re-posts, 1 Encore a day."""
+    day_start = now - 86400
+    if db.one("SELECT 1 FROM uploads WHERE channel_id=? AND encore_of IS NOT NULL AND reserved_at>? AND status!='failed'",
+              (ch["id"], day_start)):
+        return None
+    rows = db.all("""SELECT u.*, (SELECT COUNT(*) FROM uploads e WHERE e.encore_of=u.id AND e.status!='failed') reposts,
+                            (SELECT MAX(published_at) FROM uploads e WHERE (e.encore_of=u.id OR e.id=u.id) AND e.status='published') last_at,
+                            (SELECT COALESCE(SUM(views),0) FROM uploads e WHERE e.encore_of=u.id OR e.id=u.id) all_views
+                     FROM uploads u WHERE u.channel_id=? AND u.encore_of IS NULL AND u.status='published' AND u.destination=?""",
+                  (ch["id"], dest))
+    ok = [r for r in rows if r["reposts"] < ENCORE_MAX and (r["last_at"] or 0) < now - ENCORE_COOLDOWN]
+    if not ok:
+        return None
+    best = max(ok, key=lambda r: (r["all_views"] or 0, -(r["last_at"] or 0)))
+    from . import titles
+    n = best["reposts"] + 1
+    return {"key": f"{best['file_id']}#e{n}", "file_id": best["file_id"], "file_name": best["file_name"],
+            "title": titles.encore_title(best["title"], n), "media_id": best.get("media_id"), "original": best["id"]}
+
+
+def _title_and_description(ch, f, m, encore):
+    from . import titles
+    if encore:
+        return encore["title"], titles.description(m.get("caption") if m else None, encore["title"])
+    used = [r["title"] for r in db.all("SELECT title FROM uploads WHERE channel_id=? AND status='published'", (ch["id"],))]
+    caption = m.get("caption") if m else None
+    title = (m and m.get("title")) or titles.choose(name=f["name"], caption=caption, channel_title=ch["title"],
+                                                    bank=db.jload(ch.get("titles_json"), []), used=used, seed=f["id"])
+    if title in used and not (m and m.get("title")):
+        title = titles.fallback(ch["title"], db.jload(ch.get("titles_json"), []), set(used), f["id"])
+    return title, titles.description(caption, title)
+
+
 def _release(upload_id, session, dmod, ch, permanent=False):
     """Nothing was published: free the reservation and put the file back
     (or into Failed when the file itself is the problem)."""
@@ -243,6 +352,9 @@ def _release(upload_id, session, dmod, ch, permanent=False):
         return
     u = db.one("SELECT * FROM uploads WHERE id=?", (upload_id,))
     if not u:
+        return
+    if "#e" in (u["file_id"] or ""):  # an Encore never moved its file
+        db.run("DELETE FROM uploads WHERE id=?", (upload_id,))
         return
     try:
         dbox = store.drive_box(store.workspace(ch["workspace_id"]))

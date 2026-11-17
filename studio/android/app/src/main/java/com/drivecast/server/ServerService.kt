@@ -95,6 +95,9 @@ class ServerService : Service() {
     private fun startPython() {
         try {
             if (!Python.isStarted()) Python.start(AndroidPlatform(this))
+            val env = Python.getInstance().getModule("os").get("environ")
+            Phone.ffmpeg(this)?.let { env?.callAttr("__setitem__", "DC_FFMPEG", it) }
+            Phone.mediaDir(this)?.let { env?.callAttr("__setitem__", "DC_MEDIA_DIR", it) }
             val data = File(filesDir, "data").absolutePath
             Python.getInstance().getModule("drivecast.main").callAttr("start", data, "127.0.0.1", Local.PORT)
             File(filesDir, "server_error.txt").delete()
@@ -146,6 +149,10 @@ class ServerService : Service() {
                 .put("charging", plugged)
                 .put("model", "${Build.MANUFACTURER} ${Build.MODEL}")
                 .put("android", Build.VERSION.RELEASE)
+                .put("quiet", try { Phone.quietOn(ctx) } catch (e: Exception) { false })
+                .put("dedicated", try { Phone.isOwner(ctx) } catch (e: Exception) { false })
+                .put("storage", Phone.storageGranted(ctx))
+                .put("ffmpeg", Phone.ffmpeg(ctx) != null)
         }
     }
 }

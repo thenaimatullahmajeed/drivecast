@@ -177,3 +177,73 @@ class ApiTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SourceApiTests(unittest.TestCase):
+    """Instagram source: add, change, pause, remove, resume — the ledger survives every change."""
+
+    @classmethod
+    def setUpClass(cls):
+        ApiTests.setUpClass.__func__(cls)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        shutil.rmtree(cls.dir, ignore_errors=True)
+
+    def test_source_lifecycle(self):
+        import time as _t
+        from drivecast import drive, instagram
+        c = Client(self.base)
+        st, r = c.call("POST", "/api/setup", {"setup_code": "SETUP-AAAA-BBBB", "name": "Admin", "email": "s@x.com", "password": "password1"})
+        self.assertEqual(st, 200, r)
+        ws = r["user"]["workspace_id"]
+        now = _t.time()
+        db.run("UPDATE workspaces SET drive_token_enc=?, drive_root_id='ROOT' WHERE id=?", (security.seal('{"access_token":"a","refresh_token":"r","expires_at":9e9}'), ws))
+        g = db.run("INSERT INTO ip_groups(workspace_id,number,host,port,status,created_at) VALUES(?,1,'h',1,'ok',?)", (ws, now))
+        ch = db.run("INSERT INTO channels(workspace_id,external_id,title,group_id,state,created_at) VALUES(?,?,?,?,'setup',?)", (ws, "UC9", "Ink", g, now))
+        made = []
+        with mock.patch.object(drive, "child_folder", lambda s, b, p, n: (made.append((p, n)) or f"{p}/{n}")), \
+             mock.patch.object(instagram.Client, "whoami", lambda self: {"username": "test_g1", "id": "9"}):
+            # cookies: bad then good
+            st, r = c.call("POST", f"/api/groups/{g}/instagram", {"cookies": "sessionid=1"})
+            self.assertEqual(st, 400)
+            self.assertIn("missing", r["error"].lower())
+            st, r = c.call("POST", f"/api/groups/{g}/instagram", {"cookies": "sessionid=S; ds_user_id=9; csrftoken=C"})
+            self.assertEqual(st, 200, r)
+            self.assertEqual(r["group"]["instagram"]["username"], "test_g1")
+            # wizard: Instagram only, no Drive folder chosen → folder + Inbox created under the main folder
+            st, r = c.call("POST", f"/api/channels/{ch}/route", {"group_id": g, "instagram": {"handle": "https://instagram.com/InkEpoch", "content_type": "videos"},
+                                                                 "plan": {"posts_per_day": 2}})
+            self.assertEqual(st, 200, r)
+            self.assertIn(("ROOT", "inkepoch"), made)
+            self.assertIn(("ROOT/inkepoch", "Inbox"), made)
+            st, d = c.call("GET", f"/api/channels/{ch}/detail")
+            self.assertEqual((d["source"]["handle"], d["source"]["state"], d["has_inbox"]), ("inkepoch", "active", True))
+            sid = d["source"]["id"]
+            db.run("INSERT INTO media(workspace_id,channel_id,source_id,origin,ext_id,state,created_at) VALUES(?,?,?,'instagram','1','in_drive',?)", (ws, ch, sid, now))
+            # change content type + pause
+            st, d = c.call("PUT", f"/api/channels/{ch}/source", {"content_type": "mix"})
+            self.assertEqual(d["source"]["content_type"], "mix")
+            st, d = c.call("PUT", f"/api/channels/{ch}/source", {"paused": True})
+            self.assertEqual(d["source"]["state"], "paused")
+            # switch handle → new lane, old records kept
+            st, d = c.call("PUT", f"/api/channels/{ch}/source", {"handle": "@other.client"})
+            self.assertEqual(d["source"]["handle"], "other.client")
+            self.assertEqual(d["pipeline"]["ready"], 1)
+            # back to the first handle → same source row resumes (no double posts)
+            st, d = c.call("PUT", f"/api/channels/{ch}/source", {"handle": "inkepoch"})
+            self.assertEqual(d["source"]["id"], sid)
+            # remove Instagram → Drive only, ledger stays
+            st, d = c.call("PUT", f"/api/channels/{ch}/source", {"enabled": False})
+            self.assertIsNone(d["source"])
+            self.assertEqual(db.one("SELECT COUNT(*) n FROM media WHERE channel_id=?", (ch,))["n"], 1)
+            # titles + encore settings
+            st, d = c.call("PUT", f"/api/channels/{ch}/settings", {"encore": False, "titles": "Fine line magic\n\nInk stories"})
+            self.assertEqual((d["encore_on"], d["titles"]), (False, ["Fine line magic", "Ink stories"]))
+            # hidden custom domain
+            st, r = c.call("POST", "/api/settings/advanced", {"public_url_override": "http://bad"})
+            self.assertEqual(st, 400)
+            st, r = c.call("POST", "/api/settings/advanced", {"public_url_override": "https://studio.example.com"})
+            self.assertEqual(r["public_url_override"], "https://studio.example.com")
+            c.call("POST", "/api/settings/advanced", {"public_url_override": ""})

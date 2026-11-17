@@ -273,33 +273,54 @@ def _first_day_views(ups):
 
 
 def attention(ws_id, now=None):
+    """Problems a person can fix, each with the button that fixes it."""
+    from . import errors
     now = now or time.time()
     items = []
     for g in db.all("SELECT * FROM ip_groups WHERE workspace_id=? AND status='down'", (ws_id,)):
         n = db.one("SELECT COUNT(*) n FROM channels WHERE group_id=?", (g["id"],))["n"]
         items.append({"level": "error", "kind": "proxy", "title": f"Group {g['number']} is not responding",
-                      "detail": f"{n} channel(s) held. Nothing is sent from the server IP.", "action": "groups",
-                      "ref": g["id"]})
+                      "detail": f"{n} channel(s) held. Nothing is sent from the phone’s own IP.", "action": "fix",
+                      "fix": "replace_proxy", "ref": g["id"], "code": "PROXY_DEAD"})
+    for a in db.all("""SELECT a.*, g.number FROM ig_accounts a JOIN ip_groups g ON g.id=a.group_id
+                       WHERE a.workspace_id=? AND a.status='needs_cookies'""", (ws_id,)):
+        i = errors.info(a["error_code"] or "IG_COOKIES_EXPIRED", group=a["number"])
+        items.append({"level": "error", "kind": "instagram", "title": i["title"] + f" · Group {a['number']}", "detail": i["message"],
+                      "action": "fix", "fix": "replace_cookies", "ref": a["group_id"], "code": i["code"]})
+    for s in db.all("""SELECT s.*, c.title FROM sources s JOIN channels c ON c.id=s.channel_id WHERE c.workspace_id=? AND s.state='active'
+                       AND s.error_code IN ('IG_PROFILE_NOT_FOUND','IG_PROFILE_PRIVATE','DRIVE_FOLDER_GONE')""", (ws_id,)):
+        i = errors.info(s["error_code"], handle=s["handle"])
+        items.append({"level": "error", "kind": "source", "title": f"{s['title']}: {i['title']}", "detail": i["message"],
+                      "action": "fix", "fix": "edit_source", "ref": s["channel_id"], "code": i["code"]})
+    for g in db.all("""SELECT g.* FROM ip_groups g WHERE g.workspace_id=? AND NOT EXISTS (SELECT 1 FROM ig_accounts a WHERE a.group_id=g.id)
+                       AND EXISTS (SELECT 1 FROM sources s JOIN channels c ON c.id=s.channel_id WHERE c.group_id=g.id AND s.state='active')""", (ws_id,)):
+        i = errors.info("IG_NO_ACCOUNT", group=g["number"])
+        items.append({"level": "error", "kind": "instagram", "title": i["title"], "detail": i["message"], "action": "fix",
+                      "fix": "add_cookies", "ref": g["id"], "code": i["code"]})
     for c in db.all("SELECT * FROM channels WHERE workspace_id=? AND state='attention'", (ws_id,)):
         items.append({"level": "error", "kind": "channel", "title": c["title"], "detail": c["state_reason"] or "Needs attention",
-                      "action": "channels", "ref": c["id"]})
-    for c in db.all("SELECT * FROM channels WHERE workspace_id=? AND state='live' AND queue_count IS NOT NULL AND queue_count<=2",
-                    (ws_id,)):
+                      "action": "fix", "fix": "open_channel", "ref": c["id"]})
+    for c in db.all("""SELECT * FROM channels c WHERE workspace_id=? AND state='live' AND queue_count IS NOT NULL AND queue_count<=2
+                       AND NOT EXISTS (SELECT 1 FROM sources s WHERE s.channel_id=c.id AND s.state='active')""", (ws_id,)):
         items.append({"level": "warn", "kind": "folder", "title": f"{c['title']} — {c['queue_count']} video(s) left",
-                      "detail": "Add videos to its Drive folder.", "action": "channels", "ref": c["id"]})
+                      "detail": "Add videos to its Drive folder, or connect the client’s Instagram.", "action": "fix",
+                      "fix": "open_channel", "ref": c["id"]})
     for u in db.all("SELECT * FROM uploads WHERE workspace_id=? AND status='uncertain' ORDER BY reserved_at DESC LIMIT 5", (ws_id,)):
         items.append({"level": "error", "kind": "uncertain", "title": f"Check “{u['title']}” in YouTube Studio",
-                      "detail": u["error"] or "Upload result unknown. It will not be retried.", "action": "uncertain",
-                      "ref": u["id"]})
+                      "detail": u["error"] or "Upload result unknown. It will not be retried.", "action": "fix",
+                      "fix": "resolve_upload", "ref": u["id"], "code": "YT_UNCERTAIN"})
+    shown = {i.get("code") for i in items if i.get("code")}
     seen = set()
     for e in db.all("""SELECT * FROM events WHERE workspace_id=? AND resolved=0 AND level IN ('warn','error') AND at>?
                        ORDER BY at DESC LIMIT 40""", (ws_id, now - 3 * 86400)):
-        if e["kind"] in ("proxy", "uncertain") or e["message"] in seen:
+        if e["kind"] in ("proxy", "uncertain") or e["message"] in seen or (e["code"] and e["code"] in shown):
             continue
         seen.add(e["message"])
+        fix = errors.CATALOG.get(e["code"] or "", (None, None, None, None))[3]
         items.append({"level": e["level"], "kind": e["kind"], "title": e["message"], "detail": None, "action": "event",
-                      "ref": e["id"], "at": e["at"]})
-    return items[:12]
+                      "ref": e["id"], "at": e["at"], "code": e["code"], "fix": fix, "channel_id": e["channel_id"],
+                      "has_detail": bool(e.get("detail"))})
+    return items[:14]
 
 
 def user_report(ws_id, tz_name, days=30, now=None):

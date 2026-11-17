@@ -63,6 +63,8 @@ class MainActivity : AppCompatActivity() {
         ) {
             ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
         }
+        // Dedicated phone mode: re-apply its settings each time the app opens (cheap, idempotent)
+        if (Phone.isOwner(this) && Store.prefs(this).optBoolean("dedicated")) thread(isDaemon = true) { Phone.applyDedicated(this) }
         // Opening the app always (re)starts the server; "Stop server" only lasts until the app is opened again.
         Store.setPref(this, "running", true)
         ServerService.start(this)
@@ -90,6 +92,17 @@ class MainActivity : AppCompatActivity() {
                 }
                 Thread.sleep(1000)
             }
+        }
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == 2) {
+            // tell the running server about the shared folder right away (no restart needed)
+            Phone.mediaDir(this)?.let { dir ->
+                thread(isDaemon = true) { Local.post(this, "/local/media-dir", JSONObject().put("path", dir)) }
+            }
+            web.evaluateJavascript("typeof draw==='function'&&draw()", null)
         }
     }
 
@@ -122,6 +135,7 @@ class MainActivity : AppCompatActivity() {
             add("power", dev.optBoolean("charging"), "Charger connected", "Use a wall charger, not a power bank")
             add("chargelimit", confirmed.optBoolean("chargelimit"), "Charging limit 80–85%", "Protects the battery on 24/7 charge", true)
             add("tunnel", tunnel.optString("state") == "online", "Public link connected", "Gives you a fixed https link for your laptop")
+            add("storage", Phone.storageGranted(ctx), "Storage folder allowed", "Instagram downloads go to “${Phone.FOLDER}” (hidden from Gallery)")
             return JSONObject()
                 .put("items", items)
                 .put("running", Store.running(ctx))
@@ -144,6 +158,10 @@ class MainActivity : AppCompatActivity() {
                 "wifi" -> listOf(Intent(Settings.ACTION_WIFI_SETTINGS))
                 "power", "chargelimit" -> listOf(Intent(Intent.ACTION_POWER_USAGE_SUMMARY), Intent(Settings.ACTION_BATTERY_SAVER_SETTINGS))
                 "tunnel" -> listOf(Intent(Intent.ACTION_VIEW, Uri.parse("https://login.tailscale.com/admin/settings/keys")))
+                "storage" -> {
+                    ActivityCompat.requestPermissions(act, arrayOf(Manifest.permission.WRITE_EXTERNAL_STORAGE, Manifest.permission.READ_EXTERNAL_STORAGE), 2)
+                    emptyList()
+                }
                 else -> emptyList()
             }
             for (i in tries) {
@@ -168,6 +186,15 @@ class MainActivity : AppCompatActivity() {
 
         @JavascriptInterface
         fun localToken(): String = Local.token(ctx)
+
+        @JavascriptInterface
+        fun modes(): String = Phone.status(ctx).toString()
+
+        @JavascriptInterface
+        fun quiet(on: Boolean): Boolean = Phone.setQuiet(ctx, on)
+
+        @JavascriptInterface
+        fun dedicated(on: Boolean): String = (if (on) Phone.applyDedicated(ctx) else Phone.releaseDedicated(ctx)).toString()
 
         /** Erase this server: accounts, channels, settings and its public link identity. */
         @JavascriptInterface

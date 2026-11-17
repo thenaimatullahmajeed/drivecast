@@ -37,7 +37,7 @@ def need(body, *keys):
 
 
 def public_base(req):
-    url = db.meta_get("public_url")
+    url = db.meta_get("public_url_override") or db.meta_get("public_url")
     if url:
         return url.rstrip("/")
     proto = req.headers.get("X-Forwarded-Proto") or ("https" if req.secure else "http")
@@ -204,6 +204,17 @@ def device(req):
     return d
 
 
+@route("GET", "/api/events/(\\d+)")
+def event_detail(req, eid):
+    e = db.one("SELECT id, level, kind, message, at, code, detail FROM events WHERE id=? AND workspace_id=?", (int(eid), req.ws))
+    if not e:
+        raise HttpError(404, "Not found")
+    from . import errors
+    if e["code"]:
+        e["info"] = errors.info(e["code"])
+    return {"event": e}
+
+
 @route("POST", "/api/events/(\\d+)/dismiss")
 def dismiss(req, eid):
     db.run("UPDATE events SET resolved=1 WHERE id=? AND workspace_id=?", (int(eid), req.ws))
@@ -217,6 +228,14 @@ def _group_out(g):
     out = store.public(g)
     out.update({"channel_count": n, "channels": chans, "over_recommended": n > g["max_channels"],
                 "latency": db.jload(g["latency_json"], []), "has_password": bool(g["password_enc"])})
+    acc = db.one("SELECT * FROM ig_accounts WHERE group_id=?", (g["id"],))
+    out["instagram"] = None if not acc else {
+        "username": acc["username"], "status": acc["status"], "error_code": acc["error_code"],
+        "checked_at": acc["checked_at"], "paused_until": acc["paused_until"], "today": acc["day_count"] if acc["day"] == time.strftime("%Y-%m-%d", time.gmtime()) else 0,
+        "sources": db.one("SELECT COUNT(*) n FROM sources s JOIN channels c ON c.id=s.channel_id WHERE c.group_id=? AND s.state='active'", (g["id"],))["n"],
+    }
+    lat = out.get("latency_ms")
+    out["health"] = "down" if g["status"] == "down" else ("slow" if lat and lat > 2500 else "good" if lat else "unknown")
     return out
 
 
@@ -537,6 +556,9 @@ def _channel_out(c):
     from . import worker
     out["live"] = worker.PROGRESS.get(c["id"])
     out["published_total"] = db.one("SELECT COUNT(*) n FROM uploads WHERE channel_id=? AND status='published'", (c["id"],))["n"]
+    src = db.one("SELECT handle, state, error_code, content_type FROM sources WHERE channel_id=? AND state!='removed' ORDER BY id DESC LIMIT 1", (c["id"],))
+    out["source"] = src
+    out["ready"] = db.one("SELECT COUNT(*) n FROM media WHERE channel_id=? AND state='in_drive'", (c["id"],))["n"]
     return out
 
 
@@ -555,28 +577,42 @@ def _own_channel(req, cid):
 
 @route("POST", "/api/channels/(\\d+)/route")
 def set_route(req, cid):
+    """Finish the wizard: IP group, content source (Drive folder and/or Instagram), posting plan."""
     c = _own_channel(req, cid)
     b = req.json
-    need(b, "folder_id")
+    igb = b.get("instagram") or None
+    if not b.get("folder_id") and not igb:
+        raise HttpError(400, "Choose a Drive folder or add the client's Instagram")
     ws = store.workspace(req.ws)
     folders = {f["id"]: f for f in db.jload(ws["folders_json"], [])}
-    if b["folder_id"] not in folders:
-        raise HttpError(400, "Choose a folder from your main Drive folder")
-    other = db.one("SELECT title FROM channels WHERE workspace_id=? AND folder_id=? AND id!=?", (req.ws, b["folder_id"], c["id"]))
-    if other:
-        raise HttpError(409, f"This folder already feeds “{other['title']}”")
+    if b.get("folder_id"):
+        if b["folder_id"] not in folders:
+            raise HttpError(400, "Choose a folder from your main Drive folder")
+        other = db.one("SELECT title FROM channels WHERE workspace_id=? AND folder_id=? AND id!=?", (req.ws, b["folder_id"], c["id"]))
+        if other:
+            raise HttpError(409, f"This folder already feeds “{other['title']}”")
     lim = store.limits_for_workspace(req.ws)
     live = db.one("SELECT COUNT(*) n FROM channels WHERE workspace_id=? AND state!='setup' AND id!=?", (req.ws, c["id"]))["n"]
     if lim["max_channels"] and live >= int(lim["max_channels"]):
         raise HttpError(403, f"Your account allows {lim['max_channels']} channels")
     if b.get("group_id"):
         _own_group(req, b["group_id"])
+        db.run("UPDATE channels SET group_id=? WHERE id=?", (int(b["group_id"]), c["id"]))
+    if b.get("folder_id"):
+        db.run("UPDATE channels SET folder_id=?, folder_name=? WHERE id=?", (b["folder_id"], folders[b["folder_id"]]["name"], c["id"]))
+    c = store.channel(c["id"])
+    if igb:
+        configure_source(c, igb)
+    elif b.get("inbox"):
+        _ensure_folder(c, c["folder_name"] or c["title"])
+    if "encore" in b:
+        db.run("UPDATE channels SET encore=? WHERE id=?", (1 if b["encore"] else 0, c["id"]))
+    if b.get("inbox") is False:
+        db.run("UPDATE channels SET inbox_id=NULL WHERE id=?", (c["id"],))
     plan = normalize_plan(b.get("plan"))
     start = bool(b.get("start", True))
-    db.run("""UPDATE channels SET folder_id=?, folder_name=?, plan_json=?, group_id=COALESCE(?,group_id), state=?, state_reason=NULL,
-              live_since=COALESCE(live_since,?) WHERE id=?""",
-           (b["folder_id"], folders[b["folder_id"]]["name"], json.dumps(plan), b.get("group_id"),
-            "live" if start else "paused", time.time(), c["id"]))
+    db.run("""UPDATE channels SET plan_json=?, state=?, state_reason=NULL, live_since=COALESCE(live_since,?) WHERE id=?""",
+           (json.dumps(plan), "live" if start else "paused", time.time(), c["id"]))
     c = store.channel(c["id"])
     if start:
         scheduler.replan_future(c)
@@ -705,6 +741,23 @@ def local_public_url(req):
     return {"ok": True}
 
 
+@route("POST", "/local/media-dir", auth="local")
+def local_media_dir(req):
+    """The phone allowed storage: use the shared folder from now on (no restart)."""
+    import os
+    from . import config
+    path = (req.json.get("path") or "").strip()
+    if not path:
+        raise HttpError(400, "path required")
+    try:
+        os.makedirs(path, exist_ok=True)
+        open(os.path.join(path, ".nomedia"), "a").close()
+    except OSError as e:
+        raise HttpError(400, f"Cannot write there: {e}")
+    config.MEDIA_DIR = path
+    return {"ok": True, "media_dir": path}
+
+
 @route("POST", "/local/device", auth="local")
 def local_device(req):
     db.meta_set("device_info", json.dumps(req.json)[:500])
@@ -789,6 +842,8 @@ def admin_delete_user(req, uid):
     with db.tx() as c:
         c.execute("DELETE FROM jobs WHERE channel_id IN (SELECT id FROM channels WHERE workspace_id=?)", (ws,))
         c.execute("DELETE FROM uploads WHERE workspace_id=?", (ws,))
+        c.execute("DELETE FROM media WHERE workspace_id=?", (ws,))
+        c.execute("DELETE FROM ig_accounts WHERE workspace_id=?", (ws,))
         c.execute("DELETE FROM channels WHERE workspace_id=?", (ws,))
         c.execute("DELETE FROM ip_groups WHERE workspace_id=?", (ws,))
         c.execute("DELETE FROM connect_links WHERE workspace_id=?", (ws,))
@@ -861,3 +916,260 @@ def phone_page(req):
     import os
     with open(os.path.join(os.path.dirname(__file__), "web", "phone.html"), encoding="utf-8") as f:
         return 200, f.read()
+
+
+# ---------------------------------------------------------------- Instagram source (v2)
+from . import errors as _errors  # noqa: E402
+from . import igsync, instagram as _ig  # noqa: E402
+
+
+def _ig_error(e, **ctx):
+    if isinstance(e, _errors.CodedError):
+        i = e.info(**ctx)
+        return HttpError(400, f"{i['title']}. {i['message']}")
+    if isinstance(e, ValueError):
+        return HttpError(400, str(e))
+    if isinstance(e, DriveCastError):
+        return HttpError(400, e.user_message)
+    return HttpError(500, f"Unexpected: {e}")
+
+
+@route("POST", "/api/groups/(\\d+)/instagram")
+def set_ig_account(req, gid):
+    g = _own_group(req, gid)
+    text = req.json.get("cookies") or ""
+    try:
+        cookies = _ig.parse_cookies(text)
+        who = _ig.Client(session_for(g), cookies, min_gap=(0, 0)).whoami()
+    except Exception as e:
+        raise _ig_error(e, group=g["number"])
+    sealed = security.seal(text.strip())
+    now = time.time()
+    old = db.one("SELECT id FROM ig_accounts WHERE group_id=?", (g["id"],))
+    if old:
+        db.run("""UPDATE ig_accounts SET cookies_enc=?, username=?, ig_user_id=?, status='ok', error_code=NULL, error_detail=NULL,
+                  paused_until=NULL, backoff=0, checked_at=?, updated_at=? WHERE id=?""", (sealed, who["username"], who["id"], now, now, old["id"]))
+        igsync.forget_client(old["id"])
+    else:
+        db.run("""INSERT INTO ig_accounts(workspace_id,group_id,username,ig_user_id,cookies_enc,checked_at,created_at,updated_at)
+                  VALUES(?,?,?,?,?,?,?,?)""", (req.ws, g["id"], who["username"], who["id"], sealed, now, now, now))
+    for code in ("IG_COOKIES_EXPIRED", "IG_CHALLENGE", "IG_NO_ACCOUNT", "IG_FEEDBACK"):
+        db.resolve(code, req.ws)
+    db.run("UPDATE sources SET next_check=MIN(IFNULL(next_check,0),?) WHERE channel_id IN (SELECT id FROM channels WHERE group_id=?)",
+           (now + 60, g["id"]))
+    return {"ok": True, "username": who["username"], "group": _group_out(store.group(g["id"]))}
+
+
+@route("DELETE", "/api/groups/(\\d+)/instagram")
+def del_ig_account(req, gid):
+    g = _own_group(req, gid)
+    db.run("DELETE FROM ig_accounts WHERE group_id=?", (g["id"],))
+    return {"ok": True}
+
+
+@route("POST", "/api/ig/lookup")
+def ig_lookup(req):
+    b = req.json
+    need(b, "group_id", "handle")
+    g = _own_group(req, b["group_id"])
+    acc = db.one("SELECT * FROM ig_accounts WHERE group_id=?", (g["id"],))
+    if not acc:
+        raise HttpError(400, f"Group {g['number']} has no Instagram account yet. Add its cookies on the IP groups page.")
+    try:
+        handle = _ig.clean_handle(b["handle"])
+        cl = igsync.client_for(acc, g)
+        cl.min_gap = (1, 2)
+        p = cl.profile(handle)
+    except Exception as e:
+        raise _ig_error(e, handle=b.get("handle"), group=g["number"])
+    finally:
+        try:
+            cl.min_gap = (7, 14)
+        except Exception:
+            pass
+    return {"profile": p}
+
+
+def _ensure_folder(c, name):
+    """Give the channel its own folder (Root/<name>) and an Inbox, creating them in the Library Drive."""
+    ws = store.workspace(c["workspace_id"])
+    if not ws["drive_token_enc"]:
+        raise HttpError(400, "Connect Google Drive first (Google Drive page).")
+    if not ws["drive_root_id"]:
+        raise HttpError(400, "Choose your main Drive folder first (Google Drive page).")
+    g = store.group(c["group_id"])
+    sess, box = session_for(g), store.drive_box(ws)
+    try:
+        folder_id = c["folder_id"]
+        folder_name = c["folder_name"]
+        if not folder_id:
+            folder_id = drive.child_folder(sess, box, ws["drive_root_id"], name)
+            folder_name = name
+        inbox = c.get("inbox_id") or drive.child_folder(sess, box, folder_id, "Inbox")
+    except DriveCastError as e:
+        raise HttpError(400, e.user_message)
+    db.run("UPDATE channels SET folder_id=?, folder_name=?, inbox_id=? WHERE id=?", (folder_id, folder_name, inbox, c["id"]))
+    return store.channel(c["id"])
+
+
+def _active_source(cid):
+    return db.one("SELECT * FROM sources WHERE channel_id=? AND state!='removed' ORDER BY id DESC LIMIT 1", (cid,))
+
+
+def configure_source(c, b):
+    """Add / change / pause / remove the Instagram source. The ledger is never deleted."""
+    now = time.time()
+    cur = _active_source(c["id"])
+    if not b.get("enabled", True):
+        if cur:
+            db.run("UPDATE sources SET state='removed', updated_at=? WHERE id=?", (now, cur["id"]))
+        return None
+    if b.get("paused") is not None and cur and not b.get("handle"):
+        db.run("UPDATE sources SET state=?, updated_at=? WHERE id=?", ("paused" if b["paused"] else "active", now, cur["id"]))
+        return _active_source(c["id"])
+    try:
+        handle = _ig.clean_handle(b.get("handle") or (cur and cur["handle"]) or "")
+    except ValueError as e:
+        raise HttpError(400, str(e))
+    ctype = b.get("content_type") or (cur and cur["content_type"]) or "videos"
+    if ctype not in ("videos", "mix", "photos"):
+        raise HttpError(400, "Content type must be videos, mix or photos")
+    include_old = 1 if b.get("include_old", cur["include_old"] if cur else True) else 0
+    cap = max(1, min(30, int(b.get("daily_cap") or (cur and cur["daily_cap"]) or 6)))
+    if not c["folder_id"] or not c.get("inbox_id"):
+        c = _ensure_folder(c, handle)
+    if cur and cur["handle"] == handle:
+        db.run("UPDATE sources SET content_type=?, include_old=?, daily_cap=?, state=?, updated_at=? WHERE id=?",
+               (ctype, include_old, cap, "paused" if b.get("paused") else "active", now, cur["id"]))
+        if include_old and not cur["include_old"]:
+            db.run("UPDATE sources SET backfill_done=0 WHERE id=?", (cur["id"],))
+        return _active_source(c["id"])
+    if cur:  # a different handle: the old lane stops, its records stay
+        db.run("UPDATE sources SET state='removed', updated_at=? WHERE id=?", (now, cur["id"]))
+    old = db.one("SELECT * FROM sources WHERE channel_id=? AND handle=? ORDER BY id DESC LIMIT 1", (c["id"], handle))
+    if old:  # the same account again: resume from its ledger, nothing posts twice
+        db.run("""UPDATE sources SET state='active', content_type=?, include_old=?, daily_cap=?, next_check=?, error_code=NULL, updated_at=?
+                  WHERE id=?""", (ctype, include_old, cap, now, now, old["id"]))
+        return _active_source(c["id"])
+    db.run("""INSERT INTO sources(channel_id,handle,ig_user_id,full_name,picture,content_type,include_old,daily_cap,started_at,next_check,created_at,updated_at)
+              VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+           (c["id"], handle, b.get("ig_user_id"), b.get("full_name"), b.get("picture"), ctype, include_old, cap, now, now, now, now))
+    return _active_source(c["id"])
+
+
+@route("PUT", "/api/channels/(\\d+)/source")
+def put_source(req, cid):
+    c = _own_channel(req, cid)
+    if not c["group_id"]:
+        raise HttpError(400, "Choose an IP group for this channel first")
+    configure_source(c, req.json or {})
+    return channel_detail(req, cid)
+
+
+@route("POST", "/api/channels/(\\d+)/source/check")
+def source_check_now(req, cid):
+    c = _own_channel(req, cid)
+    src = _active_source(c["id"])
+    if not src:
+        raise HttpError(400, "This channel has no Instagram source")
+    db.run("UPDATE sources SET next_check=0, error_code=NULL WHERE id=?", (src["id"],))
+    acc = db.one("SELECT id FROM ig_accounts WHERE group_id=?", (c["group_id"],))
+    if acc:
+        igsync._next_action.pop(acc["id"], None)
+    return {"ok": True}
+
+
+@route("POST", "/api/channels/(\\d+)/inbox")
+def channel_inbox(req, cid):
+    c = _own_channel(req, cid)
+    if req.json.get("enabled", True):
+        c = _ensure_folder(c, c["folder_name"] or c["title"])
+    else:
+        db.run("UPDATE channels SET inbox_id=NULL WHERE id=?", (c["id"],))
+    return channel_detail(req, cid)
+
+
+@route("PUT", "/api/channels/(\\d+)/settings")
+def channel_settings(req, cid):
+    c = _own_channel(req, cid)
+    b = req.json
+    if "encore" in b:
+        db.run("UPDATE channels SET encore=? WHERE id=?", (1 if b["encore"] else 0, c["id"]))
+    if "titles" in b:
+        lines = [t.strip()[:95] for t in (b["titles"] if isinstance(b["titles"], list) else str(b["titles"]).splitlines()) if t.strip()]
+        db.run("UPDATE channels SET titles_json=? WHERE id=?", (json.dumps(lines[:200]), c["id"]))
+    return channel_detail(req, cid)
+
+
+@route("POST", "/api/media/(\\d+)/retry")
+def media_retry(req, mid):
+    m = db.one("SELECT * FROM media WHERE id=? AND workspace_id=?", (int(mid), req.ws))
+    if not m:
+        raise HttpError(404, "Not found")
+    if m["state"] not in ("skipped", "failed"):
+        raise HttpError(400, "Only skipped or failed items can be retried")
+    db.run("UPDATE media SET state='found', next_try=0, error_code=NULL, skip_reason=NULL, updated_at=? WHERE id=?", (time.time(), m["id"]))
+    return {"ok": True}
+
+
+@route("GET", "/api/channels/(\\d+)/detail")
+def channel_detail(req, cid):
+    c = _own_channel(req, cid)
+    now = time.time()
+    src = _active_source(c["id"])
+    acc = db.one("SELECT * FROM ig_accounts WHERE group_id=?", (c["group_id"],)) if c["group_id"] else None
+    counts = {r["state"]: r["n"] for r in db.all("SELECT state, COUNT(*) n FROM media WHERE channel_id=? GROUP BY state", (c["id"],))}
+    lanes = {r["lane"]: r["n"] for r in db.all("SELECT lane, COUNT(*) n FROM media WHERE channel_id=? AND state IN ('found','in_drive') GROUP BY lane", (c["id"],))}
+    ready = db.all("""SELECT id, title, caption, lane, kind, taken_at, state, width, height, ref, origin, code FROM media WHERE channel_id=?
+                      AND state IN ('in_drive','found','downloading')
+                      ORDER BY CASE lane WHEN 'fresh' THEN 0 WHEN 'drive' THEN 1 ELSE 2 END,
+                               CASE WHEN lane='backfill' THEN -taken_at ELSE taken_at END LIMIT 12""", (c["id"],))
+    slots = db.all("SELECT due_at, status FROM slots WHERE channel_id=? AND status IN ('planned','queued','running') AND due_at>=? ORDER BY due_at LIMIT 12",
+                   (c["id"], now - 300))
+    enc = db.all("""SELECT u.id, u.title, u.file_id, u.published_at,
+                       (SELECT COUNT(*) FROM uploads e WHERE e.encore_of=u.id AND e.status!='failed') reposts,
+                       (SELECT MAX(published_at) FROM uploads e WHERE (e.encore_of=u.id OR e.id=u.id) AND e.status='published') last_at,
+                       (SELECT COALESCE(SUM(views),0) FROM uploads e WHERE e.encore_of=u.id OR e.id=u.id) views
+                    FROM uploads u WHERE u.channel_id=? AND u.encore_of IS NULL AND u.status='published' ORDER BY views DESC LIMIT 8""", (c["id"],))
+    from . import worker
+    for e in enc:
+        e["eligible_at"] = (e["last_at"] or 0) + worker.ENCORE_COOLDOWN
+        e["status"] = "retired" if e["reposts"] >= worker.ENCORE_MAX else ("eligible" if e["eligible_at"] <= now else "cooldown")
+    skipped = db.all("""SELECT id, title, caption, code, kind, skip_reason, error_code, state, taken_at, updated_at FROM media
+                        WHERE channel_id=? AND state IN ('skipped','failed') ORDER BY updated_at DESC LIMIT 12""", (c["id"],))
+    events = db.all("SELECT id, level, message, at, code FROM events WHERE channel_id=? ORDER BY at DESC LIMIT 15", (c["id"],))
+    srco = None
+    if src:
+        srco = {k: src[k] for k in ("id", "handle", "full_name", "picture", "content_type", "include_old", "daily_cap", "state",
+                                     "last_check", "next_check", "error_code", "total_found", "backfill_done", "started_at")}
+        srco["today"] = src["day_count"] if src["day"] == time.strftime("%Y-%m-%d", time.gmtime()) else 0
+        if src["error_code"]:
+            srco["error"] = _errors.info(src["error_code"], handle=src["handle"])
+    acco = None
+    if acc:
+        acco = {"username": acc["username"], "status": acc["status"], "paused_until": acc["paused_until"], "error_code": acc["error_code"]}
+        if acc["error_code"] and acc["status"] != "ok":
+            g = store.group(c["group_id"])
+            acco["error"] = _errors.info(acc["error_code"], group=g["number"] if g else "?")
+    return {"channel": _channel_out(store.channel(c["id"])), "source": srco, "ig_account": acco,
+            "titles": db.jload(c.get("titles_json"), []), "encore_on": bool(c.get("encore", 1)),
+            "pipeline": {"found": sum(counts.values()), "waiting": counts.get("found", 0), "downloading": counts.get("downloading", 0),
+                         "ready": counts.get("in_drive", 0), "published": counts.get("published", 0),
+                         "skipped": counts.get("skipped", 0) + counts.get("failed", 0), "photos": counts.get("waiting_facebook", 0),
+                         "lanes": lanes},
+            "queue": ready, "slots": slots, "encore": enc, "skipped": skipped, "events": events,
+            "has_inbox": bool(c.get("inbox_id")), "ready_target": igsync._ready_target(c)}
+
+
+@route("GET", "/api/settings/advanced", auth="owner")
+def adv_get(req):
+    return {"public_url_override": db.meta_get("public_url_override") or "", "tunnel_url": db.meta_get("public_url") or ""}
+
+
+@route("POST", "/api/settings/advanced", auth="owner")
+def adv_set(req):
+    url = (req.json.get("public_url_override") or "").strip().rstrip("/")
+    if url and not re.match(r"^https://[A-Za-z0-9.-]+(:\d+)?$", url):
+        raise HttpError(400, "Use a full https:// address, e.g. https://studio.example.com")
+    db.meta_set("public_url_override", url)
+    return adv_get(req)

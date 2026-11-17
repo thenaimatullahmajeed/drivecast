@@ -134,6 +134,53 @@ SCHEMA = [
         SELECT upload_id, MIN(CAST(strftime('%s', day || ' 23:59:59') AS REAL), CAST(strftime('%s','now') AS REAL)), views
         FROM stat_points;
     """,
+    # version 4: Instagram source, media ledger, error codes
+    """
+    CREATE TABLE IF NOT EXISTS ig_accounts (
+        id INTEGER PRIMARY KEY, workspace_id INTEGER NOT NULL REFERENCES workspaces(id),
+        group_id INTEGER NOT NULL UNIQUE REFERENCES ip_groups(id) ON DELETE CASCADE,
+        username TEXT, ig_user_id TEXT, cookies_enc TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'ok', error_code TEXT, error_detail TEXT,
+        checked_at REAL, paused_until REAL, backoff INTEGER NOT NULL DEFAULT 0,
+        day TEXT, day_count INTEGER NOT NULL DEFAULT 0, last_request REAL,
+        created_at REAL NOT NULL, updated_at REAL
+    );
+    CREATE TABLE IF NOT EXISTS sources (
+        id INTEGER PRIMARY KEY, channel_id INTEGER NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+        kind TEXT NOT NULL DEFAULT 'instagram',
+        handle TEXT NOT NULL, ig_user_id TEXT, full_name TEXT, picture TEXT,
+        content_type TEXT NOT NULL DEFAULT 'videos' CHECK (content_type IN ('videos','mix','photos')),
+        include_old INTEGER NOT NULL DEFAULT 1, daily_cap INTEGER NOT NULL DEFAULT 6,
+        state TEXT NOT NULL DEFAULT 'active' CHECK (state IN ('active','paused','removed')),
+        started_at REAL NOT NULL, newest_seen REAL, backfill_cursor TEXT, backfill_done INTEGER NOT NULL DEFAULT 0,
+        last_check REAL, next_check REAL, day TEXT, day_count INTEGER NOT NULL DEFAULT 0,
+        error_code TEXT, error_detail TEXT, total_found INTEGER NOT NULL DEFAULT 0,
+        created_at REAL NOT NULL, updated_at REAL
+    );
+    CREATE INDEX IF NOT EXISTS ix_sources_ch ON sources(channel_id, state);
+    CREATE TABLE IF NOT EXISTS media (
+        id INTEGER PRIMARY KEY, workspace_id INTEGER NOT NULL, channel_id INTEGER NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+        source_id INTEGER, origin TEXT NOT NULL CHECK (origin IN ('instagram','inbox','drive')),
+        ext_id TEXT NOT NULL, code TEXT, kind TEXT NOT NULL DEFAULT 'video' CHECK (kind IN ('video','photo','carousel')),
+        lane TEXT NOT NULL DEFAULT 'backfill' CHECK (lane IN ('fresh','drive','backfill')),
+        taken_at REAL, caption TEXT, title TEXT, ref TEXT UNIQUE,
+        width INTEGER, height INTEGER, duration REAL, has_audio INTEGER,
+        local_path TEXT, local_bytes INTEGER, drive_file_id TEXT,
+        state TEXT NOT NULL DEFAULT 'found' CHECK (state IN ('found','downloading','cleaned','in_drive','published','skipped','failed','waiting_facebook')),
+        skip_reason TEXT, error_code TEXT, attempts INTEGER NOT NULL DEFAULT 0, next_try REAL,
+        published_at REAL, local_deleted_at REAL, created_at REAL NOT NULL, updated_at REAL,
+        UNIQUE (channel_id, origin, ext_id)
+    );
+    CREATE INDEX IF NOT EXISTS ix_media_state ON media(channel_id, state, lane);
+    CREATE INDEX IF NOT EXISTS ix_media_drive ON media(drive_file_id);
+    ALTER TABLE events ADD COLUMN code TEXT;
+    ALTER TABLE events ADD COLUMN detail TEXT;
+    ALTER TABLE channels ADD COLUMN encore INTEGER NOT NULL DEFAULT 1;
+    ALTER TABLE channels ADD COLUMN titles_json TEXT;
+    ALTER TABLE uploads ADD COLUMN media_id INTEGER;
+    ALTER TABLE uploads ADD COLUMN encore_of INTEGER;
+    ALTER TABLE channels ADD COLUMN inbox_id TEXT;
+    """,
 ]
 
 
@@ -203,12 +250,31 @@ def meta_set(key, value):
     run("INSERT OR REPLACE INTO meta(key,value) VALUES(?,?)", (key, value))
 
 
-def event(level, kind, message, workspace_id=None, channel_id=None):
-    """Record something a person may need to see. Never raises."""
+def event(level, kind, message, workspace_id=None, channel_id=None, code=None, detail=None):
+    """Record something a person may need to see. Never raises.
+    Events with a code are de-duplicated: the same open problem updates one row."""
     try:
-        run("INSERT INTO events(workspace_id,channel_id,level,kind,message,at) VALUES(?,?,?,?,?,?)",
-            (workspace_id, channel_id, level, kind, message[:500], time.time()))
+        now = time.time()
+        if code:
+            old = one("""SELECT id FROM events WHERE code=? AND resolved=0 AND IFNULL(workspace_id,0)=IFNULL(?,0)
+                         AND IFNULL(channel_id,0)=IFNULL(?,0) AND at>? ORDER BY at DESC LIMIT 1""",
+                      (code, workspace_id, channel_id, now - 24 * 3600))
+            if old:
+                run("UPDATE events SET message=?, detail=?, at=?, level=? WHERE id=?",
+                    (message[:500], (detail or "")[:2000] or None, now, level, old["id"]))
+                return
+        run("INSERT INTO events(workspace_id,channel_id,level,kind,message,at,code,detail) VALUES(?,?,?,?,?,?,?,?)",
+            (workspace_id, channel_id, level, kind, message[:500], now, code, (detail or "")[:2000] or None))
     except Exception:  # an event must never break the caller
+        pass
+
+
+def resolve(code, workspace_id=None, channel_id=None):
+    """A problem went away by itself (e.g. new cookies passed): close its open events."""
+    try:
+        run("UPDATE events SET resolved=1 WHERE code=? AND resolved=0 AND IFNULL(workspace_id,0)=IFNULL(?,0) AND IFNULL(channel_id,0)=IFNULL(?,0)",
+            (code, workspace_id, channel_id))
+    except Exception:
         pass
 
 

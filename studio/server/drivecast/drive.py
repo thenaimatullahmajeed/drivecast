@@ -3,7 +3,7 @@ from .google import authed
 from .net import Permanent, QuotaExceeded, Transient
 
 API = "https://www.googleapis.com/drive/v3"
-STAGE_FOLDERS = ("Processing", "Done", "Failed")
+STAGE_FOLDERS = ("Processing", "Done", "Failed", "Inbox", "Photos")
 FOLDER = "application/vnd.google-apps.folder"
 
 
@@ -66,14 +66,82 @@ def videos(session, box, folder_id, limit=200):
     """Videos directly inside the folder, oldest first."""
     return _list(session, box,
                  f"'{folder_id}' in parents and trashed=false and mimeType contains 'video/'",
-                 "id,name,size,mimeType,createdTime", order="createdTime", limit=limit)
+                 "id,name,size,mimeType,createdTime,appProperties", order="createdTime", limit=limit)
+
+
+def files(session, box, folder_id, limit=200):
+    """Every non-folder file directly inside a folder (for the client Inbox)."""
+    return _list(session, box, f"'{folder_id}' in parents and trashed=false and mimeType!='{FOLDER}'",
+                 "id,name,size,mimeType,createdTime,ownedByMe", order="createdTime", limit=limit)
+
+
+def get(session, box, file_id):
+    return _check(authed(session, box, "GET", f"{API}/files/{file_id}",
+                         params={"fields": "id,name,size,mimeType,parents,appProperties,trashed", "supportsAllDrives": "true"}), "file")
+
+
+def upload(session, box, path, name, parent_id, mime="video/mp4", app_props=None, on_progress=None, chunk=8 << 20):
+    """Resumable upload. Returns the new file id."""
+    import os
+    meta = {"name": name, "parents": [parent_id]}
+    if app_props:
+        meta["appProperties"] = {k: str(v)[:100] for k, v in app_props.items() if v is not None}
+    size = os.path.getsize(path)
+    r = authed(session, box, "POST", "https://www.googleapis.com/upload/drive/v3/files",
+               params={"uploadType": "resumable", "supportsAllDrives": "true", "fields": "id"},
+               headers={"X-Upload-Content-Type": mime, "X-Upload-Content-Length": str(size)}, json=meta)
+    if r.status_code >= 400:
+        if r.status_code == 403 and "storageQuotaExceeded" in r.text:
+            raise Permanent("Google Drive is full", r.text[:300])
+        _check(r, "upload start")
+    url = r.headers.get("Location")
+    if not url:
+        raise Transient("Google Drive did not start the upload")
+    sent = 0
+    with open(path, "rb") as f:
+        while sent < size:
+            part = f.read(chunk)
+            end = sent + len(part) - 1
+            r = authed(session, box, "PUT", url, data=part,
+                       headers={"Content-Range": f"bytes {sent}-{end}/{size}"}, timeout=(20, 300))
+            if r.status_code in (200, 201):
+                sent = size
+                if on_progress:
+                    on_progress(1.0)
+                return r.json()["id"]
+            if r.status_code == 308:
+                rng = r.headers.get("Range")
+                sent = int(rng.split("-")[1]) + 1 if rng else 0
+                f.seek(sent)
+                if on_progress:
+                    on_progress(sent / size)
+                continue
+            _check(r, "upload")
+    raise Transient("Google Drive upload did not finish")
+
+
+def remove(session, box, file_id, parent_id):
+    """Take a file out of our folder: delete it when we may, else just unlink it from the folder
+    (a file a client uploaded stays owned by the client, in the client's own Drive)."""
+    r = authed(session, box, "DELETE", f"{API}/files/{file_id}", params={"supportsAllDrives": "true"})
+    if r.status_code in (200, 204, 404):
+        return "deleted"
+    r = authed(session, box, "PATCH", f"{API}/files/{file_id}",
+               params={"removeParents": parent_id, "supportsAllDrives": "true", "fields": "id"})
+    _check(r, "unlink")
+    return "unlinked"
+
+
+def find_child(session, box, parent_id, name):
+    safe = name.replace("\\", "\\\\").replace("'", "\\'")
+    hits = _list(session, box, f"'{parent_id}' in parents and name='{safe}' and mimeType='{FOLDER}' and trashed=false", "id,name")
+    return hits[0]["id"] if hits else None
 
 
 def child_folder(session, box, parent_id, name):
-    hits = _list(session, box, f"'{parent_id}' in parents and name='{name}' and mimeType='{FOLDER}' and trashed=false",
-                 "id,name")
-    if hits:
-        return hits[0]["id"]
+    found = find_child(session, box, parent_id, name)
+    if found:
+        return found
     r = authed(session, box, "POST", API + "/files", params={"supportsAllDrives": "true"},
                json={"name": name, "mimeType": FOLDER, "parents": [parent_id]})
     return _check(r, "folder create")["id"]

@@ -16,7 +16,7 @@ function checks() {
 
 async function draw() {
   if (document.activeElement && document.activeElement.tagName === 'INPUT') return; // don't wipe what is being typed
-  if (['tlog', 'fpw', 'fresh'].some(id => { const d = document.getElementById(id); return d && d.open; })) return;
+  if (['tlog', 'fpw', 'fresh', 'dguide'].some(id => { const d = document.getElementById(id); return d && d.open; })) return;
   const c = checks(), s = await status();
   const items = c.items || [];
   const done = items.filter(i => i.ok).length;
@@ -41,11 +41,27 @@ async function draw() {
     <p style="font-size:13px;margin:10px 0">State: <b>${esc(t.state || '—')}</b>${urlNow ? ' · ' + esc(urlNow) : ''}${t.error ? '<br><span style="color:#FF9B85">' + esc(t.error) + '</span>' : ''}</p>
     <button class="btn sm" data-copylog="1">Copy details</button>
     <pre style="white-space:pre-wrap;word-break:break-all;font-size:10px;line-height:1.4;max-height:320px;overflow:auto;background:#0B0E12;padding:10px;border-radius:10px;margin-top:10px">${esc(B && B.tunnelLog ? B.tunnelLog() : '')}</pre></details>`;
+  let m = {};
+  try { m = B && B.modes ? JSON.parse(B.modes()) : {}; } catch (e) { m = {}; }
+  const modeCard = `<div class="card"><div class="kick">Phone modes</div>
+    <div class="row"><span class="mark ${m.quiet ? 'ok' : 'manual'}">${m.quiet ? '✓' : ''}</span><div class="t"><b>Quiet mode</b><span>${m.quiet ? 'Total silence — no notification or sound interrupts.' : 'Silences every notification and sound on this phone. No laptop needed.'}</span></div>
+      <button class="btn sm" data-act="quiet" data-on="${m.quiet ? 0 : 1}">${m.quiet ? 'Turn off' : m.quiet_access ? 'Turn on' : 'Allow + turn on'}</button></div>
+    <div class="row"><span class="mark ${m.dedicated && m.dedicated_applied ? 'ok' : 'manual'}">${m.dedicated && m.dedicated_applied ? '✓' : ''}</span><div class="t"><b>Dedicated phone mode</b><span>${m.dedicated ? (m.dedicated_applied ? `On · ${m.paused_apps || 0} other app(s) paused · stays awake on charger · updates only at night` : 'Ready — tap Apply to take over this phone.') : 'DriveCast controls the whole phone: other apps paused, permissions given, no lock screen, night-only updates. One-time setup.'}</span></div>
+      ${m.dedicated ? (m.dedicated_applied ? '<button class="btn sm" data-act="ded" data-on="0">Turn off</button>' : '<button class="btn sm" style="background:#E8492A;color:#0E1116;border-color:#E8492A" data-act="ded" data-on="1">Apply</button>') : ''}</div>
+    ${m.dedicated ? '' : `<details id="dguide" style="margin-top:6px"><summary class="muted" style="font-size:13px">How to switch on Dedicated mode (one time)</summary>
+      <ol style="font-size:13px;line-height:1.6;padding-left:18px;margin:10px 0" class="muted">
+        <li><b style="color:#fff">Factory reset</b> this phone. During setup <b style="color:#fff">do not add a Google account</b> (skip it).</li>
+        <li>Install DriveCast Server and open it once.</li>
+        <li>Settings → About phone → tap <b style="color:#fff">Build number</b> 7 times → Developer options → <b style="color:#fff">USB debugging</b> on.</li>
+        <li>Connect to a Windows PC with USB, allow the prompt, and run <b style="color:#fff">dedicated-mode.bat</b> (download it from the web panel → Server). Or run this command:</li></ol>
+      <div class="mono" style="font-size:11px;background:#0B0E12;padding:10px;border-radius:10px;word-break:break-all">${esc(m.command || '')}</div>
+      <div style="display:flex;gap:8px;margin-top:8px"><button class="btn sm" data-copy="${esc(m.command || '')}">Copy command</button></div>
+      <p class="muted" style="font-size:12px;margin:10px 0 0">Then come back here and tap Apply. You can turn it off any time from this screen. The server works without this mode too.</p></details>`}</div>`;
   document.getElementById('root').innerHTML = `
     <div class="top">${LOGO}<b>DriveCast Server</b>${chip}</div>
-    ${!ready ? `<div><h1>Get this phone ready</h1><p class="muted" style="margin:8px 0 10px">${done} of ${items.length} done. Each one is checked for you.</p><div class="bar"><span style="width:${items.length ? Math.round(100 * done / items.length) : 0}%"></span></div></div>
-      <div class="card">${rows}</div>` : `<div class="eq">${eq}</div><h1>${running ? 'Running in the background.' : 'Server is stopped.'}</h1>
-      <p class="muted" style="margin:0">${running ? 'Everything is managed from your browser. Keep the phone on Wi-Fi and the charger.' : 'Uploads are paused. Start again and it resumes safely — nothing is posted twice.'}</p>`}
+    <div class="eq">${eq}</div><h1>${running ? 'Running in the background.' : 'Server is stopped.'}</h1>
+      <p class="muted" style="margin:0">${running ? 'Everything is managed from your browser. Keep the phone on Wi-Fi and the charger.' : 'Uploads are paused. Start again and it resumes safely — nothing is posted twice.'}</p>
+    ${!ready ? `<div class="card"><div class="kick">Recommended for 24/7 · ${done} of ${items.length}</div><p class="muted" style="font-size:12px;margin:6px 0 4px">Optional — the server already runs. Each item is checked for you; some phones don’t have every setting.</p><div class="bar" style="margin:8px 0 4px"><span style="width:${items.length ? Math.round(100 * done / items.length) : 0}%"></span></div>${rows}</div>` : ''}
     ${setupCode}
     ${url ? `<div class="card"><div class="kick">Open on your laptop</div><div class="mono" style="font-size:15px;margin:8px 0;word-break:break-all">${esc(url)}</div><div style="display:flex;gap:8px"><button class="btn sm" data-copy="${esc(url)}">Copy link</button><button class="btn sm" data-open="${esc(url)}">Open</button></div></div>` : tunnelForm}
     ${s ? `<div class="grid"><div class="stat"><span>Accounts</span><b>${s.accounts}</b></div><div class="stat"><span>Live channels</span><b>${s.channels_live}</b></div><div class="stat"><span>Posted 24h</span><b>${s.published_today}</b></div></div>` : '<p class="muted">Server is starting…</p>'}
@@ -56,6 +72,7 @@ async function draw() {
       <p class="muted" style="font-size:13px;margin:10px 0">Set a new password for <b>${esc(s.owner_email || '')}</b>. This only works on this phone.</p>
       <label>New password (8+ characters)<input id="npw" type="password" autocomplete="new-password"></label>
       <button class="btn coral wide" style="margin-top:10px" data-act="resetpw">Set new password</button><p id="pwmsg" style="font-size:13px;margin:8px 0 0"></p></details>` : ''}
+    ${modeCard}
     ${logBox}
     <details class="card" id="fresh"><summary class="muted" style="font-size:13px">Erase and start fresh</summary>
       <p class="muted" style="font-size:13px;margin:10px 0">Removes every account, channel, proxy, setting and this phone’s public link. Videos on YouTube and files in Drive stay. Use this to hand the phone to someone else or set it up from zero.</p>
@@ -89,6 +106,14 @@ document.addEventListener('click', e => {
     B.setTunnel(k, h); el.textContent = 'Connecting…'; setTimeout(draw, 4000);
   } else if (el.dataset.act === 'stop') { if (confirm('Stop the server? Posting pauses until you start it again.')) B.stop(); }
   else if (el.dataset.act === 'start') B.start();
+  else if (el.dataset.act === 'quiet') { B.quiet(el.dataset.on === '1'); setTimeout(draw, 600); }
+  else if (el.dataset.act === 'ded') {
+    if (el.dataset.on === '1' && !confirm('Take over this phone? Other apps will be paused and the lock screen removed. You can turn it off here any time.')) return;
+    if (el.dataset.on === '0' && !confirm('Turn off Dedicated mode? Paused apps come back and DriveCast stops being the phone owner.')) return;
+    el.textContent = 'Working…';
+    let r = {}; try { r = JSON.parse(B.dedicated(el.dataset.on === '1')); } catch (e) { r = { ok: false, error: String(e) }; }
+    if (!r.ok) alert(r.error || 'Could not change the mode'); draw();
+  }
 });
 function alertBox(m) { const p = document.createElement('p'); p.style.color = '#FF9B85'; p.textContent = m; document.getElementById('root').appendChild(p); }
 document.addEventListener('visibilitychange', () => { if (!document.hidden) draw(); });

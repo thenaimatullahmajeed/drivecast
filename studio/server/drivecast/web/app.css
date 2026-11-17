@@ -263,3 +263,22 @@ input.i:focus,select.i:focus{outline:2px solid var(--ink);outline-offset:1px}
   .heat{min-width:560px}
   .chrow{grid-template-columns:1fr}
 }
+
+/* ---------- v1.1: client page, source editor ---------- */
+.stgs{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:8px;margin-top:12px}
+.stg{background:#1C222C;border:1px solid #2A313C;border-radius:12px;padding:11px 12px;display:flex;flex-direction:column;gap:4px;min-width:0}
+.stg span{font-size:11px;color:#A9AFBA}
+.stg strong{font-family:var(--disp);font-size:24px;line-height:1;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+.stg em{font-style:normal;font-size:11px;color:#8E94A0}
+.qrow{display:grid;grid-template-columns:78px 78px minmax(0,1fr) 110px;gap:12px;align-items:center;padding:9px 0;border-top:1px solid var(--line)}
+.erow{display:grid;grid-template-columns:20px minmax(0,1fr) auto;gap:10px;align-items:center;padding:8px 0;border-top:1px solid var(--line)}
+.tgl{display:flex;align-items:center;gap:12px;padding:12px 14px;border:1px solid var(--line);border-radius:12px;background:#fff;cursor:pointer;font:inherit;color:inherit;width:100%}
+.hd .tgl{padding:4px 10px 4px 4px;border-radius:99px;width:auto}
+.tgl .sw{width:38px;height:22px;border-radius:99px;background:#C9C6BD;display:inline-flex;align-items:center;padding:2px;box-sizing:border-box;flex-shrink:0;transition:background .15s}
+.tgl .sw i{width:18px;height:18px;border-radius:99px;background:#fff;transition:transform .15s}
+.tgl.on .sw{background:var(--ok)}
+.tgl.on .sw i{transform:translateX(16px)}
+.igbox{border:1px dashed var(--line);border-radius:12px;padding:12px;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+@media (max-width:1100px){.stgs{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media (max-width:760px){.stgs{grid-template-columns:repeat(2,minmax(0,1fr))}.qrow{grid-template-columns:64px 1fr;}.qrow>*:nth-child(3){grid-column:span 2}.kp[style]{grid-template-columns:repeat(2,minmax(0,1fr))!important}}
+.linkbtn{background:none;border:0;padding:0;color:var(--muted);text-decoration:underline;cursor:pointer;font:inherit}

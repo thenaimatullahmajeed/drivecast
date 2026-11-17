@@ -111,6 +111,7 @@ class TimePlanTests(unittest.TestCase):
 
 class WorkerTests(unittest.TestCase):
     def setUp(self):
+        worker.CLEAN_BEFORE_PUBLISH = False  # fake files are not real videos
         self.dir = fresh_db()
         self.ws, self.g, self.ch = make_world()
 

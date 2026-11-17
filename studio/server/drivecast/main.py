@@ -6,7 +6,7 @@ import logging.handlers
 import os
 import threading
 
-from . import config, db, maintenance, scheduler, security, supervisor, web, worker
+from . import config, db, igsync, maintenance, scheduler, security, supervisor, web, worker
 
 _httpd = None
 
@@ -20,6 +20,15 @@ def start(data_dir, host="127.0.0.1", port=8765, block=False, workers=2):
     os.makedirs(tmp, exist_ok=True)
     config.DATA_DIR, config.TMP_DIR = data_dir, tmp
     worker.TMP_DIR = tmp
+    # the Android app passes the shared phone folder and the bundled ffmpeg; on a computer both have defaults
+    config.MEDIA_DIR = os.environ.get("DC_MEDIA_DIR") or os.path.join(data_dir, "media")
+    config.FFMPEG = os.environ.get("DC_FFMPEG") or None
+    try:
+        os.makedirs(config.MEDIA_DIR, exist_ok=True)
+        open(os.path.join(config.MEDIA_DIR, ".nomedia"), "a").close()
+    except OSError:  # no storage permission yet: fall back to the app's private folder
+        config.MEDIA_DIR = os.path.join(data_dir, "media")
+        os.makedirs(config.MEDIA_DIR, exist_ok=True)
 
     handler = logging.handlers.RotatingFileHandler(os.path.join(data_dir, "logs", "drivecast.log"),
                                                    maxBytes=2_000_000, backupCount=3)
@@ -47,6 +56,8 @@ def start(data_dir, host="127.0.0.1", port=8765, block=False, workers=2):
         ("proxies", maintenance.check_groups, 300),
         ("stats", maintenance.sync_stats, 5 * 60),
         ("cleanup", lambda: maintenance.cleanup(tmp), 6 * 3600),
+        ("instagram", igsync.tick, 60),
+        ("inbox", igsync.inbox_pass, 120),
     ], workers=workers)
 
     _httpd = web.serve(host, port)
