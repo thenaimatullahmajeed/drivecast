@@ -6,7 +6,7 @@ import logging.handlers
 import os
 import threading
 
-from . import config, db, igsync, maintenance, scheduler, security, supervisor, web, worker
+from . import backup, config, db, igsync, maintenance, scheduler, security, supervisor, web, worker
 
 _httpd = None
 
@@ -38,6 +38,8 @@ def start(data_dir, host="127.0.0.1", port=8765, block=False, workers=2):
     if not root.handlers:
         root.addHandler(handler)
 
+    if backup.apply_staged(data_dir):
+        logging.getLogger("drivecast").warning("restored a backup before start")
     security.load_key(os.path.join(data_dir, "master.key"))
     db.init(os.path.join(data_dir, "drivecast.db"))
     tok_path = os.path.join(data_dir, "local.token")
@@ -58,6 +60,7 @@ def start(data_dir, host="127.0.0.1", port=8765, block=False, workers=2):
         ("cleanup", lambda: maintenance.cleanup(tmp), 6 * 3600),
         ("instagram", igsync.tick, 60),
         ("inbox", igsync.inbox_pass, 120),
+        ("backup", backup.service, 3600),
     ], workers=workers)
 
     _httpd = web.serve(host, port)

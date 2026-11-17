@@ -17,6 +17,11 @@ STARTED = time.time()
 _login_fail = {}
 
 
+class FileOut:
+    def __init__(self, data, name, ctype="application/octet-stream"):
+        self.data, self.name, self.ctype = data, name, ctype
+
+
 class HttpError(Exception):
     def __init__(self, status, message):
         super().__init__(message)
@@ -680,7 +685,8 @@ def schedule(req):
 @route("GET", "/api/videos")
 def videos(req):
     lim = min(500, int(req.query.get("limit", 100)))
-    rows = db.all("""SELECT u.*, c.title channel_title FROM uploads u JOIN channels c ON c.id=u.channel_id
+    rows = db.all("""SELECT u.*, c.title channel_title, g.number group_number, g.outgoing_ip group_ip FROM uploads u
+                     JOIN channels c ON c.id=u.channel_id LEFT JOIN ip_groups g ON g.id=c.group_id
                      WHERE u.workspace_id=? ORDER BY u.reserved_at DESC LIMIT ?""", (req.ws, lim))
     return {"videos": rows}
 
@@ -938,9 +944,14 @@ def _ig_error(e, **ctx):
 def set_ig_account(req, gid):
     g = _own_group(req, gid)
     text = req.json.get("cookies") or ""
+    # the browser the cookies came from: Instagram keeps seeing that same browser
+    ua = (req.json.get("user_agent") or req.headers.get("User-Agent") or "")[:300] or None
+    if ua and ("Mobile" in ua and "Instagram" in ua):
+        ua = None
+    lang = igsync.lang_for(g)
     try:
         cookies = _ig.parse_cookies(text)
-        who = _ig.Client(session_for(g), cookies, min_gap=(0, 0)).whoami()
+        who = _ig.Client(session_for(g), cookies, min_gap=(0, 0), user_agent=ua, language=lang).whoami()
     except Exception as e:
         raise _ig_error(e, group=g["number"])
     sealed = security.seal(text.strip())
@@ -948,11 +959,12 @@ def set_ig_account(req, gid):
     old = db.one("SELECT id FROM ig_accounts WHERE group_id=?", (g["id"],))
     if old:
         db.run("""UPDATE ig_accounts SET cookies_enc=?, username=?, ig_user_id=?, status='ok', error_code=NULL, error_detail=NULL,
-                  paused_until=NULL, backoff=0, checked_at=?, updated_at=? WHERE id=?""", (sealed, who["username"], who["id"], now, now, old["id"]))
+                  paused_until=NULL, backoff=0, checked_at=?, updated_at=?, user_agent=?, language=? WHERE id=?""",
+               (sealed, who["username"], who["id"], now, now, ua, lang, old["id"]))
         igsync.forget_client(old["id"])
     else:
-        db.run("""INSERT INTO ig_accounts(workspace_id,group_id,username,ig_user_id,cookies_enc,checked_at,created_at,updated_at)
-                  VALUES(?,?,?,?,?,?,?,?)""", (req.ws, g["id"], who["username"], who["id"], sealed, now, now, now))
+        db.run("""INSERT INTO ig_accounts(workspace_id,group_id,username,ig_user_id,cookies_enc,checked_at,created_at,updated_at,user_agent,language)
+                  VALUES(?,?,?,?,?,?,?,?,?,?)""", (req.ws, g["id"], who["username"], who["id"], sealed, now, now, now, ua, lang))
     for code in ("IG_COOKIES_EXPIRED", "IG_CHALLENGE", "IG_NO_ACCOUNT", "IG_FEEDBACK"):
         db.resolve(code, req.ws)
     db.run("UPDATE sources SET next_check=MIN(IFNULL(next_check,0),?) WHERE channel_id IN (SELECT id FROM channels WHERE group_id=?)",
@@ -1173,3 +1185,130 @@ def adv_set(req):
         raise HttpError(400, "Use a full https:// address, e.g. https://studio.example.com")
     db.meta_set("public_url_override", url)
     return adv_get(req)
+
+
+# ---------------------------------------------------------------- backup / restore / pause everything
+from . import backup as _backup  # noqa: E402
+
+
+@route("GET", "/api/backup", auth="owner")
+def backup_status(req):
+    return {"has_password": bool(db.meta_get("backup_password")), "last_at": float(db.meta_get("backup_at") or 0) or None,
+            "last_name": db.meta_get("backup_name"), "error": db.meta_get("backup_error") or None, "summary": _backup.summary()}
+
+
+@route("POST", "/api/backup/password", auth="owner")
+def backup_password(req):
+    pw = req.json.get("password") or ""
+    if len(pw) < 8:
+        raise HttpError(400, "Use at least 8 characters. Write it down — without it a backup cannot be opened.")
+    db.meta_set("backup_password", security.seal(pw))
+    _bg(lambda: _backup.to_drive(force=True))
+    return backup_status(req)
+
+
+def _bg(fn):
+    import threading
+
+    def run():
+        try:
+            fn()
+        except Exception as e:
+            db.meta_set("backup_error", str(e)[:300])
+    threading.Thread(target=run, daemon=True).start()
+
+
+@route("POST", "/api/backup/now", auth="owner")
+def backup_now(req):
+    if not db.meta_get("backup_password"):
+        raise HttpError(400, "Set a backup password first")
+    _bg(lambda: _backup.to_drive(force=True))
+    return {"ok": True}
+
+
+@route("POST", "/api/backup/export", auth="owner")
+def backup_export(req):
+    pw = req.json.get("password") or _backup.password_get()
+    try:
+        blob = _backup.create(pw)
+    except ValueError as e:
+        raise HttpError(400, str(e))
+    return FileOut(blob, time.strftime("DriveCast-backup-%Y-%m-%d-%H%M.dcbackup"))
+
+
+@route("POST", "/api/restore", auth=None)
+def restore(req):
+    """Fresh phone: the setup code from the phone proves you hold it. Existing server: only the owner."""
+    import base64
+    import os
+    import threading
+    b = req.json
+    has_owner = bool(db.one("SELECT 1 FROM users WHERE role='owner'"))
+    from . import web as _web
+    if has_owner:
+        tok = None
+        from http.cookies import SimpleCookie
+        c = SimpleCookie(req.headers.get("Cookie") or "")
+        if _web.COOKIE in c:
+            tok = c[_web.COOKIE].value
+        row = tok and db.one("""SELECT u.role FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND s.expires_at>?""",
+                             (security.token_hash(tok), time.time()))
+        if not row or row["role"] != "owner":
+            raise HttpError(403, "This server already has an owner. Sign in as the owner to restore.")
+    elif (b.get("setup_code") or "").strip().upper() != (db.meta_get("setup_code") or "").upper():
+        raise HttpError(403, "Setup code is wrong. It is shown in the phone app.")
+    if db.one("SELECT 1 FROM jobs WHERE status='running'"):
+        raise HttpError(409, "A post is uploading right now. Try again in a few minutes.")
+    try:
+        if b.get("link"):
+            blob = _backup.fetch_link(b["link"].strip())
+        else:
+            blob = base64.b64decode(b.get("file_b64") or "")
+        summ, created = _backup.stage(blob, b.get("password") or "")
+    except ValueError as e:
+        raise HttpError(400, str(e))
+    except Exception as e:
+        raise HttpError(400, f"Could not read the backup: {e}")
+
+    def restart():
+        time.sleep(1.5)
+        os._exit(3)  # Android restarts the server service; it opens the restored data
+    threading.Thread(target=restart, daemon=True).start()
+    return {"ok": True, "summary": summ, "created": created, "restarting": True}
+
+
+def _ws_pause_view(ws_id):
+    ws = store.workspace(ws_id)
+    until = ws.get("paused_until")
+    return {"paused": bool(until and until > time.time()), "until": until, "forever": bool(until and until >= 9e9),
+            "keep_collecting": bool(ws.get("pause_collect", 1)), "since": ws.get("paused_at")}
+
+
+@route("GET", "/api/pause")
+def pause_get(req):
+    return _ws_pause_view(req.ws)
+
+
+@route("POST", "/api/pause")
+def pause_set(req):
+    """Pause everything in this workspace (vacation). Resumes by itself at 'until', or when you press Resume."""
+    b = req.json
+    now = time.time()
+    if b.get("resume"):
+        db.run("UPDATE workspaces SET paused_until=NULL, paused_at=NULL WHERE id=?", (req.ws,))
+        for c in db.all("SELECT * FROM channels WHERE workspace_id=? AND state='live'", (req.ws,)):
+            db.run("UPDATE slots SET status='planned', note=NULL WHERE channel_id=? AND status='held' AND note LIKE 'Paused%' AND window_end>?",
+                   (c["id"], now))
+            scheduler.ensure_slots(store.channel(c["id"]))
+        db.event("info", "pause", "Posting resumed.", req.ws)
+        return _ws_pause_view(req.ws)
+    until = b.get("until")
+    until = 9.9e9 if not until else float(until)
+    if until <= now + 60:
+        raise HttpError(400, "Choose a time in the future")
+    db.run("UPDATE workspaces SET paused_until=?, paused_at=?, pause_collect=? WHERE id=?",
+           (until, now, 1 if b.get("keep_collecting", True) else 0, req.ws))
+    db.run("""UPDATE slots SET status='held', note='Paused — everything is on hold' WHERE status='planned' AND due_at<?
+              AND channel_id IN (SELECT id FROM channels WHERE workspace_id=?)""", (until, req.ws))
+    db.event("info", "pause", "All posting paused" + ("" if until >= 9e9 else f" until {time.strftime('%d %b %H:%M UTC', time.gmtime(until))}") + ".", req.ws)
+    return _ws_pause_view(req.ws)

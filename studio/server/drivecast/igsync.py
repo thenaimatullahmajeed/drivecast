@@ -86,9 +86,17 @@ def client_for(acc, group):
     if cached and cached[0] == acc["cookies_enc"]:
         return cached[1]
     cookies = ig.parse_cookies(security.unseal(acc["cookies_enc"]))
-    c = ig.Client(session_for(group), cookies)
+    c = ig.Client(session_for(group), cookies, user_agent=acc.get("user_agent"), language=acc.get("language") or lang_for(group))
     _clients[acc["id"]] = (acc["cookies_enc"], c)
     return c
+
+
+LANGS = {"US": "en-US,en;q=0.9", "GB": "en-GB,en;q=0.9", "CA": "en-CA,en;q=0.9,fr-CA;q=0.6", "AU": "en-AU,en;q=0.9",
+         "DE": "de-DE,de;q=0.9,en;q=0.7", "FR": "fr-FR,fr;q=0.9,en;q=0.7", "PK": "en-PK,en;q=0.9,ur;q=0.7", "AE": "en-AE,en;q=0.9,ar;q=0.6"}
+
+
+def lang_for(group):
+    return LANGS.get((group or {}).get("country") or "", "en-US,en;q=0.9")
 
 
 def forget_client(acc_id):
@@ -320,7 +328,9 @@ def account_pass(acc, now=None):
     if acc["day_count"] >= ACCOUNT_DAILY:
         return "daily_cap"
     sources = db.all("""SELECT s.*, c.id cid FROM sources s JOIN channels c ON c.id=s.channel_id
-                        WHERE s.state='active' AND c.group_id=? AND c.state!='setup'""", (g["id"],))
+                        JOIN workspaces w ON w.id=c.workspace_id
+                        WHERE s.state='active' AND c.group_id=? AND c.state!='setup'
+                          AND NOT (IFNULL(w.paused_until,0)>? AND w.pause_collect=0)""", (g["id"], now))
     if not sources:
         return "idle"
     try:

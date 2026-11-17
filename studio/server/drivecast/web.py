@@ -108,7 +108,7 @@ class Handler(BaseHTTPRequestHandler):
         query = {k: v[0] for k, v in parse_qs(u.query).items()}
         try:
             n = int(self.headers.get("Content-Length") or 0)
-            if n > MAX_BODY:
+            if n > (80 * 1024 * 1024 if path == "/api/restore" else MAX_BODY):
                 return self._send(413, {"error": "Request too large"})
             body = self.rfile.read(n) if n else b""
             req = Req(self, path, query, body)
@@ -134,6 +134,9 @@ class Handler(BaseHTTPRequestHandler):
                         and self.headers.get("X-DC") != "1":
                     raise api.HttpError(403, "Missing request header")
                 out = fn(req, *m.groups())
+                if isinstance(out, api.FileOut):
+                    return self._send(200, out.data, out.ctype, {"Content-Disposition": f'attachment; filename="{out.name}"',
+                                                                  "Cache-Control": "no-store"}, head, req)
                 if isinstance(out, tuple):
                     status, payload = out
                     if isinstance(payload, dict) and "Location" in payload and status in (301, 302):

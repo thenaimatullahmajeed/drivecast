@@ -191,6 +191,7 @@ function mount(active, title, sub, kick, actions, content) {
     <nav class="mnav" aria-label="Main">${MTABS.map(([i, l, r]) => `<a href="#/${r}" class="${r === active ? 'on' : ''}">${ic(i, 20)}${l}</a>`).join('')}<button data-act="msheet" class="${inTabs ? '' : 'on'}">${ic('more', 20)}More</button></nav>
     <div class="sheet" id="sheet"><div><span class="kicker" style="color:var(--muted);padding:6px 10px">More</span>${sheet}<button data-act="logout">${ic('logout', 20)}Sign out · ${esc(S.user.name)}</button></div></div></div>`;
   showDevice();
+  showPause();
 }
 async function loadDevice(force) {
   if (S.user.role !== 'owner') return null;
@@ -262,7 +263,14 @@ function authPage(mode) {
   const eq = Array.from({ length: 18 }, (_, i) => `<span style="height:${[40, 86, 58, 120, 72, 150, 96, 64, 132, 48, 104, 80, 56, 140, 90, 62, 118, 70][i]}px"></span>`).join('');
   const field = (n, l, t = 'text', ph = '', extra = '') => `<label class="f">${l}<input class="i" name="${n}" type="${t}" placeholder="${esc(ph)}" ${extra}></label>`;
   let form;
-  if (mode === 'setup') form = `<div><h2 style="font-size:28px">Set up this server</h2><p class="muted">Create the owner account. The setup code is shown in the phone app.</p></div>
+  if (mode === 'restore') form = `<div class="tabs"><button type="button" data-act="tab-setup">New server</button><button type="button" class="on">Restore a backup</button></div>
+    <div><h2 style="font-size:28px">Restore from a backup</h2><p class="muted">Brings back every account, channel, proxy, Instagram cookie and Google sign-in. Needs the setup code from the phone and your backup password.</p></div>
+    ${field('setup_code', 'Setup code (on the phone)', 'text', 'SETUP-XXXX-XXXX', 'required autocomplete="off"')}
+    <label class="f">Backup file (.dcbackup)<input class="i" type="file" id="bkfile" accept=".dcbackup" style="padding-top:9px"></label>
+    ${field('link', 'Or a Google Drive link to it (shared as “Anyone with the link”)', 'url', 'https://drive.google.com/file/d/…')}
+    ${field('password', 'Backup password', 'password', '', 'required autocomplete="off"')}
+    <div id="rsmsg"></div><button class="btn primary big" type="submit">Restore</button>`;
+  else if (mode === 'setup') form = `<div class="tabs"><button type="button" class="on">New server</button><button type="button" data-act="tab-restore">Restore a backup</button></div><div><h2 style="font-size:28px">Set up this server</h2><p class="muted">Create the owner account. The setup code is shown in the phone app.</p></div>
     ${field('setup_code', 'Setup code', 'text', 'SETUP-XXXX-XXXX', 'required autocomplete="off"')}${field('name', 'Your name', 'text', '', 'required')}${field('email', 'Email', 'email', '', 'required autocomplete="email"')}${field('password', 'Password (8+ characters)', 'password', '', 'required minlength="8" autocomplete="new-password"')}
     <button class="btn primary big" type="submit">Create owner account</button>`;
   else form = `<div class="tabs"><button type="button" class="${mode === 'login' ? 'on' : ''}" data-act="tab-login">Sign in</button><button type="button" class="${mode === 'register' ? 'on' : ''}" data-act="tab-register">Create account</button></div>
@@ -280,13 +288,106 @@ function authPage(mode) {
     <section class="side"><form data-form="auth" autocomplete="on">${form}</form></section></div>`;
   S.acts['tab-login'] = () => { history.replaceState(null, '', '#/login'); authPage('login'); };
   S.acts['tab-register'] = () => { history.replaceState(null, '', '#/register'); authPage('register'); };
+  S.acts['tab-restore'] = () => authPage('restore');
+  S.acts['tab-setup'] = () => authPage('setup');
   S.acts.auth = async v => {
+    if (mode === 'restore') return doRestore(v, $('#rsmsg'));
     v.timezone = browserTz();
     const path = mode === 'setup' ? '/api/setup' : mode === 'register' ? '/api/register' : '/api/login';
     const r = await api('POST', path, v);
     S.user = r.user; S.tz = r.user.timezone; S.session = { user: r.user };
     location.hash = mode === 'login' ? '#/dashboard' : '#/settings';
     render();
+  };
+}
+
+function readFileB64(input) {
+  return new Promise((ok, bad) => {
+    const f = input && input.files && input.files[0];
+    if (!f) return ok(null);
+    const r = new FileReader(); r.onload = () => ok(String(r.result).split(',')[1]); r.onerror = () => bad(new Error('Could not read the file')); r.readAsDataURL(f);
+  });
+}
+async function doRestore(v, out) {
+  const file_b64 = await readFileB64($('#bkfile'));
+  if (!file_b64 && !v.link) throw new Error('Choose the backup file or paste its link');
+  out.innerHTML = '<div class="note info"><span class="spinner"></span><span>Checking the backup…</span></div>';
+  const r = await api('POST', '/api/restore', { setup_code: v.setup_code, password: v.password, link: v.link || null, file_b64 });
+  const sm = r.summary || {};
+  out.innerHTML = `<div class="note ok">${ic('check', 16)}<span><b>Backup accepted</b> — ${sm.accounts || 0} account(s), ${sm.channels || 0} channel(s), ${sm.groups || 0} IP group(s), ${sm.posts || 0} post(s). The server is restarting with it…</span></div>`;
+  for (let i = 0; i < 90; i++) {
+    await new Promise(z => setTimeout(z, 2000));
+    try { const h = await fetch('/healthz', { cache: 'no-store' }); if (h.ok && i > 1) { S.session = null; S.user = null; location.hash = '#/login'; return render(); } } catch (e) { /* restarting */ }
+  }
+  out.innerHTML += '<div class="note warn"><span>Still restarting. Open the DriveCast app on the phone once — it starts the server — then sign in here.</span></div>';
+}
+
+// ------------------------------------------------------------------ backup & restore (Server page)
+async function drawBackup() {
+  const box = document.getElementById('bkcard'); if (!box) return;
+  const b = await api('GET', '/api/backup');
+  const sm = b.summary || {};
+  box.innerHTML = `<section class="card">${hd('Backup & restore', 'Everything on this server in one encrypted file: accounts, channels, proxies, Instagram cookies, Google sign-ins and the full post history.', b.has_password ? chip('Nightly backup on', 'ok') : chip('Not protected yet', 'bad'))}
+    <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(280px,1fr));margin:0">
+      <div style="display:flex;flex-direction:column;gap:10px;padding:14px;border:1px solid var(--line);border-radius:12px">
+        <b style="font-size:14px">1 · Automatic backup to your Drive</b>
+        <span class="muted" style="font-size:12.5px">${b.has_password ? `Every night into “_DriveCast backups” in your main Drive folder · last 7 kept.<br>${b.last_at ? `Last: <b>${esc(rel(b.last_at))}</b> · ${esc(b.last_name || '')}` : 'First backup is being made…'}` : 'Choose a backup password. Write it down — without it no one (not even you) can open a backup.'}</span>
+        ${b.error ? `<div class="note warn">${ic('alert', 14)}<span>${esc(b.error)}</span></div>` : ''}
+        <form data-form="bkpw" class="actions"><input class="i" type="password" name="password" placeholder="${b.has_password ? 'Change backup password' : 'Backup password (8+)'}" autocomplete="new-password" style="flex:1;min-width:160px" aria-label="Backup password"><button class="btn primary" type="submit">${b.has_password ? 'Change' : 'Turn on'}</button></form>
+        ${b.has_password ? `<button class="btn" data-act="bknow">${ic('refresh', 16)}Back up to Drive now</button>` : ''}
+      </div>
+      <div style="display:flex;flex-direction:column;gap:10px;padding:14px;border:1px solid var(--line);border-radius:12px">
+        <b style="font-size:14px">2 · Download a backup file</b>
+        <span class="muted" style="font-size:12.5px">Keep a copy on your laptop too. Now: ${sm.accounts || 0} account(s), ${sm.channels || 0} channel(s), ${sm.groups || 0} group(s), ${sm.posts || 0} post(s).</span>
+        <form data-form="bkdl" class="actions">${b.has_password ? '' : '<input class="i" type="password" name="password" placeholder="Password for this file (8+)" style="flex:1;min-width:160px" aria-label="Password for this file">'}<button class="btn" type="submit">${ic('down', 16)}Download .dcbackup</button></form>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:10px;padding:14px;border:1px solid var(--line);border-radius:12px">
+        <b style="font-size:14px">3 · Restore</b>
+        <span class="muted" style="font-size:12.5px">New or reset phone? Install the app, open the panel and choose <b>Restore a backup</b> on the first screen. Here it replaces everything on this server.</span>
+        <button class="btn danger" data-act="bkrestore">Restore a backup here…</button>
+      </div></div></section>`;
+  Object.assign(S.acts, {
+    bkpw: async v => { await api('POST', '/api/backup/password', v); toast('Backup password saved · first backup is being made'); setTimeout(drawBackup, 4000); drawBackup(); },
+    bknow: async () => { await api('POST', '/api/backup/now'); toast('Backing up to Drive…'); setTimeout(drawBackup, 6000); },
+    bkdl: async v => {
+      const r = await fetch('/api/backup/export', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-DC': '1' }, body: JSON.stringify(v.password ? { password: v.password } : {}) });
+      if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.error || 'Download failed'); }
+      const blob = await r.blob(); const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob); a.download = (r.headers.get('Content-Disposition') || '').split('filename="')[1]?.replace('"', '') || 'DriveCast.dcbackup'; a.click();
+      toast('Backup downloaded');
+    },
+    bkrestore: () => {
+      modal(`<h2>Restore a backup</h2><div class="note bad">${ic('alert', 16)}<span>Everything on this server is replaced by the backup. The current data is kept aside on the phone, not deleted.</span></div>
+        <form data-form="bkrs" style="display:flex;flex-direction:column;gap:12px"><label class="f">Backup file (.dcbackup)<input class="i" type="file" id="bkfile" accept=".dcbackup" style="padding-top:9px"></label>
+        <label class="f">Or a Google Drive link (shared as “Anyone with the link”)<input class="i" name="link" type="url"></label>
+        <label class="f">Backup password<input class="i" name="password" type="password" required></label><div id="rsmsg"></div>
+        <div class="actions" style="justify-content:flex-end"><button class="btn" type="button" data-act="close">Cancel</button><button class="btn danger" type="submit">Restore and restart</button></div></form>`);
+      S.acts.bkrs = v => doRestore(v, $('#rsmsg'));
+    },
+  });
+}
+
+// ------------------------------------------------------------------ pause everything (vacation)
+async function showPause() {
+  try { S.pause = await api('GET', '/api/pause'); } catch (e) { return; }
+  const c = document.getElementById('content');
+  if (!c || !S.pause.paused || document.getElementById('pausebar')) return;
+  const p = S.pause;
+  c.insertAdjacentHTML('afterbegin', `<div class="away" id="pausebar" style="background:#FFF6E5;border-color:#F2D29A">${ic('pause', 16)}<span><b>Everything is paused</b> ${p.forever ? '— until you resume' : `— resumes by itself ${esc(tFull(p.until))}`}. ${p.keep_collecting ? 'New Instagram posts are still collected.' : 'Nothing is collected.'}</span><button class="btn sm primary" style="margin-left:auto" data-act="resumeall">Resume now</button></div>`);
+  S.acts.resumeall = async () => { await api('POST', '/api/pause', { resume: true }); toast('Posting resumed'); render(); };
+}
+function pauseModal() {
+  modal(`<h2>Pause everything</h2><p class="muted" style="margin:0">Going away for a while? No channel posts until you resume — or until the time you pick. Nothing is lost: the queue simply waits.</p>
+    <form data-form="pauseall" style="display:flex;flex-direction:column;gap:12px">
+      <div class="actions">${[['0', 'Until I resume'], ['1', '1 day'], ['3', '3 days'], ['7', '1 week'], ['14', '2 weeks']].map(([d, t], i) => `<label class="btn sm" style="cursor:pointer"><input type="radio" name="days" value="${d}" ${i === 0 ? 'checked' : ''} style="margin:0 6px 0 0">${t}</label>`).join('')}</div>
+      <label class="f">Or until a date and time<input class="i" type="datetime-local" name="until"></label>
+      <label style="display:flex;gap:10px;align-items:center;font-size:13px"><input type="checkbox" name="keep" checked> Keep collecting new posts from Instagram while paused (they wait, ready to post)</label>
+      <div class="actions" style="justify-content:flex-end"><button class="btn" type="button" data-act="close">Cancel</button><button class="btn primary" type="submit">${ic('pause', 16)}Pause everything</button></div></form>`);
+  S.acts.pauseall = async v => {
+    let until = null;
+    if (v.until) until = new Date(v.until).getTime() / 1000; else if (+v.days) until = Date.now() / 1000 + (+v.days) * 86400;
+    await api('POST', '/api/pause', { until, keep_collecting: !!v.keep });
+    closeModal(); toast('Everything paused'); render();
   };
 }
 
@@ -308,13 +409,14 @@ async function pageDashboard() {
     `<div class="dgrid"><div class="s4">${safe(() => upnextCard(d), 'Up next')}</div><div class="s4">${safe(() => feedCard(d), 'Activity')}</div><div class="s4">${safe(() => attentionCard(d), 'Needs you')}</div></div>`,
     `<div class="dgrid"><div class="s8">${safe(() => heatCard(d), 'Best hours')}</div><div class="s4">${safe(() => consCard(d), 'Consistency')}</div></div>`,
   ].join('') : onboarding(d);
-  mount('dashboard', 'On air today', sub, fmt(Date.now() / 1000, { weekday: 'long', day: 'numeric', month: 'long' }), `<button class="btn" data-act="statsnow" title="Fetch fresh numbers from YouTube now">${ic('refresh', 16)}Refresh stats</button>${addBtn}`, content);
+  mount('dashboard', 'On air today', sub, fmt(Date.now() / 1000, { weekday: 'long', day: 'numeric', month: 'long' }), `<button class="btn" data-act="pausemodal" title="Going away? Pause every channel">${ic('pause', 16)}Pause all</button><button class="btn" data-act="statsnow" title="Fetch fresh numbers from YouTube now">${ic('refresh', 16)}Refresh stats</button>${addBtn}`, content);
   every(1000, () => document.querySelectorAll('[data-count]').forEach(el => { el.textContent = countdown(+el.dataset.count); }));
   const liveNow = (d.today.live || []).length > 0;
   every(liveNow ? 4000 : 60000, () => { if (!document.getElementById('modal') && !document.querySelector('.sheet.open')) render(); });
   S.acts['post-now'] = async x => { await api('POST', `/api/channels/${x.id}/post-now`); toast('Queued — it will post in a moment'); render(); };
   S.acts.dismiss = async x => { await api('POST', `/api/events/${x.id}/dismiss`); render(); };
   S.acts.fixit = x => runFix(S.attention[+x.i]);
+  S.acts.pausemodal = () => pauseModal();
   S.acts.evdetail = x => eventDetail(+x.id);
   S.acts.awayx = () => { S.away = null; render(); };
   S.acts.statsnow = async (x, el) => {
@@ -527,7 +629,7 @@ function srcPayload(X) {
 function cookiesModal(gid, done) {
   modal(`<h2>Instagram account for this group</h2>
     <p class="muted" style="margin:0">Each IP group reads Instagram with its own test account, through its own IP. Paste that account’s cookies — we check they work before saving, and the old ones stay until the new ones pass.</p>
-    <ol class="muted" style="font-size:13px;line-height:1.6;margin:4px 0 0;padding-left:18px"><li>In Chrome, sign in to instagram.com with the group’s test account — ideally through the same proxy or country.</li><li>Install the extension <b>“Get cookies.txt LOCALLY”</b>, open instagram.com, click it, then <b>Export</b> or <b>Copy</b>.</li><li>Paste below, or choose the downloaded file.</li></ol>
+    <ol class="muted" style="font-size:13px;line-height:1.6;margin:4px 0 0;padding-left:18px"><li>In Chrome, sign in to instagram.com with the group’s test account — ideally through the same proxy or country. <b>Do this in the same browser you use for this panel</b>: DriveCast then keeps using that browser’s identity for this account, so Instagram always sees one consistent device.</li><li>Install the extension <b>“Get cookies.txt LOCALLY”</b>, open instagram.com, click it, then <b>Export</b> or <b>Copy</b>.</li><li>Paste below, or choose the downloaded file.</li></ol>
     <form data-form="savecookies" style="display:flex;flex-direction:column;gap:12px">
       <label class="f">Cookies<textarea class="i mono" name="cookies" id="cktext" rows="7" placeholder="# Netscape HTTP Cookie File&#10;.instagram.com  TRUE  /  TRUE  …  sessionid  …" style="height:auto;padding:10px;font-size:12px"></textarea><span class="help">cookies.txt, a JSON export, or “sessionid=…; ds_user_id=…; csrftoken=…” all work.</span></label>
       <label class="btn" style="width:fit-content;cursor:pointer">${ic('up', 16)}Choose cookies file<input type="file" id="ckfile" accept=".txt,.json" style="display:none"></label>
@@ -535,7 +637,7 @@ function cookiesModal(gid, done) {
       <div class="actions" style="justify-content:flex-end"><button class="btn" type="button" data-act="close">Cancel</button><button class="btn primary" type="submit">Test and save</button></div></form>`);
   S.acts.savecookies = async v => {
     const out = $('#ckres'); out.innerHTML = '<div class="note info"><span class="spinner"></span><span>Signing in to Instagram through the group’s proxy…</span></div>';
-    try { const r = await api('POST', `/api/groups/${gid}/instagram`, { cookies: v.cookies }); closeModal(); toast(`Instagram connected · @${r.username}`); if (done) done(); }
+    try { const r = await api('POST', `/api/groups/${gid}/instagram`, { cookies: v.cookies, user_agent: navigator.userAgent }); closeModal(); toast(`Instagram connected · @${r.username}`); if (done) done(); }
     catch (e) { out.innerHTML = `<div class="note bad">${ic('alert', 16)}<span>${esc(e.message)}</span></div>`; }
   };
 }
@@ -1011,11 +1113,13 @@ async function pageSchedule() {
 async function pageVideos() {
   const { videos } = await api('GET', '/api/videos?limit=200');
   const tone = { published: 'ok', uploading: 'info', reserved: 'info', failed: 'bad', uncertain: 'bad' };
-  const rows = videos.map(v => `<div class="tr" style="grid-template-columns:minmax(240px,2fr) minmax(160px,1.2fr) 130px 160px 90px 200px"><div style="min-width:0"><b class="ell" style="display:block">${esc(v.title)}</b><span class="muted mono" style="font-size:11px">${esc(v.file_name)}</span></div><span class="ell">${esc(v.channel_title)}</span>
+  const VC = 'grid-template-columns:minmax(240px,2fr) minmax(150px,1.1fr) 170px 120px 150px 80px 190px';
+  const rows = videos.map(v => `<div class="tr" style="${VC}"><div style="min-width:0"><b class="ell" style="display:block">${esc(v.title)}</b><span class="muted mono" style="font-size:11px">${esc(v.file_name)}</span></div><span class="ell">${esc(v.channel_title)}</span>
+    <span style="display:flex;flex-direction:column;gap:2px"><span class="mono" style="font-size:12px">${esc(v.outgoing_ip || '—')}</span><span class="mini">${v.outgoing_ip ? `Group ${esc(v.group_number ?? '?')} proxy${v.group_ip && v.group_ip !== v.outgoing_ip ? ' (old IP)' : ''}` : 'not sent'}</span></span>
     <span>${chip(v.status === 'published' ? (v.visibility || 'public') : v.status, tone[v.status] || 'neutral')}</span><span style="font-size:13px">${esc(tFull(v.published_at || v.reserved_at))}</span><span class="mono">${v.views == null ? '—' : num(v.views)}</span>
     <div class="actions" style="justify-content:flex-end">${v.external_video_id ? `<a class="btn sm" href="https://youtu.be/${esc(v.external_video_id)}" target="_blank" rel="noopener">${ic('ext', 14)}YouTube</a>` : ''}${v.status === 'uncertain' ? `<button class="btn sm" data-act="unc" data-id="${v.id}">Resolve</button>` : ''}</div></div>`).join('');
-  mount('videos', 'Videos', 'Everything DriveCast published or tried to publish', 'Workspace', '',
-    `<section class="card">${videos.length ? `<div class="tbl"><div style="min-width:1000px"><div class="tr th" style="grid-template-columns:minmax(240px,2fr) minmax(160px,1.2fr) 130px 160px 90px 200px"><span>Video</span><span>Channel</span><span>Status</span><span>When</span><span>Views</span><span></span></div>${rows}</div></div>` : '<div class="empty"><h3>No videos yet</h3>Published posts will appear here with their views.</div>'}</section>`);
+  mount('videos', 'Videos', 'Everything DriveCast published or tried to publish · every upload leaves only from its group’s proxy IP, checked right before sending', 'Workspace', '',
+    `<section class="card">${videos.length ? `<div class="tbl"><div style="min-width:1160px"><div class="tr th" style="${VC}"><span>Video</span><span>Channel</span><span title="The IP YouTube saw for this upload">Sent from IP</span><span>Status</span><span>When</span><span>Views</span><span></span></div>${rows}</div></div>` : '<div class="empty"><h3>No videos yet</h3>Published posts will appear here with their views.</div>'}</section>`);
   S.acts.unc = d => {
     modal(`<h2>Was it published?</h2><p class="muted">The upload ended without a clear answer, so DriveCast did not retry it. Check YouTube Studio for this channel.</p>
       <form data-form="uncok" style="display:flex;flex-direction:column;gap:12px"><label class="f">If it is on YouTube, paste the video link or ID<input class="i" name="video_id" placeholder="https://youtu.be/…"></label>
@@ -1168,7 +1272,9 @@ async function pageServer() {
             ['Dedicated phone mode', dev.dedicated, 'DriveCast owns the phone: other apps paused, permissions given, no lock screen, night-only updates. One-time setup: factory reset (no Google account) → USB debugging → run dedicated-mode.bat → tap Apply on the phone.'],
             ['Storage folder', dev.storage, 'Downloads go to “Shared with my tool DriveCast” on the phone, hidden from the Gallery. Allow it from the phone checklist.'],
             ['Video tools', dev.ffmpeg, 'Built into the app — cleans every file before it leaves the phone.']].map(([t, on, h]) => `<div style="display:flex;gap:10px;padding:12px;border:1px solid var(--line);border-radius:12px"><span style="color:${on ? 'var(--ok)' : 'var(--muted)'}">${ic(on ? 'check' : 'clock', 18)}</span><div style="display:flex;flex-direction:column;gap:3px"><b style="font-size:13px">${t} · ${on ? 'On' : on === false ? 'Off' : 'unknown'}</b><span class="muted" style="font-size:12px">${h}</span></div></div>`).join('')}
-       </div></section></div></div>`);
+       </div></section></div></div>
+     <div class="dgrid"><div class="s12" id="bkcard"></div></div>`);
+  drawBackup();
   every(60000, () => { if (!document.getElementById('modal')) render(); });
 }
 

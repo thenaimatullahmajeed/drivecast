@@ -181,6 +181,14 @@ SCHEMA = [
     ALTER TABLE uploads ADD COLUMN encore_of INTEGER;
     ALTER TABLE channels ADD COLUMN inbox_id TEXT;
     """,
+    # version 5: pause everything (vacation), Instagram account identity
+    """
+    ALTER TABLE workspaces ADD COLUMN paused_until REAL;
+    ALTER TABLE workspaces ADD COLUMN paused_at REAL;
+    ALTER TABLE workspaces ADD COLUMN pause_collect INTEGER NOT NULL DEFAULT 1;
+    ALTER TABLE ig_accounts ADD COLUMN user_agent TEXT;
+    ALTER TABLE ig_accounts ADD COLUMN language TEXT;
+    """,
 ]
 
 

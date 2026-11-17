@@ -60,7 +60,10 @@ def parse_cookies(text):
 
 # ------------------------------------------------------------------ session
 class Client:
-    def __init__(self, session, cookies, min_gap=(7, 14)):
+    """One Instagram test account = one stable identity: always the same browser
+    User-Agent (the one the cookies came from), the same language, the same IP."""
+
+    def __init__(self, session, cookies, min_gap=(7, 14), user_agent=None, language=None):
         self.s = session
         self.cookies = cookies
         self.min_gap = min_gap
@@ -68,9 +71,9 @@ class Client:
         for k, v in cookies.items():
             self.s.cookies.set(k, v, domain=".instagram.com", path="/")
         self.s.headers.update({
-            "User-Agent": UA, "X-IG-App-ID": APP_ID, "X-ASBD-ID": "129477", "X-IG-WWW-Claim": "0",
+            "User-Agent": user_agent or UA, "X-IG-App-ID": APP_ID, "X-ASBD-ID": "129477", "X-IG-WWW-Claim": "0",
             "X-Requested-With": "XMLHttpRequest", "X-CSRFToken": cookies.get("csrftoken", ""),
-            "Accept": "*/*", "Accept-Language": "en-US,en;q=0.9", "Referer": BASE + "/",
+            "Accept": "*/*", "Accept-Language": language or "en-US,en;q=0.9", "Referer": BASE + "/",
         })
 
     def _pace(self):

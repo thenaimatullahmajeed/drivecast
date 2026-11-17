@@ -62,6 +62,13 @@ def replan_future(ch, now=None):
 def tick(now=None):
     """Plan missing days and queue every slot that is due."""
     now = now or time.time()
+    # a pause with an end time resumes by itself
+    for ws in db.all("SELECT id FROM workspaces WHERE paused_until IS NOT NULL AND paused_until<=?", (now,)):
+        db.run("UPDATE workspaces SET paused_until=NULL, paused_at=NULL WHERE id=?", (ws["id"],))
+        db.run("""UPDATE slots SET status='planned', note=NULL WHERE status='held' AND note LIKE 'Paused%' AND window_end>?
+                  AND channel_id IN (SELECT id FROM channels WHERE workspace_id=?)""", (now, ws["id"]))
+        db.event("info", "pause", "Pause ended — posting resumed by itself.", ws["id"])
+    paused = {r["id"] for r in db.all("SELECT id FROM workspaces WHERE paused_until>?", (now,))}
     for ch in db.all("SELECT * FROM channels WHERE state IN ('live','attention')"):
         try:
             ensure_slots(ch, now)
@@ -76,6 +83,9 @@ def tick(now=None):
                 c.execute("UPDATE slots SET status='missed', note='Server was offline during the peak window', updated_at=? WHERE id=?",
                           (now, s["id"]))
                 continue
+            if s["workspace_id"] in paused:
+                c.execute("UPDATE slots SET status='held', note='Paused — everything is on hold', updated_at=? WHERE id=?", (now, s["id"]))
+                continue
             if s["state"] not in ("live", "attention"):
                 c.execute("UPDATE slots SET status='held', note='Channel paused', updated_at=? WHERE id=?", (now, s["id"]))
                 continue
@@ -88,6 +98,8 @@ def tick(now=None):
 def post_now(ch, now=None):
     """Bring today's next planned slot forward to now. Never adds an extra post."""
     now = now or time.time()
+    if db.one("SELECT 1 FROM workspaces WHERE id=? AND paused_until>?", (ch["workspace_id"], now)):
+        return None
     ensure_slots(ch, now)
     s = db.one("""SELECT * FROM slots WHERE channel_id=? AND status='planned' AND due_at>? ORDER BY due_at LIMIT 1""",
                (ch["id"], now))

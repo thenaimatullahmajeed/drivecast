@@ -104,6 +104,8 @@ def run(job, adapters=None):
     now = time.time()
 
     # --- gates: nothing is touched unless the route is fully healthy ---
+    if (ws.get("paused_until") or 0) > now:
+        return finish(job, "failed", "Paused", "held", "Paused — everything is on hold")
     # 'attention' only runs again when it came from the cool-down breaker and the cool-down ended
     breaker_over = ch["state"] == "attention" and ch["paused_until"] and ch["paused_until"] <= now
     if not (ch["state"] == "live" or breaker_over) or (ch["paused_until"] or 0) > now:
