@@ -264,6 +264,34 @@ class MainActivity : AppCompatActivity() {
             if (url.startsWith("https://")) act.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
         }
 
+        /** Own domain through Cloudflare: token from Cloudflare (Tunnels → install command), host like s1.drivecast.site. */
+        @JavascriptInterface
+        fun setCloudflare(token: String, host: String) {
+            val raw = token.trim()
+            val t = if (raw == "__keep__") Store.prefs(ctx).optString("cf_token", "") else raw.substringAfterLast(" ").trim()
+            val h = host.trim().lowercase().removePrefix("https://").removePrefix("http://").trimEnd('/')
+            Store.setPref(ctx, "cf_token", t.ifBlank { null })
+            Store.setPref(ctx, "cf_host", h.ifBlank { null })
+            if (t.isBlank()) Local.post(ctx, "/local/own-domain", JSONObject().put("url", ""))
+            ServerService.start(ctx, ServerService.ACTION_CF)
+        }
+
+        @JavascriptInterface
+        fun cloudflare(): String {
+            val o = Store.read(ctx, "cf.json")
+            o.put("configured", Store.prefs(ctx).optString("cf_token", "").isNotBlank())
+            o.put("host", Store.prefs(ctx).optString("cf_host", ""))
+            return o.toString()
+        }
+
+        @JavascriptInterface
+        fun cfLog(): String = try {
+            val f = File(ctx.filesDir, "cf.log")
+            if (f.exists()) f.readLines().takeLast(60).joinToString("\n") else "No output yet."
+        } catch (e: Exception) {
+            e.toString()
+        }
+
         @JavascriptInterface
         fun setTunnel(key: String, host: String) {
             val clean = host.lowercase().replace(Regex("[^a-z0-9-]"), "-").trim('-').ifBlank { "drivecast" }.take(40)

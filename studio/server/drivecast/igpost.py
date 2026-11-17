@@ -37,7 +37,10 @@ _lock = threading.Lock()
 
 def share(path, ttl=3600):
     """A one-hour unguessable link Instagram can fetch the file from."""
-    base = (db.meta_get("public_url_override") or db.meta_get("public_url") or "").rstrip("/")
+    # Big video files go out through the Tailscale link, not the own domain: Cloudflare's free
+    # plan is for web pages, not for serving video files.
+    ts = db.meta_get("public_url") or ""
+    base = (ts if ts.startswith("https://") else (db.meta_get("public_url_override") or "")).rstrip("/")
     if not base.startswith("https://"):
         raise CodedError("IGD_NO_PUBLIC_URL", base or "none")
     tok = secrets.token_urlsafe(24)

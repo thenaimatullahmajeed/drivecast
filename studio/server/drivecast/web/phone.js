@@ -17,7 +17,7 @@ function checks() {
 
 async function draw() {
   if (document.activeElement && document.activeElement.tagName === 'INPUT') return; // don't wipe what is being typed
-  if (['tlog', 'fpw', 'fresh', 'dguide', 'rst'].some(id => { const d = document.getElementById(id); return d && d.open; })) return;
+  if (['tlog', 'fpw', 'fresh', 'dguide', 'rst', 'cfd'].some(id => { const d = document.getElementById(id); return d && d.open; })) return;
   const c = checks(), s = await status();
   s_has_owner = !!(s && s.has_owner);
   const items = c.items || [];
@@ -43,6 +43,17 @@ async function draw() {
     <p style="font-size:13px;margin:10px 0">State: <b>${esc(t.state || '—')}</b>${urlNow ? ' · ' + esc(urlNow) : ''}${t.error ? '<br><span style="color:#FF9B85">' + esc(t.error) + '</span>' : ''}</p>
     <button class="btn sm" data-copylog="1">Copy details</button>
     <pre style="white-space:pre-wrap;word-break:break-all;font-size:10px;line-height:1.4;max-height:320px;overflow:auto;background:#0B0E12;padding:10px;border-radius:10px;margin-top:10px">${esc(B && B.tunnelLog ? B.tunnelLog() : '')}</pre></details>`;
+  let cf = {};
+  try { cf = B && B.cloudflare ? JSON.parse(B.cloudflare()) : {}; } catch (e) { cf = {}; }
+  const cfTone = cf.state === 'online' ? '#3DDC97' : cf.state === 'error' ? '#FF9B85' : '#F2B54A';
+  const cfCard = `<details class="card" id="cfd"${cf.configured ? '' : ''}><summary style="font-size:13px;display:flex;align-items:center;gap:8px"><span style="width:8px;height:8px;border-radius:9px;background:${cf.configured ? cfTone : '#3A4250'}"></span><b>Own domain</b><span class="muted">${cf.configured ? esc(cf.host || '') + ' · ' + esc(cf.state || 'starting') : 'Cloudflare · optional'}</span></summary>
+    ${cf.error ? `<p style="color:#FF9B85;font-size:13px">${esc(cf.error)}</p>` : ''}
+    <p class="muted" style="font-size:13px;margin:10px 0">Your panel on your own address, e.g. <b>s1.drivecast.site</b>. The Tailscale link keeps working as a backup.</p>
+    <ol class="muted" style="font-size:12.5px;line-height:1.6;padding-left:18px;margin:0 0 10px"><li>Cloudflare → Networking → Tunnels → your tunnel → copy the install command (the long text starting with <b>eyJ</b>).</li><li>Routes → Add route → Published application → subdomain <b>s1</b>, service <b>http://localhost:8765</b>.</li><li>Paste below and Save.</li></ol>
+    <label>Address<input id="cfhost" value="${esc(cf.host || '')}" placeholder="s1.drivecast.site" autocomplete="off"></label>
+    <label style="margin-top:8px">Tunnel token (or the whole install command)<input id="cftok" type="password" placeholder="${cf.configured ? 'Saved — paste a new one to replace' : 'eyJ…'}" autocomplete="off"></label>
+    <div style="display:flex;gap:8px;margin-top:10px"><button class="btn coral" data-act="cfsave">Save</button>${cf.configured ? '<button class="btn" data-act="cfoff">Turn off</button>' : ''}${cf.configured && cf.host ? `<button class="btn" data-open="https://${esc(cf.host)}">Open</button>` : ''}</div>
+    <pre style="white-space:pre-wrap;word-break:break-all;font-size:10px;line-height:1.4;max-height:160px;overflow:auto;background:#0B0E12;padding:10px;border-radius:10px;margin-top:10px">${esc(B && B.cfLog ? B.cfLog() : '')}</pre></details>`;
   let m = {};
   try { m = B && B.modes ? JSON.parse(B.modes()) : {}; } catch (e) { m = {}; }
   const modeCard = `<div class="card"><div class="kick">Phone modes</div>
@@ -74,6 +85,7 @@ async function draw() {
       <p class="muted" style="font-size:13px;margin:10px 0">Set a new password for <b>${esc(s.owner_email || '')}</b>. This only works on this phone.</p>
       <label>New password (8+ characters)<input id="npw" type="password" autocomplete="new-password"></label>
       <button class="btn coral wide" style="margin-top:10px" data-act="resetpw">Set new password</button><p id="pwmsg" style="font-size:13px;margin:8px 0 0"></p></details>` : ''}
+    ${cfCard}
     ${modeCard}
     <details class="card" id="rst"${s && s.has_owner ? '' : ' open'}><summary class="muted" style="font-size:13px">${s && s.has_owner ? 'Restore a backup' : 'New phone? Restore your backup'}</summary>
       <p class="muted" style="font-size:13px;margin:10px 0">Brings back every account, client, proxy, cookie and sign-in from a <b>.dcbackup</b> file. ${s && s.has_owner ? 'This replaces what is on this phone now.' : ''}</p>
@@ -104,6 +116,14 @@ document.addEventListener('click', e => {
       .then(({ ok, j }) => { msg.style.color = ok ? '#3DDC97' : '#FF9B85'; msg.textContent = ok ? 'Done. Sign in on your laptop with the new password.' : (j.error || 'Could not change it'); if (ok) document.getElementById('npw').value = ''; })
       .catch(() => { msg.textContent = 'Server not reachable'; });
   }
+  else if (el.dataset.act === 'cfsave') {
+    const host = document.getElementById('cfhost').value.trim(), tok = document.getElementById('cftok').value.trim();
+    if (!/^[a-z0-9-]+(\.[a-z0-9-]+)+$/i.test(host.replace(/^https?:\/\//, '').replace(/\/$/, ''))) { alertBox('Address looks like s1.drivecast.site'); return; }
+    const cur = (() => { try { return JSON.parse(B.cloudflare()); } catch (e) { return {}; } })();
+    if (!tok && !cur.configured) { alertBox('Paste the tunnel token first'); return; }
+    B.setCloudflare(tok || '__keep__', host); el.textContent = 'Connecting…'; setTimeout(draw, 5000);
+  }
+  else if (el.dataset.act === 'cfoff') { if (confirm('Turn off the own domain? The Tailscale link keeps working.')) { B.setCloudflare('', ''); setTimeout(draw, 1500); } }
   else if (el.dataset.act === 'restore') {
     const link = document.getElementById('rlink').value.trim(), pw = document.getElementById('rpw').value, f = document.getElementById('rfile').files[0];
     const msg = document.getElementById('rmsg');

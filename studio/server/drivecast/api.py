@@ -817,6 +817,17 @@ def local_public_url(req):
     return {"ok": True}
 
 
+@route("POST", "/local/own-domain", auth="local")
+def local_own_domain(req):
+    """The phone's Cloudflare tunnel is up: the panel's public address becomes the own domain
+    (sign-in links and redirect URIs). An empty url goes back to the built-in Tailscale link."""
+    url = (req.json.get("url") or "").strip().rstrip("/")
+    if url and not re.match(r"^https://[a-z0-9.-]+\.[a-z]{2,}$", url):
+        raise HttpError(400, "Use https://name.domain")
+    db.meta_set("public_url_override", url)
+    return {"ok": True, "public_url": url or db.meta_get("public_url")}
+
+
 @route("POST", "/local/media-dir", auth="local")
 def local_media_dir(req):
     """The phone allowed storage: use the shared folder from now on (no restart)."""

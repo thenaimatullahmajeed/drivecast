@@ -115,6 +115,9 @@ class Handler(BaseHTTPRequestHandler):
             req = Req(self, path, query, body)
             if path.startswith("/media/"):
                 return self._media(path[7:], head)
+            site = self._site_page(path)
+            if site:
+                return self._static(site, head)
             if not (path.startswith("/api/") or path.startswith("/connect/") or path.startswith("/oauth/")
                     or path.startswith("/local/") or path in ("/healthz", "/phone")):
                 return self._static(path, head)
@@ -153,6 +156,24 @@ class Handler(BaseHTTPRequestHandler):
             log.error("request %s failed: %s\n%s", path, e, traceback.format_exc())
             db.event("error", "web", f"Panel request failed: {path}: {e}")
             return self._send(500, {"error": "Something went wrong on the server. It was logged."}, head=head)
+
+    def _site_page(self, path):
+        """Public pages: /privacy and /terms everywhere; the landing page on the bare domain
+        (drivecast.site, www.drivecast.site) while the panel lives on its subdomain (s1.…)."""
+        if path in ("/privacy", "/privacy/"):
+            return "/site/privacy.html"
+        if path in ("/terms", "/terms/"):
+            return "/site/terms.html"
+        host = (self.headers.get("Host") or "").split(":")[0].lower()
+        panel = (db.meta_get("public_url_override") or "").split("://")[-1].lower()
+        if panel.count(".") >= 2 and host:
+            apex = panel.split(".", 1)[1]
+            if host in (apex, "www." + apex):
+                if path in ("/", ""):
+                    return "/site/index.html"
+                if path.startswith("/site/"):
+                    return path
+        return None
 
     def _media(self, tok, head):
         """Short-lived public file links that Instagram fetches posts from. Range requests supported."""

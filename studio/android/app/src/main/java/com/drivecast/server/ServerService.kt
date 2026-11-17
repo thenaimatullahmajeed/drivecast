@@ -28,6 +28,7 @@ class ServerService : Service() {
     private var wake: PowerManager.WakeLock? = null
     private var wifi: WifiManager.WifiLock? = null
     private val tunnel by lazy { Tunnel(this) }
+    private val cf by lazy { CfTunnel(this) }
     private val main = Handler(Looper.getMainLooper())
     @Volatile private var started = false
 
@@ -38,12 +39,14 @@ class ServerService : Service() {
             ACTION_STOP -> {
                 Store.setPref(this, "running", false)
                 tunnel.stop()
+                cf.stop()
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
                 main.postDelayed({ Process.killProcess(Process.myPid()) }, 800)
                 return START_NOT_STICKY
             }
             ACTION_TUNNEL -> if (started) tunnel.restart()
+            ACTION_CF -> if (started) cf.restart()
         }
         Store.setPref(this, "running", true)
         goForeground()
@@ -52,6 +55,7 @@ class ServerService : Service() {
             takeLocks()
             thread(name = "dc-python", isDaemon = true) { startPython() }
             tunnel.start()
+            cf.start()
             main.postDelayed(reporter, 15_000)
         }
         return START_STICKY
@@ -126,6 +130,7 @@ class ServerService : Service() {
     companion object {
         const val ACTION_STOP = "com.drivecast.server.STOP"
         const val ACTION_TUNNEL = "com.drivecast.server.TUNNEL"
+        const val ACTION_CF = "com.drivecast.server.CF"
 
         fun start(ctx: Context, action: String? = null) {
             val i = Intent(ctx, ServerService::class.java)

@@ -365,3 +365,35 @@ class ApiRouteTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OwnDomainTests(unittest.TestCase):
+    def setUp(self):
+        self.dir = fresh_db()
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def test_own_domain_and_media_links_stay_on_tailscale(self):
+        r = type("R", (), {"json": {"url": "https://s1.drivecast.site"}})()
+        api.local_own_domain(r)
+        self.assertEqual(db.meta_get("public_url_override"), "https://s1.drivecast.site")
+        db.meta_set("public_url", "https://drivecast-2.tail1.ts.net")
+        p = os.path.join(self.dir, "v.mp4")
+        open(p, "wb").write(b"x")
+        url, _ = igpost.share(p)
+        self.assertTrue(url.startswith("https://drivecast-2.tail1.ts.net/media/"))
+        with self.assertRaises(api.HttpError):
+            api.local_own_domain(type("R", (), {"json": {"url": "http://bad"}})())
+
+    def test_public_site_pages(self):
+        from drivecast import web
+        db.meta_set("public_url_override", "https://s1.drivecast.site")
+        h = type("H", (), {})()
+        for host, path, want in (("drivecast.site", "/", "/site/index.html"), ("www.drivecast.site", "/", "/site/index.html"),
+                                 ("s1.drivecast.site", "/", None), ("s1.drivecast.site", "/privacy", "/site/privacy.html"),
+                                 ("anything.ts.net", "/terms", "/site/terms.html")):
+            h.headers = {"Host": host}
+            self.assertEqual(web.Handler._site_page(h, path), want, (host, path))
+        for f in ("index.html", "privacy.html", "terms.html", "site.css"):
+            self.assertTrue(os.path.isfile(os.path.join(web.WEB_DIR, "site", f)))
