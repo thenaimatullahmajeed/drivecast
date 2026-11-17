@@ -650,17 +650,18 @@ async function pageSettings() {
 async function pageUsers(id) {
   if (id) return pageUserReport(id);
   const [{ users }, { invites }] = await Promise.all([api('GET', '/api/admin/users'), api('GET', '/api/admin/invites')]);
-  const COLS = 'grid-template-columns:minmax(220px,1.6fr) 90px 90px 90px 100px 130px 40px';
+  const COLS = 'grid-template-columns:minmax(220px,1.6fr) 90px 90px 90px 100px 130px 96px';
   const rows = users.map((u, i) => {
     const st = u.status === 'suspended' ? chip('Suspended', 'bad') : u.groups_down ? chip('Proxy down', 'warn') : u.role === 'student' && !u.groups_n ? chip('Needs proxy', 'warn') : chip('Active', 'ok');
-    const inner = `<div class="who">${avatar(u.name, i, null, 36)}<div><b>${esc(u.name)}</b><span class="mono muted" style="font-size:11px">${esc(u.email)}</span></div></div><span>${u.role === 'owner' ? 'Owner' : 'Student'}</span><span class="mono">${u.channels}</span><span class="mono">${u.groups_n}</span><span class="mono">${u.today}</span><span>${st}</span><span class="muted">${u.role === 'owner' ? '' : ic('ext', 16)}</span>`;
-    return u.role === 'owner' ? `<div class="tr" style="${COLS}">${inner}</div>` : `<a class="tr" style="${COLS};color:inherit;text-decoration:none" href="#/users/${u.id}" target="_blank" rel="noopener">${inner}</a>`;
+    const inner = `<div class="who">${avatar(u.name, i, null, 36)}<div><b>${esc(u.name)}</b><span class="mono muted" style="font-size:11px">${esc(u.email)}</span></div></div><span>${u.role === 'owner' ? 'Owner' : 'Student'}</span><span class="mono">${u.channels}</span><span class="mono">${u.groups_n}</span><span class="mono">${u.today}</span><span>${st}</span><span class="actions" style="justify-content:flex-end;gap:6px">${u.role === 'owner' ? '' : `<a class="btn sm icon-btn" href="#/users/${u.id}" target="_blank" rel="noopener" aria-label="Open report for ${esc(u.name)}" title="30-day report">${ic('ext', 16)}</a><button class="btn sm icon-btn danger" data-act="udel" data-id="${u.id}" data-name="${esc(u.name)}" aria-label="Delete ${esc(u.name)}" title="Delete user">${ic('trash', 16)}</button>`}</span>`;
+    return `<div class="tr" style="${COLS}">${inner}</div>`;
   }).join('');
   const now = Date.now() / 1000;
   const inv = invites.map(k => { const s = k.used_by ? ['Used', 'neutral'] : k.expires_at < now ? ['Expired', 'warn'] : ['Unused', 'info']; return `<div style="display:flex;align-items:center;gap:12px;padding:12px 0;border-top:1px solid var(--line);flex-wrap:wrap"><div style="flex:1 1 200px"><b>${esc(k.label)}</b><div class="muted" style="font-size:12px">${k.used_by ? `Registered by ${esc(k.used_name)} · ${esc(tFull(k.used_at))}` : `Created ${esc(rel(k.created_at))} · expires ${esc(rel(k.expires_at))}`}</div></div><span class="mono" style="font-weight:500">${esc(k.code)}</span>${chip(s[0], s[1], false)}${!k.used_by ? `<button class="btn sm" data-act="copy" data-text="${esc(k.code)}">${ic('copy', 14)}</button><button class="btn sm danger" data-act="revoke" data-code="${esc(k.code)}">Revoke</button>` : ''}</div>`; }).join('');
   mount('users', 'Users', 'Students and accounts on this server', 'Admin', `<button class="btn primary" data-act="newcode">${ic('key', 16)}New code</button>`,
     `<section class="card" style="margin-bottom:16px">${hd('Accounts on this server', 'Open a student to see their 30-day report (new tab). You see usage — never their passwords or tokens.')}<div class="tbl"><div style="min-width:900px"><div class="tr th" style="${COLS}"><span>User</span><span>Role</span><span>Channels</span><span>IP groups</span><span>Today</span><span>Status</span><span></span></div>${rows}</div></div></section>
      <section class="card">${hd('Invite codes', 'One code = one account. It turns Used the moment the student registers.')}${inv || '<div class="empty">No codes yet. Press “New code”.</div>'}</section>`);
+  S.acts.udel = d => deleteUserModal(d.id, d.name, () => render());
   S.acts.revoke = async d => { await api('POST', `/api/admin/invites/${d.code}/revoke`); render(); };
   S.acts.newcode = () => {
     modal(`<h2>New invite code</h2><p class="muted" style="margin:0">Who is this for? Only you see this name.</p><form data-form="mkcode" style="display:flex;flex-direction:column;gap:14px">
@@ -673,6 +674,16 @@ async function pageUsers(id) {
         <div class="muted" style="font-size:13px;line-height:1.8">1 · Student opens <span class="mono" style="color:var(--ink)">${esc(location.host)}</span> and taps Create account<br>2 · Enters this code → account is active, code becomes Used<br>3 · Single use · expires in 7 days if unused</div><button class="btn primary" data-act="donecode">Done</button>`);
       S.acts.donecode = () => { closeModal(); render(); };
     };
+  };
+}
+function deleteUserModal(id, name, done) {
+  modal(`<h2>Delete ${esc(name)}?</h2><p class="muted" style="margin:0">This removes their account, channels, IP groups, schedule and history from DriveCast. Videos already on YouTube and files in their Drive are not touched. This cannot be undone.</p>
+    <form data-form="udelok" style="display:flex;flex-direction:column;gap:12px"><label class="f">Type <b>${esc(name)}</b> to confirm<input class="i" name="confirm" autocomplete="off"></label>
+    <div class="actions" style="justify-content:flex-end"><button class="btn" type="button" data-act="close">Cancel</button><button class="btn primary" type="submit" style="background:var(--bad);border-color:var(--bad)">Delete account</button></div></form>`);
+  S.acts.udelok = async v => {
+    if ((v.confirm || '').trim() !== name.trim()) throw new Error('The name does not match');
+    await api('POST', `/api/admin/users/${id}/delete`);
+    closeModal(); toast(`${name} was deleted`); done();
   };
 }
 async function pageUserReport(id) {
@@ -690,9 +701,10 @@ async function pageUserReport(id) {
      <div class="row"><div class="f2"><section class="card">${hd('Daily views', 'From this user’s workspace')}${r.trend.views.some(v => v) ? areaChart(r.trend.days, r.trend.views, null, 'Daily views') : '<div class="empty">No stats yet.</div>'}</section></div>
        <div class="f1"><section class="card" style="height:100%">${hd('Uploads per day')}${barsChart(r.daily_uploads.slice(-30), 'published', null, 110)}</section></div></div>
      <div class="row"><div class="f3"><section class="card">${hd('Channels', 'Ranked by views in this period')}<div class="tbl"><div style="min-width:760px"><div class="tr th" style="grid-template-columns:minmax(200px,1.6fr) 100px 100px 90px 150px 100px"><span>Channel</span><span>IP group</span><span>Views</span><span>Uploads</span><span>Last post</span><span>State</span></div>${chans || '<div class="empty">No channels.</div>'}</div></div></section></div>
-       <div class="f1"><section class="card">${hd('Limits & access')}<form data-form="lim" style="display:flex;flex-direction:column;gap:10px"><label class="f">Max channels<input class="i" name="max_channels" type="number" min="1" value="${esc(lim.max_channels || '')}"></label><label class="f">Max IP groups<input class="i" name="max_groups" type="number" min="1" value="${esc(lim.max_groups || '')}"></label><label class="f">Posts / day cap<input class="i" name="daily_cap" type="number" min="1" value="${esc(lim.daily_cap || '')}"></label><div class="actions"><button class="btn" type="submit">Save limits</button><button class="btn" type="button" data-act="rpw">Reset password</button><button class="btn ${u.status === 'active' ? 'danger' : 'primary'}" type="button" data-act="susp">${u.status === 'active' ? 'Suspend' : 'Activate'}</button></div></form></section></div></div>
+       <div class="f1"><section class="card">${hd('Limits & access')}<form data-form="lim" style="display:flex;flex-direction:column;gap:10px"><label class="f">Max channels<input class="i" name="max_channels" type="number" min="1" value="${esc(lim.max_channels || '')}"></label><label class="f">Max IP groups<input class="i" name="max_groups" type="number" min="1" value="${esc(lim.max_groups || '')}"></label><label class="f">Posts / day cap<input class="i" name="daily_cap" type="number" min="1" value="${esc(lim.daily_cap || '')}"></label><div class="actions"><button class="btn" type="submit">Save limits</button><button class="btn" type="button" data-act="rpw">Reset password</button><button class="btn danger" type="button" data-act="udel2">Delete</button><button class="btn ${u.status === 'active' ? 'danger' : 'primary'}" type="button" data-act="susp">${u.status === 'active' ? 'Suspend' : 'Activate'}</button></div></form></section></div></div>
      <section class="card">${hd('Activity')}${r.events.map(e => `<div style="display:flex;gap:14px;padding:10px 0;border-top:1px solid var(--line)"><span class="mono muted" style="font-size:12px;min-width:140px">${esc(tFull(e.at))}</span><span style="font-size:13px">${esc(e.message)}</span></div>`).join('') || '<div class="empty">No activity yet.</div>'}</section>`);
   S.acts.repd = d => { S.repDays = +d.n; render(); };
+  S.acts.udel2 = () => deleteUserModal(id, u.name, () => go('users'));
   S.acts.rpw = async () => {
     if (!confirm(`Give ${u.name} a new temporary password? They will be signed out.`)) return;
     const r = await api('POST', `/api/admin/users/${id}/reset-password`);

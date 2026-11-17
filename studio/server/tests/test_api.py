@@ -137,6 +137,16 @@ class ApiTests(unittest.TestCase):
         owner.call("POST", "/api/login", {"email": "a@x.com", "password": "newpassword9"})
         st, d = owner.call("GET", "/api/dashboard")
         self.assertEqual(st, 200, d)
+        # delete the student: account and workspace data are gone
+        ws = db.one("SELECT workspace_id FROM users WHERE id=?", (ali["id"],))["workspace_id"]
+        st, r = owner.call("POST", f"/api/admin/users/{ali['id']}/delete")
+        self.assertEqual(st, 200, r)
+        self.assertIsNone(db.one("SELECT 1 FROM users WHERE id=?", (ali["id"],)))
+        self.assertIsNone(db.one("SELECT 1 FROM ip_groups WHERE workspace_id=?", (ws,)))
+        st, r = owner.call("GET", "/api/admin/users")
+        self.assertEqual([u["name"] for u in r["users"]], ["Admin"])
+        st, r = owner.call("POST", f"/api/admin/users/{r['users'][0]['id']}/delete")
+        self.assertEqual(st, 404)  # the owner cannot be deleted
         for k in ("today", "kpis", "trend", "heatmap", "consistency", "attention"):
             self.assertIn(k, d)
 

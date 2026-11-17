@@ -695,6 +695,31 @@ def admin_reset_password(req, uid):
     return {"temporary_password": temp}
 
 
+@route("POST", "/api/admin/users/(\\d+)/delete", auth="owner")
+def admin_delete_user(req, uid):
+    """Remove a student and everything in their workspace. Videos already on
+    YouTube and files in Drive are not touched."""
+    u = db.one("SELECT * FROM users WHERE id=?", (int(uid),))
+    if not u or u["role"] == "owner":
+        raise HttpError(404, "User not found")
+    ws = u["workspace_id"]
+    if db.one("SELECT 1 FROM jobs j JOIN channels c ON c.id=j.channel_id WHERE c.workspace_id=? AND j.status='running'", (ws,)):
+        raise HttpError(409, "A post is uploading for this user right now. Try again in a few minutes.")
+    with db.tx() as c:
+        c.execute("DELETE FROM jobs WHERE channel_id IN (SELECT id FROM channels WHERE workspace_id=?)", (ws,))
+        c.execute("DELETE FROM uploads WHERE workspace_id=?", (ws,))
+        c.execute("DELETE FROM channels WHERE workspace_id=?", (ws,))
+        c.execute("DELETE FROM ip_groups WHERE workspace_id=?", (ws,))
+        c.execute("DELETE FROM connect_links WHERE workspace_id=?", (ws,))
+        c.execute("DELETE FROM events WHERE workspace_id=?", (ws,))
+        c.execute("DELETE FROM sessions WHERE user_id=?", (u["id"],))
+        c.execute("UPDATE invites SET used_by=NULL WHERE used_by=?", (u["id"],))
+        c.execute("DELETE FROM users WHERE id=?", (u["id"],))
+        c.execute("DELETE FROM workspaces WHERE id=?", (ws,))
+    db.event("info", "account", f"Account {u['name']} ({u['email']}) was deleted by the owner")
+    return {"ok": True}
+
+
 @route("POST", "/local/reset-owner", auth="local")
 def local_reset_owner(req):
     """Owner forgot the password: only possible from the server phone itself."""
@@ -714,6 +739,9 @@ def local_reset_owner(req):
 def admin_invites(req):
     rows = db.all("""SELECT i.*, u.name used_name FROM invites i LEFT JOIN users u ON u.id=i.used_by
                      WHERE i.revoked=0 ORDER BY i.created_at DESC LIMIT 100""")
+    for r in rows:
+        if r["used_at"] and not r["used_by"]:
+            r["used_by"], r["used_name"] = -1, "a deleted account"
     for r in rows:
         r["limits"] = db.jload(r.pop("limits_json"), {})
     return {"invites": rows}
