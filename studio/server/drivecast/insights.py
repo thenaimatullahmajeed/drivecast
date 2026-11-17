@@ -282,6 +282,11 @@ def attention(ws_id, now=None):
         items.append({"level": "error", "kind": "proxy", "title": f"Group {g['number']} is not responding",
                       "detail": f"{n} channel(s) held. Nothing is sent from the phone’s own IP.", "action": "fix",
                       "fix": "replace_proxy", "ref": g["id"], "code": "PROXY_DEAD"})
+    for a in db.all("""SELECT a.*, g.number FROM fb_accounts a JOIN ip_groups g ON g.id=a.group_id
+                       WHERE a.workspace_id=? AND a.status='needs_reconnect'""", (ws_id,)):
+        i = errors.info(a["error_code"] or "FB_TOKEN_EXPIRED", group=a["number"])
+        items.append({"level": "error", "kind": "facebook", "title": i["title"] + f" · Group {a['number']}", "detail": i["message"],
+                      "action": "fix", "fix": "reconnect_facebook", "ref": a["group_id"], "code": i["code"]})
     for a in db.all("""SELECT a.*, g.number FROM ig_accounts a JOIN ip_groups g ON g.id=a.group_id
                        WHERE a.workspace_id=? AND a.status='needs_cookies'""", (ws_id,)):
         i = errors.info(a["error_code"] or "IG_COOKIES_EXPIRED", group=a["number"])

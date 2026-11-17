@@ -226,6 +226,7 @@ def run(job, adapters=None):
         if m:
             db.run("UPDATE media SET state='published', published_at=?, updated_at=? WHERE id=? AND state!='published'",
                    (time.time(), time.time(), m["id"]))
+        _crosspost_facebook(ch, ws, chosen, m, path, session, title, desc)
         if processing:
             try:
                 done = dmod.child_folder(session, dbox, ch["folder_id"], "Done")
@@ -345,6 +346,56 @@ def _title_and_description(ch, f, m, encore):
     if title in used and not (m and m.get("title")):
         title = titles.fallback(ch["title"], db.jload(ch.get("titles_json"), []), set(used), f["id"])
     return title, titles.description(caption, title)
+
+
+def _crosspost_facebook(ch, ws, chosen, m, path, session, title, desc):
+    """After YouTube: post the same video to the channel's linked Facebook page.
+    Isolated: a Facebook problem never undoes the YouTube post or fails the job."""
+    if not ch.get("fb_page_id"):
+        return
+    from . import facebook, security
+    pg = db.one("SELECT * FROM fb_pages WHERE channel_id=? AND page_id=?", (ch["id"], ch["fb_page_id"]))
+    if not pg or not pg.get("can_post"):
+        return
+    acc = db.one("SELECT * FROM fb_accounts WHERE id=?", (pg["fb_account_id"],))
+    if not acc or acc["status"] == "needs_reconnect":
+        return
+    dest = f"facebook:{pg['page_id']}"
+    now = time.time()
+    try:
+        with db.tx() as c:
+            cur = c.execute("""INSERT INTO uploads(workspace_id,channel_id,destination,file_id,file_name,title,
+                               status,reserved_at,outgoing_ip,media_id) VALUES(?,?,?,?,?,?,'uploading',?,?,?)""",
+                            (ws["id"], ch["id"], dest, chosen["id"], chosen["name"], title, now,
+                             db.one("SELECT outgoing_ip FROM ip_groups WHERE id=?", (ch["group_id"],))["outgoing_ip"],
+                             _media_id(chosen)))
+            fb_upload = cur.lastrowid
+    except Exception:
+        return  # already posted to this page (UNIQUE file_id+destination)
+    _stage(ch["id"], "Posting to Facebook", 0, title)
+    try:
+        token = security.unseal(pg["token_enc"])
+        res = facebook.publish_video(session, pg["page_id"], token, path, title, desc,
+                                     on_progress=lambda f: _stage(ch["id"], "Posting to Facebook", f))
+        db.run("UPDATE uploads SET status='published', external_video_id=?, post_id=?, visibility='public', published_at=? WHERE id=?",
+               (res.get("video_id"), res.get("post_id"), time.time(), fb_upload))
+        db.run("UPDATE fb_accounts SET status='ok', error_code=NULL WHERE id=?", (acc["id"],))
+    except Uncertain as e:
+        db.run("UPDATE uploads SET status='uncertain', error=? WHERE id=?", (getattr(e, 'user_message', str(e)), fb_upload))
+        db.event("error", "uncertain", f"{ch['title']}: Facebook upload result unknown — check the page. It will not be retried.",
+                 ws["id"], ch["id"], "YT_UNCERTAIN")
+    except CodedError as e:
+        inf = e.info(group=store.group(ch["group_id"])["number"] if store.group(ch["group_id"]) else "?")
+        if e.scope in ("fb",) and e.code == "FB_TOKEN_EXPIRED":
+            db.run("UPDATE fb_accounts SET status='needs_reconnect', error_code=?, error_detail=? WHERE id=?", (e.code, e.detail, acc["id"]))
+        if e.scope == "post":
+            db.run("UPDATE uploads SET status='failed', error=? WHERE id=?", (inf["title"], fb_upload))
+        else:
+            db.run("DELETE FROM uploads WHERE id=?", (fb_upload,))  # not posted; let it try again next time
+        db.event("warn", "facebook", f"{ch['title']}: {inf['message']}", ws["id"], ch["id"], e.code, e.detail)
+    except Exception as e:  # never let Facebook break the finished YouTube post
+        db.run("DELETE FROM uploads WHERE id=?", (fb_upload,))
+        db.event("warn", "facebook", f"{ch['title']}: could not post to Facebook — {e}", ws["id"], ch["id"])
 
 
 def _release(upload_id, session, dmod, ch, permanent=False):

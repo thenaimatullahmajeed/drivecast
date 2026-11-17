@@ -47,6 +47,7 @@ const ICON = {
   logout: '<path d="M15 4h4a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1h-4M10 17l5-5-5-5M15 12H4"/>', shield: '<path d="M12 3 4 6v6c0 4.5 3.4 8 8 9 4.6-1 8-4.5 8-9V6z"/><path d="m9 12 2 2 4-4"/>',
   refresh: '<path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/>', search: '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>',
   ig: '<rect x="3" y="3" width="18" height="18" rx="5"/><circle cx="12" cy="12" r="4"/><circle cx="17.5" cy="6.5" r="1"/>',
+  fb: '<path d="M14 8h3V4h-3a4 4 0 0 0-4 4v2H8v4h2v7h4v-7h3l1-4h-4V8z"/>',
   inbox: '<path d="M4 13v6h16v-6M12 4v11M7 9l5-5 5 5"/>', repeat: '<path d="M17 2l4 4-4 4"/><path d="M3 11V9a3 3 0 0 1 3-3h15M7 22l-4-4 4-4"/><path d="M21 13v2a3 3 0 0 1-3 3H3"/>',
   cookie: '<circle cx="12" cy="12" r="9"/><circle cx="9" cy="9" r="1"/><circle cx="15" cy="13" r="1"/><circle cx="10" cy="15" r="1"/>', pause: '<rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/>',
   more: '<circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/>',
@@ -547,7 +548,7 @@ function feedCard(d) {
   return `<section class="card" style="height:100%">${hd('Activity', 'What the server did, newest first')}<div class="feed">${rows || '<div class="empty">Nothing yet.</div>'}</div></section>`;
 }
 function attentionCard(d) {
-  const FIX = { replace_proxy: 'Replace proxy', confirm_ip: 'Review IP', replace_cookies: 'Replace cookies', add_cookies: 'Add cookies', edit_source: 'Fix source', check_source: 'Open', open_channel: 'Open', reconnect_channel: 'Reconnect', connect_drive: 'Connect Drive', resolve_upload: 'Check', update_app: 'Update' };
+  const FIX = { replace_proxy: 'Replace proxy', confirm_ip: 'Review IP', replace_cookies: 'Replace cookies', add_cookies: 'Add cookies', edit_source: 'Fix source', check_source: 'Open', open_channel: 'Open', reconnect_channel: 'Reconnect', connect_drive: 'Connect Drive', connect_facebook: 'Connect', reconnect_facebook: 'Reconnect', fb_app: 'Settings', resolve_upload: 'Check', update_app: 'Update' };
   const rows = d.attention.map((a, i) => `<div style="display:flex;gap:10px;padding:9px 0;border-top:1px solid var(--line)"><span class="chip ${a.level === 'error' ? 'bad' : 'warn'}" style="width:28px;height:28px;padding:0;justify-content:center;border-radius:8px;flex-shrink:0">${ic('alert', 14)}</span>
     <div style="display:flex;flex-direction:column;gap:2px;flex:1;min-width:0"><strong style="font-size:13px">${esc(a.title)}</strong>${a.detail ? `<span class="mini">${esc(a.detail)}</span>` : ''}${a.at ? `<span class="mini mono">${esc(rel(a.at))}${a.has_detail ? ` · <button class="linkbtn" data-act="evdetail" data-id="${a.ref}">details</button>` : ''}</span>` : ''}</div>
     <span class="actions" style="flex-shrink:0">${a.fix ? `<button class="btn sm primary" data-act="fixit" data-i="${i}">${FIX[a.fix] || 'Fix'}</button>` : ''}${a.action === 'event' ? `<button class="btn sm" data-act="dismiss" data-id="${a.ref}">Dismiss</button>` : ''}</span></div>`).join('');
@@ -563,6 +564,8 @@ function runFix(a) {
       return go('groups');
     case 'edit_source': case 'check_source': case 'open_channel': case 'reconnect_channel': return go(a.channel_id || ref ? `channel/${a.channel_id || ref}` : 'channels');
     case 'connect_drive': return go('drive');
+    case 'connect_facebook': case 'reconnect_facebook': S.openFbConnect = ref; return go('groups');
+    case 'fb_app': return go('settings');
     case 'resolve_upload': return go('videos');
     case 'update_app': return go('server');
   }
@@ -641,7 +644,12 @@ function cookiesModal(gid, done) {
     catch (e) { out.innerHTML = `<div class="note bad">${ic('alert', 16)}<span>${esc(e.message)}</span></div>`; }
   };
 }
-document.addEventListener('change', e => {
+document.addEventListener('change', async e => {
+  if (e.target.dataset && e.target.dataset.assign) {
+    try { await api('POST', `/api/facebook/pages/${e.target.dataset.assign}/assign`, { channel_id: e.target.value ? +e.target.value : null }); toast(e.target.value ? 'Page linked' : 'Page unlinked'); render(); }
+    catch (err) { toast(err.message, true); }
+    return;
+  }
   if (e.target.id !== 'ckfile' || !e.target.files[0]) return;
   const r = new FileReader(); r.onload = () => { const t = $('#cktext'); if (t) t.value = r.result; }; r.readAsText(e.target.files[0]);
 });
@@ -858,8 +866,24 @@ function igCard(g) {
     <div style="flex:1;min-width:160px;display:flex;flex-direction:column;gap:2px"><span style="display:flex;align-items:center;gap:8px"><b style="font-size:13px">Instagram ${a && a.username ? '· @' + esc(a.username) : ''}</b>${chip(st[0], st[1])}</span><span class="muted" style="font-size:12px">${esc(st[2])}</span></div>
     <button class="btn sm ${!a || a.status === 'needs_cookies' ? 'primary' : ''}" data-act="cookies" data-id="${g.id}">${ic('cookie', 14)}${a ? 'Replace cookies' : 'Add cookies'}</button></div>`;
 }
+function fbCard(g) {
+  const fb = (S.fb && S.fb.groups || []).find(x => x.group_id === g.id) || { account: null, pages: [] };
+  if (!S.fb || !S.fb.app_ready) return `<div class="igbox"><span style="width:34px;height:34px;border-radius:10px;background:#E7EEFB;color:#1D4FA8;display:inline-flex;align-items:center;justify-content:center">${ic('fb', 18)}</span><div style="flex:1;min-width:160px"><b style="font-size:13px">Facebook</b><div class="muted" style="font-size:12px">Add your Meta app in Settings to post to pages.</div></div><a class="btn sm" href="#/settings">Settings</a></div>`;
+  const a = fb.account;
+  const st = !a ? ['Not connected', 'neutral'] : a.status === 'needs_reconnect' ? ['Sign-in expired', 'bad'] : ['Connected', 'ok'];
+  const onGroup = (S.allChannels || []).filter(c => c.group && c.group.id === g.id);
+  const opts = c => onGroup.map(ch => `<option value="${ch.id}" ${c && c.id === ch.id ? 'selected' : ''}>${esc(ch.title)}</option>`).join('');
+  const pages = fb.pages.map(p => `<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-top:1px solid var(--line)">
+    ${avatar(p.name, hashI(p.name), p.picture, 26)}<div style="flex:1;min-width:0"><span class="ell" style="font-weight:600;font-size:13px">${esc(p.name)}</span>${p.can_post ? '' : '<span class="mini" style="color:var(--warn)"> · you are not an admin/editor</span>'}</div>
+    <select class="i" style="height:34px;max-width:170px" data-assign="${p.id}" ${p.can_post ? '' : 'disabled'}><option value="">— no channel —</option>${opts(p.channel)}</select></div>`).join('');
+  return `<div class="igbox" style="flex-direction:column;align-items:stretch;gap:10px"><div style="display:flex;align-items:center;gap:10px"><span style="width:34px;height:34px;border-radius:10px;background:#E7EEFB;color:#1D4FA8;display:inline-flex;align-items:center;justify-content:center">${ic('fb', 18)}</span>
+    <div style="flex:1;min-width:140px"><span style="display:flex;align-items:center;gap:8px"><b style="font-size:13px">Facebook${a ? ' · ' + esc(a.name) : ''}</b>${chip(st[0], st[1])}</span><span class="muted" style="font-size:12px">${a ? `${fb.pages.length} page(s) — link each to a channel below` : 'One Allow brings every page of this ID.'}</span></div>
+    <button class="btn sm ${!a || a.status === 'needs_reconnect' ? 'primary' : ''}" data-act="fbconnect" data-id="${g.id}">${ic('fb', 14)}${a ? 'Reconnect' : 'Connect Facebook'}</button>${a ? `<button class="btn sm" data-act="fbrefresh" data-id="${g.id}">${ic('refresh', 14)}</button>` : ''}</div>
+    ${a && fb.pages.length ? `<div>${pages}</div>` : ''}</div>`;
+}
 async function pageGroups() {
-  const { groups } = await api('GET', '/api/groups');
+  const [{ groups }, fb, chs] = await Promise.all([api('GET', '/api/groups'), api('GET', '/api/facebook').catch(() => ({ groups: [], app_ready: false })), api('GET', '/api/channels').catch(() => ({ channels: [] }))]);
+  S.fb = fb; S.allChannels = chs.channels;
   const cards = groups.map(g => {
     const over = g.channel_count > g.max_channels, down = g.status === 'down';
     const color = down ? '#B42318' : over ? '#C27A12' : '#0E1116';
@@ -872,6 +896,7 @@ async function pageGroups() {
       ${down ? `<div class="note bad">${ic('alert', 16)}<span>${esc(g.last_error || 'Proxy is not responding')}. Uploads for these channels are held — never sent from the server IP.</span></div>` : ''}
       ${over ? `<div class="note warn">${ic('alert', 16)}<span>${g.channel_count} channels on one IP — above the recommended ${g.max_channels}. Allowed, at higher risk.</span></div>` : ''}
       ${igCard(g)}
+      ${fbCard(g)}
       <div>${chans || '<span class="muted" style="font-size:13px">No channels yet.</span>'}</div>
       <div class="actions">${ipChanged ? `<button class="btn primary" data-act="acceptip" data-id="${g.id}">Accept new IP</button>` : ''}<button class="btn" data-act="gtest" data-id="${g.id}">${ic('bolt', 16)}Test now</button><a class="btn" href="#/add">${ic('plus', 16)}Add channel</a><button class="btn" data-act="gedit" data-id="${g.id}">Edit</button>${g.channel_count ? '' : `<button class="btn danger" data-act="gdel" data-id="${g.id}">Delete</button>`}</div></div></section>`;
   }).join('');
@@ -881,12 +906,15 @@ async function pageGroups() {
      <div class="row"><div class="f3"><section class="card">${hd('New IP group', `Next number: Group ${nextN}`)}${groupForm()}</section></div>
      <div class="f1"><section class="card">${hd('Rules every group follows')}${[['No fallback', 'A failed proxy holds uploads. Traffic never leaves from the server IP.'], ['One channel, one IP', 'A channel never switches IP mid-route. Pause it before moving groups.'], ['IP check before upload', 'Upload starts only when the outgoing IP matches the group.'], ['DNS through proxy', 'Lookups use socks5h, so the real IP never leaks.']].map(([a, b]) => `<div style="display:flex;gap:12px;padding:12px 0;border-top:1px solid var(--line)"><span style="color:var(--ok)">${ic('check')}</span><div><b>${a}</b><div class="muted" style="font-size:13px">${b}</div></div></div>`).join('')}</section></div></div>`);
   if (S.openCookies) { const gid = S.openCookies; S.openCookies = null; setTimeout(() => cookiesModal(gid, render), 50); }
+  if (S.openFbConnect) { const gid = S.openFbConnect; S.openFbConnect = null; setTimeout(() => connectFacebook(gid), 50); }
   if (S.openGroup) { const gid = S.openGroup; S.openGroup = null; setTimeout(() => S.acts.gedit({ id: gid }), 50); }
   Object.assign(S.acts, GROUP_FORM_ACTS, {
     cookies: d => cookiesModal(+d.id, render),
     gtest: async d => { const r = await api('POST', `/api/groups/${d.id}/test`); toast(r.group.status === 'ok' ? `Group ${r.group.number} is healthy` : `Group ${r.group.number}: ${r.group.last_error}`, r.group.status !== 'ok'); render(); },
     testall: async () => { for (const g of groups) { await api('POST', `/api/groups/${g.id}/test`).catch(() => { }); } render(); },
     acceptip: async d => { await api('POST', `/api/groups/${d.id}/accept-ip`); toast('New IP accepted'); render(); },
+    fbconnect: d => connectFacebook(+d.id),
+    fbrefresh: async d => { await api('POST', `/api/facebook/refresh/${d.id}`); toast('Pages refreshed'); render(); },
     gdel: async d => { if (!confirm('Delete this IP group?')) return; await api('DELETE', `/api/groups/${d.id}`); render(); },
     gedit: d => {
       const g = groups.find(x => x.id === +d.id);
@@ -906,6 +934,27 @@ async function pageGroups() {
       };
     },
   });
+}
+
+// ------------------------------------------------------------------ Facebook connect
+async function connectFacebook(groupId) {
+  let link;
+  try { link = await api('POST', '/api/connect', { purpose: 'facebook', group_id: groupId }); }
+  catch (e) { return toast(e.message, true); }
+  modal(`<h2>Connect Facebook</h2><p class="muted" style="margin:0">Open this link, sign in to Facebook with the ID that manages the pages, and press <b>Continue / Allow</b> on every screen. All of that ID’s pages will come in at once.</p>
+    <div class="linkbox"><span class="kicker">One-time authorization link</span><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><span class="mono" style="font-size:14px;flex:1 1 260px;word-break:break-all">${esc(link.url)}</span><button class="btn coral" data-act="copy" data-text="${esc(link.url)}">${ic('copy', 16)}Copy</button><a class="btn" href="${esc(link.url)}" target="_blank" rel="noopener">Open here</a></div><span style="font-size:12px;color:#8E94A0">Single use · tied to this group’s IP</span></div>
+    <div id="fbwait" style="display:flex;align-items:center;gap:12px;margin-top:16px;padding:14px;border:1px dashed #C9C6BD;border-radius:12px"><span class="pulse"></span><div style="flex:1"><b>Waiting for Facebook…</b><p class="muted" style="margin:3px 0 0;font-size:13px">This updates by itself once you press Allow.</p></div></div>
+    <div class="actions" style="justify-content:flex-end;margin-top:12px"><button class="btn" data-act="close">Close</button></div>`);
+  const t = setInterval(async () => {
+    if (!document.getElementById('modal')) return clearInterval(t);
+    try {
+      const st = await api('GET', `/api/connect/${link.code}`);
+      if (st.status === 'done') { clearInterval(t); closeModal(); toast('Facebook connected'); render(); }
+      else if (st.status === 'error') { clearInterval(t); const w = $('#fbwait'); if (w) w.innerHTML = `<div class="note bad" style="margin:0">${ic('alert', 16)}<span>${esc(st.error || 'Could not connect')}</span></div>`; }
+      else if (st.status === 'expired') { clearInterval(t); const w = $('#fbwait'); if (w) w.innerHTML = '<span class="muted">Link expired. Close and try again.</span>'; }
+    } catch (e) { /* keep waiting */ }
+  }, 3000);
+  S.timers.push(t);
 }
 
 // ------------------------------------------------------------------ channels
@@ -982,7 +1031,7 @@ async function pageChannel(id) {
     ${tile('Instagram source', `<span style="color:var(--${igState[1] === 'ok' ? 'ok' : igState[1] === 'bad' ? 'bad' : igState[1] === 'warn' ? 'warn' : 'muted'})">${esc(igState[0])}</span>`, src ? `@${esc(src.handle)}${acc ? ` · via @${esc(acc.username || '')}` : ''}` : 'Drive folder only', igState[1])}
     ${tile('Last check · next', src && src.last_check ? `${esc(rel(src.last_check))}` : '—', src && src.next_check ? `next ${src.next_check <= now ? 'now' : esc(rel(src.next_check))}` : 'every 45–90 min')}
     ${tile('Downloads today', src ? `${src.today} older` : '—', src ? `of ${src.daily_cap} a day · fresh always` : '—')}
-    ${tile('Runway', `${(d.pipeline.ready / pp).toFixed(1)} days`, `${p.ready} clean video(s) ready · ${pp}/day`, p.ready / pp < 2 ? 'bad' : '')}
+    ${tile('Facebook', fbTileVal(d.facebook), fbTileFoot(d.facebook), d.facebook && d.facebook.status === 'needs_reconnect' ? 'bad' : '')}
   </div>`;
   const stage = (k, n, sub, col) => `<div class="stg"><span>${k}</span><strong style="color:${col}">${num(n)}</strong><em>${sub}</em></div>`;
   const pipe = `<section class="today" style="padding:16px 18px"><div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;flex-wrap:wrap"><h2 style="font-size:16px">Pipeline</h2><span class="mono" style="font-size:11px;color:#8E94A0">${src ? `${num(src.total_found)} found on Instagram · ` : ''}every post of this client, by stage</span></div>
@@ -1007,7 +1056,7 @@ async function pageChannel(id) {
   const titlesCard = `<section class="card">${hd('Title ideas', 'Used only when a post has no caption or a camera file name. One per line, never repeated.')}<form data-form="savetitles" style="display:flex;flex-direction:column;gap:10px"><textarea class="i" name="titles" rows="5" style="height:auto;padding:10px" placeholder="Fine line magic&#10;Behind the ink">${esc(d.titles.join('\n'))}</textarea><div class="actions" style="justify-content:flex-end"><button class="btn sm primary" type="submit">Save titles</button></div></form></section>`;
   const ev = d.events.map(e => `<div><span class="fdot" style="background:${{ error: '#B42318', warn: '#C27A12', info: '#4F46E5' }[e.level] || '#1F9D55'}"></span><span>${esc(e.message)}</span><span class="mini mono" style="white-space:nowrap">${esc(rel(e.at))}</span></div>`).join('');
   const evCard = `<section class="card">${hd('Activity')}<div class="feed">${ev || '<div class="empty" style="padding:14px">Nothing yet.</div>'}</div></section>`;
-  const actions = `${src ? `<button class="btn" data-act="igcheck">${ic('refresh', 16)}Check Instagram now</button><button class="btn" data-act="igpause">${ic(src.state === 'paused' ? 'play' : 'pause', 16)}${src.state === 'paused' ? 'Resume Instagram' : 'Pause Instagram'}</button>` : ''}<button class="btn primary" data-act="srcedit">${ic('ig', 16)}${src ? 'Edit source' : 'Connect Instagram'}</button>${c.folder_id ? `<a class="btn" href="https://drive.google.com/drive/folders/${esc(c.folder_id)}" target="_blank" rel="noopener">${ic('folder', 16)}Drive folder</a>` : ''}`;
+  const actions = `${src ? `<button class="btn" data-act="igcheck">${ic('refresh', 16)}Check Instagram now</button><button class="btn" data-act="igpause">${ic(src.state === 'paused' ? 'play' : 'pause', 16)}${src.state === 'paused' ? 'Resume Instagram' : 'Pause Instagram'}</button>` : ''}<button class="btn primary" data-act="srcedit">${ic('ig', 16)}${src ? 'Edit source' : 'Connect Instagram'}</button>${c.folder_id ? `<a class="btn" href="https://drive.google.com/drive/folders/${esc(c.folder_id)}" target="_blank" rel="noopener">${ic('folder', 16)}Drive folder</a>` : ''}<button class="btn" data-act="fblink">${ic('fb', 16)}${d.facebook && d.facebook.linked ? 'Facebook page' : 'Link Facebook page'}</button>`;
   const head = `<div style="display:flex;align-items:center;gap:12px">${avatar(c.title, hashI(c.title), c.thumbnail, 44)}<span>${esc(c.title)}</span></div>`;
   mount('channels', c.title, `${src ? `<b>@${esc(src.handle)}</b> on Instagram · ${CT[src.content_type][0]}` : 'Drive folder'} · Group ${c.group ? c.group.number : '—'} · ${c.plan.posts_per_day}/day · ${d.has_inbox ? 'client Inbox on' : 'no client Inbox'}`, 'Client', actions,
     `${src && src.error ? `<div class="note warn" style="margin-bottom:12px">${ic('alert', 16)}<span><b>${esc(src.error.title)}.</b> ${esc(src.error.message)}</span></div>` : ''}
@@ -1024,7 +1073,35 @@ async function pageChannel(id) {
     mretry: async x => { await api('POST', `/api/media/${x.id}/retry`); toast('Will try again'); render(); },
     savetitles: async v => { await api('PUT', `/api/channels/${c.id}/settings`, { titles: v.titles }); toast('Titles saved'); },
     srcedit: () => editSourceModal(c, src, d),
+    fblink: () => fbLinkModal(c, d),
   });
+}
+function fbTileVal(fb) {
+  if (!fb) return '—';
+  if (!fb.app_ready) return '<span class="muted" style="font-size:13px">app not set</span>';
+  if (fb.linked) return `<span style="color:${fb.status === 'needs_reconnect' ? 'var(--bad)' : 'var(--ok)'};font-size:16px">${esc(fb.linked.name)}</span>`;
+  return fb.connected ? '<span style="font-size:15px">not linked</span>' : '<span class="muted" style="font-size:14px">off</span>';
+}
+function fbTileFoot(fb) {
+  if (!fb || !fb.app_ready) return 'add your Meta app in Settings';
+  if (fb.linked) return fb.status === 'needs_reconnect' ? 'reconnect on IP groups' : 'posts here too, via API';
+  if (fb.connected) return `${fb.available.length} page(s) — click to link`;
+  return 'connect on the IP groups page';
+}
+function fbLinkModal(c, d) {
+  const fb = d.facebook;
+  if (!fb || !fb.app_ready) return go('settings');
+  if (!fb.connected) { toast('Connect this group’s Facebook on the IP groups page first', true); return go('groups'); }
+  const opts = fb.available.map(p => `<button type="button" class="pick ${fb.linked && fb.linked.page_id === p.page_id ? 'sel' : ''}" data-fbpage="${p.id}" ${p.can_post ? '' : 'disabled'} style="flex-direction:row;align-items:center;gap:12px">${avatar(p.name, hashI(p.name), p.picture, 30)}<span style="flex:1;text-align:left"><b style="font-size:14px">${esc(p.name)}</b>${p.can_post ? '' : '<span class="mini" style="color:var(--warn)"> · not an admin</span>'}</span>${fb.linked && fb.linked.page_id === p.page_id ? chip('Linked', 'ok', false) : ''}</button>`).join('');
+  modal(`<h2>Facebook page for ${esc(c.title)}</h2><p class="muted" style="margin:0">Pick the page this channel also posts to. Every video that goes to YouTube will post to this page at the same time, via the API.</p>
+    <div style="display:flex;flex-direction:column;gap:8px;margin:14px 0">${opts || '<div class="empty">No pages on this group.</div>'}</div>
+    ${fb.linked ? `<button class="btn danger sm" data-fbpage="" data-unlink="1">Unlink</button>` : ''}
+    <div class="actions" style="justify-content:flex-end"><button class="btn" data-act="close">Close</button></div>`);
+  document.querySelectorAll('[data-fbpage]').forEach(b => b.addEventListener('click', async () => {
+    const pid = b.dataset.fbpage;
+    await api('POST', `/api/facebook/pages/${pid || fb.linked.id}/assign`, { channel_id: pid ? c.id : null });
+    closeModal(); toast(pid ? 'Page linked' : 'Page unlinked'); render();
+  }));
 }
 function editSourceModal(c, src, d) {
   const groups = W.groups;
@@ -1161,7 +1238,14 @@ async function pageSettings() {
       <ol class="muted" style="font-size:13px;line-height:1.7;margin:0 0 16px;padding-left:18px"><li>Google Cloud Console → APIs &amp; Services → enable <b>YouTube Data API v3</b> and <b>Google Drive API</b>.</li><li>OAuth consent screen → External → publishing status <b>In production</b> (Testing tokens expire after 7 days).</li><li>Credentials → Create OAuth client → <b>Web application</b> → add the redirect URI below.</li><li>Paste the Client ID and Client secret here.</li></ol>
       <div class="linkbox" style="margin-bottom:16px"><span class="kicker">Authorized redirect URI</span><div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><span class="mono" style="flex:1 1 260px;word-break:break-all">${esc(s.redirect_uri)}</span><button class="btn coral" data-act="copy" data-text="${esc(s.redirect_uri)}">${ic('copy', 16)}Copy</button></div></div>
       <form data-form="gapp" style="display:flex;flex-direction:column;gap:12px"><label class="f">Client ID<input class="i" name="google_client_id" value="${esc(s.google_client_id || '')}" placeholder="…apps.googleusercontent.com" autocomplete="off"></label>
-      <label class="f">Client secret<input class="i" name="google_client_secret" type="password" placeholder="${s.has_secret ? 'Saved — leave empty to keep' : ''}" autocomplete="off"></label><div class="actions"><button class="btn primary" type="submit">Save app</button>${s.google_client_id && s.has_secret ? chip('Saved · secret encrypted', 'ok') : ''}</div></form></section></div>
+      <label class="f">Client secret<input class="i" name="google_client_secret" type="password" placeholder="${s.has_secret ? 'Saved — leave empty to keep' : ''}" autocomplete="off"></label><div class="actions"><button class="btn primary" type="submit">Save app</button>${s.google_client_id && s.has_secret ? chip('Saved · secret encrypted', 'ok') : ''}</div></form></section>
+      <section class="card" style="margin-top:16px">${hd('Facebook (Meta) app — optional', 'Only if you post to Facebook Pages. Make your own Meta app once; then one “Allow” per Facebook ID brings all its pages.')}
+      <ol class="muted" style="font-size:13px;line-height:1.7;margin:0 0 16px;padding-left:18px"><li>developers.facebook.com → Create App → type <b>Business</b>.</li><li>Add the <b>Facebook Login</b> product. Under its settings add the redirect URI below.</li><li>App settings → Basic: copy the <b>App ID</b> and <b>App secret</b> here.</li><li>While testing, add each Facebook ID you’ll connect under App roles (Admin/Tester). For public posts the app later needs App Review for pages_manage_posts.</li></ol>
+      <div class="linkbox" style="margin-bottom:16px"><span class="kicker">Valid OAuth redirect URI</span><div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><span class="mono" style="flex:1 1 260px;word-break:break-all">${esc(s.fb_redirect_uri)}</span><button class="btn coral" data-act="copy" data-text="${esc(s.fb_redirect_uri)}">${ic('copy', 16)}Copy</button></div></div>
+      <form data-form="fbapp" style="display:flex;flex-direction:column;gap:12px"><div class="form"><label class="f">App ID<input class="i" name="fb_app_id" value="${esc(s.fb_app_id || '')}" autocomplete="off"></label>
+      <label class="f">App secret<input class="i" name="fb_app_secret" type="password" placeholder="${s.has_fb_secret ? 'Saved — leave empty to keep' : ''}" autocomplete="off"></label>
+      <label class="f">Graph API version<input class="i mono" name="fb_graph_version" value="${esc(s.fb_graph_version || '')}" placeholder="v21.0"><span class="help">Change only if Meta’s posting fields change.</span></label></div>
+      <div class="actions"><button class="btn primary" type="submit">Save Facebook app</button>${s.fb_app_id && s.has_fb_secret ? chip('Saved', 'ok') : ''}<a class="btn" href="#/groups">Connect a Facebook ID →</a></div></form></section></div>
     <div class="f1"><section class="card" style="margin-bottom:16px">${hd('Your timezone', 'Every time in the panel is shown in this zone.')}<form data-form="tz" class="actions"><select class="i" name="timezone" style="flex:1">${tzs.map(t => `<option ${t === s.timezone ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select><button class="btn primary" type="submit">Save</button></form></section>
       <section class="card" style="margin-bottom:16px">${hd('Change password')}<form data-form="pw" style="display:flex;flex-direction:column;gap:12px"><input class="i" type="password" name="current_password" placeholder="Current password" autocomplete="current-password" aria-label="Current password"><input class="i" type="password" name="new_password" placeholder="New password (8+)" autocomplete="new-password" aria-label="New password"><button class="btn" type="submit">Update password</button></form></section>
       <section class="card">${hd('Your link')}<span class="mono" style="word-break:break-all">${esc(s.public_url)}</span>
@@ -1169,6 +1253,7 @@ async function pageSettings() {
   if (S.user.role === 'owner') api('GET', '/api/settings/advanced').then(a => { const i = document.querySelector('[name=public_url_override]'); if (i) i.value = a.public_url_override || ''; }).catch(() => { });
   S.acts.advurl = async v => { await api('POST', '/api/settings/advanced', v); toast(v.public_url_override ? 'Own domain saved' : 'Using the built-in link'); render(); };
   S.acts.gapp = async v => { if (!v.google_client_secret) delete v.google_client_secret; await api('POST', '/api/settings', v); toast('Google app saved'); render(); };
+  S.acts.fbapp = async v => { if (!v.fb_app_secret) delete v.fb_app_secret; await api('POST', '/api/settings', v); toast('Facebook app saved'); render(); };
   S.acts.tz = async v => { await api('POST', '/api/settings', v); S.tz = v.timezone; S.user.timezone = v.timezone; toast('Timezone saved'); render(); };
   S.acts.pw = async (v, f) => { await api('POST', '/api/settings', v); f.reset(); toast('Password updated'); };
 }

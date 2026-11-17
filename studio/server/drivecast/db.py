@@ -189,6 +189,29 @@ SCHEMA = [
     ALTER TABLE ig_accounts ADD COLUMN user_agent TEXT;
     ALTER TABLE ig_accounts ADD COLUMN language TEXT;
     """,
+    # version 6: Facebook Pages via the Graph API
+    """
+    ALTER TABLE workspaces ADD COLUMN fb_app_id TEXT;
+    ALTER TABLE workspaces ADD COLUMN fb_app_secret_enc TEXT;
+    CREATE TABLE IF NOT EXISTS fb_accounts (
+        id INTEGER PRIMARY KEY, workspace_id INTEGER NOT NULL REFERENCES workspaces(id),
+        group_id INTEGER NOT NULL UNIQUE REFERENCES ip_groups(id) ON DELETE CASCADE,
+        fb_user_id TEXT, name TEXT, token_enc TEXT NOT NULL, token_expires REAL,
+        status TEXT NOT NULL DEFAULT 'ok', error_code TEXT, error_detail TEXT,
+        checked_at REAL, created_at REAL NOT NULL, updated_at REAL
+    );
+    CREATE TABLE IF NOT EXISTS fb_pages (
+        id INTEGER PRIMARY KEY, workspace_id INTEGER NOT NULL, fb_account_id INTEGER NOT NULL REFERENCES fb_accounts(id) ON DELETE CASCADE,
+        page_id TEXT NOT NULL, name TEXT, category TEXT, picture TEXT, token_enc TEXT NOT NULL, can_post INTEGER NOT NULL DEFAULT 1,
+        channel_id INTEGER REFERENCES channels(id) ON DELETE SET NULL,
+        created_at REAL NOT NULL, updated_at REAL,
+        UNIQUE (fb_account_id, page_id)
+    );
+    CREATE INDEX IF NOT EXISTS ix_fb_pages_ch ON fb_pages(channel_id);
+    ALTER TABLE channels ADD COLUMN fb_page_id TEXT;
+    ALTER TABLE channels ADD COLUMN youtube_on INTEGER NOT NULL DEFAULT 1;
+    ALTER TABLE uploads ADD COLUMN post_id TEXT;
+    """,
 ]
 
 

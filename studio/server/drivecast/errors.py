@@ -40,6 +40,16 @@ CATALOG = {
     "DRIVE_QUOTA": ("library", "Google Drive is busy", "Google Drive asked us to slow down. It retries by itself.", None),
     "DRIVE_FULL": ("library", "Google Drive is full", "Your Drive storage is full. Free space or upgrade.", None),
     "DRIVE_FOLDER_GONE": ("channel", "Drive folder missing", "This channel’s Drive folder was moved or deleted. Choose it again.", "edit_source"),
+    # --- Facebook ---
+    "FB_NO_APP": ("library", "Facebook app not set", "Add your Meta app's App ID and secret in Settings before connecting Facebook.", "fb_app"),
+    "FB_NO_ACCOUNT": ("fb", "No Facebook connected on this group", "Group {group} has no Facebook account yet. Connect one to post to its pages.", "connect_facebook"),
+    "FB_TOKEN_EXPIRED": ("fb", "Facebook sign-in expired", "The Facebook connection on Group {group} ended. Reconnect it (one Allow).", "reconnect_facebook"),
+    "FB_PERMISSION": ("channel", "Facebook permission missing", "Facebook refused: {perm}. Reconnect and accept all the page permissions, and make sure you are an admin of this page.", "reconnect_facebook"),
+    "FB_RATE_LIMIT": ("fb", "Facebook asked us to slow down", "Group {group}'s Facebook is resting briefly. It resumes by itself.", None),
+    "FB_BLOCKED": ("fb", "Facebook paused this action", "Facebook temporarily blocked posting for policy reasons. It will retry later; if it repeats, check the page in Facebook.", None),
+    "FB_BUSY": ("post", "Facebook is busy", "Facebook did not answer. It will retry.", None),
+    "FB_NO_PAGE": ("channel", "No Facebook page linked", "Choose which page this channel posts to.", "edit_source"),
+    "FB_REJECTED": ("post", "Facebook refused this post", "Facebook refused the post: {why}", None),
     # --- YouTube ---
     "YT_AUTH_REVOKED": ("channel", "YouTube access ended", "Reconnect this channel — Google access was removed.", "reconnect_channel"),
     "YT_QUOTA": ("channel", "YouTube daily limit reached", "Posting resumes after midnight Pacific.", None),

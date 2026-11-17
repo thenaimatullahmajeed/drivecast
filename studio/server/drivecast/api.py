@@ -146,9 +146,12 @@ def register(req):
 @route("GET", "/api/settings")
 def get_settings(req):
     ws = store.workspace(req.ws)
+    from . import facebook as _fb
     return {"timezone": req.user["timezone"], "google_client_id": ws["google_client_id"],
             "has_secret": bool(ws["google_client_secret_enc"]), "redirect_uri": public_base(req) + "/oauth/callback",
-            "public_url": public_base(req), "audiences": list(AUDIENCES)}
+            "public_url": public_base(req), "audiences": list(AUDIENCES),
+            "fb_app_id": ws["fb_app_id"], "has_fb_secret": bool(ws["fb_app_secret_enc"]),
+            "fb_redirect_uri": public_base(req) + "/oauth/fb/callback", "fb_graph_version": db.meta_get("fb_graph_version") or _fb.DEFAULT_VERSION}
 
 
 @route("POST", "/api/settings")
@@ -164,6 +167,14 @@ def save_settings(req):
     if b.get("google_client_secret"):
         db.run("UPDATE workspaces SET google_client_secret_enc=? WHERE id=?",
                (security.seal(b["google_client_secret"].strip()), req.ws))
+    if "fb_app_id" in b:
+        db.run("UPDATE workspaces SET fb_app_id=? WHERE id=?", ((b["fb_app_id"] or "").strip() or None, req.ws))
+    if b.get("fb_app_secret"):
+        db.run("UPDATE workspaces SET fb_app_secret_enc=? WHERE id=?", (security.seal(b["fb_app_secret"].strip()), req.ws))
+    if b.get("fb_graph_version"):
+        v = b["fb_graph_version"].strip()
+        if re.match(r"^v\d+\.\d+$", v):
+            db.meta_set("fb_graph_version", v)
     if b.get("new_password"):
         if not security.check_password(b.get("current_password") or "", req.user["pw_hash"]):
             raise HttpError(403, "Current password is wrong")
@@ -445,6 +456,11 @@ def new_link(req):
         if g["status"] == "down":
             raise HttpError(400, f"Group {g['number']} is not responding. Fix it before connecting a channel.")
         gid = g["id"]
+    elif purpose == "facebook":
+        if not ws["fb_app_id"] or not ws["fb_app_secret_enc"]:
+            raise HttpError(400, "Add your Meta (Facebook) app in Settings first")
+        g = _own_group(req, b.get("group_id") or 0)
+        gid = g["id"]
     elif purpose != "drive":
         raise HttpError(400, "Unknown link type")
     code = security.token(18)
@@ -485,6 +501,10 @@ def open_link(req, code):
     if l["expires_at"] < time.time():
         return 410, _page("Link expired", "This sign-in link expired. Ask for a new one.", False)
     ws = store.workspace(l["workspace_id"])
+    if l["purpose"] == "facebook":
+        from . import facebook as _fb
+        url = _fb.consent_url(ws["fb_app_id"], public_base(req) + "/oauth/fb/callback", code)
+        return 302, {"Location": url}
     scopes = platform("youtube").SCOPES if l["purpose"] == "youtube" else DRIVE_SCOPES
     url = consent_url(ws["google_client_id"], public_base(req) + "/oauth/callback", scopes, code)
     return 302, {"Location": url}
@@ -564,6 +584,11 @@ def _channel_out(c):
     src = db.one("SELECT handle, state, error_code, content_type FROM sources WHERE channel_id=? AND state!='removed' ORDER BY id DESC LIMIT 1", (c["id"],))
     out["source"] = src
     out["ready"] = db.one("SELECT COUNT(*) n FROM media WHERE channel_id=? AND state='in_drive'", (c["id"],))["n"]
+    if c.get("fb_page_id"):
+        pg = db.one("SELECT p.name, p.can_post, a.status FROM fb_pages p JOIN fb_accounts a ON a.id=p.fb_account_id WHERE p.page_id=? AND p.channel_id=?", (c["fb_page_id"], c["id"]))
+        out["facebook"] = {"page": pg["name"], "ok": bool(pg["can_post"]) and pg["status"] == "ok"} if pg else None
+    else:
+        out["facebook"] = None
     return out
 
 
@@ -1163,7 +1188,16 @@ def channel_detail(req, cid):
         if acc["error_code"] and acc["status"] != "ok":
             g = store.group(c["group_id"])
             acco["error"] = _errors.info(acc["error_code"], group=g["number"] if g else "?")
-    return {"channel": _channel_out(store.channel(c["id"])), "source": srco, "ig_account": acco,
+    fb = None
+    if c["group_id"]:
+        fa = db.one("SELECT * FROM fb_accounts WHERE group_id=?", (c["group_id"],))
+        linked = db.one("SELECT * FROM fb_pages WHERE channel_id=? AND page_id=?", (c["id"], c.get("fb_page_id") or "")) if c.get("fb_page_id") else None
+        avail = db.all("SELECT id,page_id,name,picture,can_post FROM fb_pages WHERE fb_account_id=? AND (channel_id IS NULL OR channel_id=?)",
+                       (fa["id"], c["id"])) if fa else []
+        fb = {"connected": bool(fa), "account": fa["name"] if fa else None, "status": fa["status"] if fa else None,
+              "linked": {"id": linked["id"], "name": linked["name"], "page_id": linked["page_id"]} if linked else None,
+              "available": avail, "app_ready": bool(store.workspace(c["workspace_id"])["fb_app_id"])}
+    return {"channel": _channel_out(store.channel(c["id"])), "source": srco, "ig_account": acco, "facebook": fb,
             "titles": db.jload(c.get("titles_json"), []), "encore_on": bool(c.get("encore", 1)),
             "pipeline": {"found": sum(counts.values()), "waiting": counts.get("found", 0), "downloading": counts.get("downloading", 0),
                          "ready": counts.get("in_drive", 0), "published": counts.get("published", 0),
@@ -1312,3 +1346,134 @@ def pause_set(req):
               AND channel_id IN (SELECT id FROM channels WHERE workspace_id=?)""", (until, req.ws))
     db.event("info", "pause", "All posting paused" + ("" if until >= 9e9 else f" until {time.strftime('%d %b %H:%M UTC', time.gmtime(until))}") + ".", req.ws)
     return _ws_pause_view(req.ws)
+
+
+# ---------------------------------------------------------------- Facebook Pages (Graph API)
+from . import facebook as _fb  # noqa: E402
+
+
+def _fb_store_account(ws, g, user_tok, expires, s):
+    """Save the connected Facebook identity for a group and its pages' tokens."""
+    who = _fb.me(s, user_tok)
+    now = time.time()
+    sealed = security.seal(user_tok)
+    acc = db.one("SELECT id FROM fb_accounts WHERE group_id=?", (g["id"],))
+    if acc:
+        db.run("""UPDATE fb_accounts SET fb_user_id=?, name=?, token_enc=?, token_expires=?, status='ok',
+                  error_code=NULL, error_detail=NULL, checked_at=?, updated_at=? WHERE id=?""",
+               (who.get("id"), who.get("name"), sealed, expires, now, now, acc["id"]))
+        acc_id = acc["id"]
+    else:
+        acc_id = db.run("""INSERT INTO fb_accounts(workspace_id,group_id,fb_user_id,name,token_enc,token_expires,checked_at,created_at,updated_at)
+                           VALUES(?,?,?,?,?,?,?,?,?)""", (ws["id"], g["id"], who.get("id"), who.get("name"), sealed, expires, now, now, now))
+    n = 0
+    for pg in _fb.pages(s, user_tok):
+        if not pg.get("token"):
+            continue
+        db.run("""INSERT INTO fb_pages(workspace_id,fb_account_id,page_id,name,category,picture,token_enc,can_post,created_at,updated_at)
+                  VALUES(?,?,?,?,?,?,?,?,?,?)
+                  ON CONFLICT(fb_account_id,page_id) DO UPDATE SET name=excluded.name, category=excluded.category,
+                  picture=excluded.picture, token_enc=excluded.token_enc, can_post=excluded.can_post, updated_at=excluded.updated_at""",
+               (ws["id"], acc_id, pg["page_id"], pg["name"], pg["category"], pg["picture"],
+                security.seal(pg["token"]), 1 if pg["can_post"] else 0, now, now))
+        n += 1
+    for code in ("FB_TOKEN_EXPIRED", "FB_NO_ACCOUNT"):
+        db.resolve(code, ws["id"])
+    return who, n
+
+
+@route("GET", "/oauth/fb/callback", auth=None)
+def fb_callback(req):
+    code, err = req.query.get("state", ""), req.query.get("error")
+    l = db.one("SELECT * FROM connect_links WHERE code=?", (code,))
+    if not l or l["used_at"] or l["expires_at"] < time.time() or l["purpose"] != "facebook":
+        return 400, _page("Link not valid", "Start again from a new Connect Facebook link.", False)
+    if err:
+        db.run("UPDATE connect_links SET error=? WHERE code=?", ("Facebook sign-in was cancelled", code))
+        return 400, _page("Not connected", "Sign-in was cancelled. You can open the link again.", False)
+    ws = store.workspace(l["workspace_id"])
+    g = store.group(l["group_id"])
+    try:
+        s = session_for(g)  # Facebook sees this group's proxy IP, like its YouTube traffic
+        tok, exp = _fb.exchange_code(s, ws["fb_app_id"], security.unseal(ws["fb_app_secret_enc"]),
+                                     req.query.get("code", ""), public_base(req) + "/oauth/fb/callback")
+        who, n = _fb_store_account(ws, g, tok, exp, s)
+        db.run("UPDATE connect_links SET used_at=?, result_json=? WHERE code=?",
+               (time.time(), json.dumps({"fb": who.get("name"), "pages": n}), code))
+        return 200, _page("Facebook connected",
+                          f"Connected as <b>{html.escape(who.get('name') or '')}</b> on Group {g['number']}. "
+                          f"<b>{n}</b> page(s) are ready. Go back to DriveCast and link each page to a channel. You can close this tab.")
+    except CodedError as e:
+        db.run("UPDATE connect_links SET error=? WHERE code=?", (e.info()["message"][:300], code))
+        return 400, _page("Not connected", html.escape(e.info()["message"]), False)
+    except Exception as e:
+        db.run("UPDATE connect_links SET error=? WHERE code=?", (f"Unexpected error: {e}"[:300], code))
+        return 500, _page("Not connected", "Something went wrong. Ask for a new link and try again.", False)
+
+
+@route("GET", "/api/facebook")
+def fb_state(req):
+    ws = store.workspace(req.ws)
+    groups = db.all("SELECT id,number,status FROM ip_groups WHERE workspace_id=? ORDER BY number", (req.ws,))
+    out = []
+    for g in groups:
+        acc = db.one("SELECT * FROM fb_accounts WHERE group_id=?", (g["id"],))
+        pages = []
+        if acc:
+            for p in db.all("SELECT * FROM fb_pages WHERE fb_account_id=? ORDER BY name", (acc["id"],)):
+                ch = store.channel(p["channel_id"]) if p["channel_id"] else None
+                pages.append({"id": p["id"], "page_id": p["page_id"], "name": p["name"], "category": p["category"],
+                              "picture": p["picture"], "can_post": bool(p["can_post"]),
+                              "channel": {"id": ch["id"], "title": ch["title"]} if ch else None})
+        out.append({"group_id": g["id"], "number": g["number"], "group_status": g["status"],
+                    "account": None if not acc else {"name": acc["name"], "status": acc["status"], "error_code": acc["error_code"],
+                                                     "expires": acc["token_expires"]},
+                    "pages": pages})
+    return {"app_ready": bool(ws["fb_app_id"] and ws["fb_app_secret_enc"]), "groups": out}
+
+
+@route("DELETE", "/api/groups/(\\d+)/facebook")
+def fb_disconnect(req, gid):
+    g = _own_group(req, gid)
+    db.run("UPDATE channels SET fb_page_id=NULL WHERE fb_page_id IN (SELECT page_id FROM fb_pages p JOIN fb_accounts a ON a.id=p.fb_account_id WHERE a.group_id=?)", (g["id"],))
+    db.run("DELETE FROM fb_accounts WHERE group_id=?", (g["id"],))
+    return {"ok": True}
+
+
+@route("POST", "/api/facebook/refresh/(\\d+)")
+def fb_refresh(req, gid):
+    g = _own_group(req, gid)
+    acc = db.one("SELECT * FROM fb_accounts WHERE group_id=?", (g["id"],))
+    if not acc:
+        raise HttpError(400, "No Facebook connected on this group")
+    ws = store.workspace(req.ws)
+    try:
+        s = session_for(g)
+        _fb_store_account(ws, g, security.unseal(acc["token_enc"]), acc["token_expires"], s)
+    except CodedError as e:
+        if e.code == "FB_TOKEN_EXPIRED":
+            db.run("UPDATE fb_accounts SET status='needs_reconnect', error_code=? WHERE id=?", (e.code, acc["id"]))
+        raise _ig_error(e, group=g["number"])
+    return fb_state(req)
+
+
+@route("POST", "/api/facebook/pages/(\\d+)/assign")
+def fb_assign(req, pid):
+    p = db.one("SELECT * FROM fb_pages WHERE id=? AND workspace_id=?", (int(pid), req.ws))
+    if not p:
+        raise HttpError(404, "Page not found")
+    ch_id = req.json.get("channel_id")
+    if ch_id in (None, "", 0):
+        if p["channel_id"]:
+            db.run("UPDATE channels SET fb_page_id=NULL WHERE id=? AND fb_page_id=?", (p["channel_id"], p["page_id"]))
+        db.run("UPDATE fb_pages SET channel_id=NULL WHERE id=?", (p["id"],))
+        return {"ok": True, "channel": None}
+    c = _own_channel(req, ch_id)
+    if c["group_id"] != db.one("SELECT group_id FROM fb_accounts WHERE id=?", (p["fb_account_id"],))["group_id"]:
+        raise HttpError(400, "This page and channel are on different IP groups. Keep each client on one group (one IP = one ID).")
+    # one page per channel, one channel per page
+    db.run("UPDATE fb_pages SET channel_id=NULL WHERE channel_id=? AND id!=?", (c["id"], p["id"]))
+    db.run("UPDATE channels SET fb_page_id=NULL WHERE fb_page_id IN (SELECT page_id FROM fb_pages WHERE id=? ) AND id!=?", (p["id"], c["id"]))
+    db.run("UPDATE fb_pages SET channel_id=? WHERE id=?", (c["id"], p["id"]))
+    db.run("UPDATE channels SET fb_page_id=? WHERE id=?", (p["page_id"], c["id"]))
+    return {"ok": True, "channel": {"id": c["id"], "title": c["title"]}}
