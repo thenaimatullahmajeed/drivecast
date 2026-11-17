@@ -49,6 +49,8 @@ class ApiTests(unittest.TestCase):
         db._local.__dict__.clear()
         db.init(os.path.join(cls.dir, "a.db"))
         db.meta_set("setup_code", "SETUP-AAAA-BBBB")
+        from drivecast import config
+        config.LOCAL_TOKEN = "tok123"
         cls.port = free_port()
         cls.httpd = web.serve("127.0.0.1", cls.port)
         threading.Thread(target=cls.httpd.serve_forever, daemon=True).start()
@@ -115,6 +117,24 @@ class ApiTests(unittest.TestCase):
         st, r = student.call("GET", "/api/dashboard")
         self.assertEqual(st, 401)  # session ended on suspension
 
+        # owner resets a student's password; old one stops working
+        st, r = owner.call("POST", f"/api/admin/users/{ali['id']}/reset-password")
+        self.assertEqual(st, 200, r)
+        temp = r["temporary_password"]
+        st, r = Client(self.base).call("POST", "/api/login", {"email": "ali@x.com", "password": "password2"})
+        self.assertEqual(st, 401)
+        # owner forgot password: only from the phone with the private token
+        st, r = Client(self.base).call("POST", "/local/reset-owner", {"password": "newpassword9"})
+        self.assertEqual(st, 403)
+        st, r = Client(self.base).call("POST", "/local/reset-owner", {"password": "newpassword9"},
+                                       headers={"X-Local-Token": "tok123"})
+        self.assertEqual(st, 200, r)
+        st, r = Client(self.base).call("POST", "/api/login", {"email": "a@x.com", "password": "newpassword9"})
+        self.assertEqual(st, 200, r)
+        st, r = owner.call("GET", "/api/dashboard")
+        self.assertEqual(st, 401)  # old owner session was signed out
+        owner = Client(self.base)
+        owner.call("POST", "/api/login", {"email": "a@x.com", "password": "newpassword9"})
         st, d = owner.call("GET", "/api/dashboard")
         self.assertEqual(st, 200, d)
         for k in ("today", "kpis", "trend", "heatmap", "consistency", "attention"):
@@ -124,8 +144,14 @@ class ApiTests(unittest.TestCase):
         c = Client(self.base)
         st, r = c.call("GET", "/local/status", headers={"X-Forwarded-For": "8.8.8.8"})
         self.assertEqual(st, 403)
-        st, r = c.call("POST", "/local/public-url", {"url": "http://insecure"})
+        st, r = c.call("POST", "/local/public-url", {"url": "https://x.example"})
+        self.assertEqual(st, 403)  # no private token
+        st, r = c.call("POST", "/local/public-url", {"url": "http://insecure"}, headers={"X-Local-Token": "tok123"})
         self.assertEqual(st, 400)
+        st, r = c.call("GET", "/local/status", headers={"X-Local-Token": "wrong"})
+        self.assertEqual(st, 403)
+        st, r = c.call("GET", "/local/status", headers={"X-Local-Token": "tok123"})
+        self.assertEqual(st, 200)
         st, r = c.call("GET", "/healthz")
         self.assertEqual(st, 200)
 

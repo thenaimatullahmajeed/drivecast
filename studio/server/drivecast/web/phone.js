@@ -2,11 +2,12 @@
 /* Phone screen: setup checklist + status. Talks to the Android app through the
    `DC` bridge (system settings) and to the local server (/local/status). */
 const B = window.DC || null;
+const TOKEN = (B && B.localToken) ? B.localToken() : '';
 const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const LOGO = '<span class="logo"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#0E1116" stroke-width="2.4" stroke-linecap="round"><path d="M5 8v8M9.5 5v14M14 9v6M18.5 6.5v11"/></svg></span>';
 
 async function status() {
-  try { const r = await fetch('/local/status', { cache: 'no-store' }); return await r.json(); } catch (e) { return null; }
+  try { const r = await fetch('/local/status', { cache: 'no-store', headers: { 'X-Local-Token': TOKEN } }); return r.ok ? await r.json() : null; } catch (e) { return null; }
 }
 function checks() {
   if (!B) return { items: [], tunnel: {}, running: true };
@@ -15,7 +16,7 @@ function checks() {
 
 async function draw() {
   if (document.activeElement && document.activeElement.tagName === 'INPUT') return; // don't wipe what is being typed
-  const open = document.getElementById('tlog'); if (open && open.open) return;
+  const open = document.getElementById('tlog'), fp = document.getElementById('fpw'); if ((open && open.open) || (fp && fp.open)) return;
   const c = checks(), s = await status();
   const items = c.items || [];
   const done = items.filter(i => i.ok).length;
@@ -51,6 +52,10 @@ async function draw() {
     ${c.device ? `<div class="grid"><div class="stat"><span>Battery</span><b>${esc(c.device.battery)}%</b></div><div class="stat"><span>Temp</span><b>${esc(c.device.temp)}°C</b></div><div class="stat"><span>Charging</span><b>${c.device.charging ? 'Yes' : 'No'}</b></div></div>` : ''}
     ${ready ? `<p class="muted" style="text-align:center;font-size:12px;margin:4px 0">You can close this app — the server keeps running.</p>` : ''}
     ${url && t.state === 'online' ? `<details><summary class="muted" style="font-size:13px">Change public link</summary>${tunnelForm}</details>` : ''}
+    ${s && s.has_owner ? `<details class="card" id="fpw"><summary class="muted" style="font-size:13px">Forgot the owner password?</summary>
+      <p class="muted" style="font-size:13px;margin:10px 0">Set a new password for <b>${esc(s.owner_email || '')}</b>. This only works on this phone.</p>
+      <label>New password (8+ characters)<input id="npw" type="password" autocomplete="new-password"></label>
+      <button class="btn coral wide" style="margin-top:10px" data-act="resetpw">Set new password</button><p id="pwmsg" style="font-size:13px;margin:8px 0 0"></p></details>` : ''}
     ${logBox}
     <button class="btn wide" data-act="${running ? 'stop' : 'start'}" style="${running ? 'color:#FF9B85' : 'background:#E8492A;color:#0E1116;border-color:#E8492A'}">${running ? 'Stop server' : 'Start server'}</button>`;
 }
@@ -63,6 +68,13 @@ document.addEventListener('click', e => {
   else if (el.dataset.confirm) { B.confirm(el.dataset.confirm); draw(); }
   else if (el.dataset.copy) { B.copy(el.dataset.copy); el.textContent = 'Copied'; }
   else if (el.dataset.open) B.open(el.dataset.open);
+  else if (el.dataset.act === 'resetpw') {
+    const pw = document.getElementById('npw').value, msg = document.getElementById('pwmsg');
+    fetch('/local/reset-owner', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Local-Token': TOKEN }, body: JSON.stringify({ password: pw }) })
+      .then(r => r.json().then(j => ({ ok: r.ok, j })))
+      .then(({ ok, j }) => { msg.style.color = ok ? '#3DDC97' : '#FF9B85'; msg.textContent = ok ? 'Done. Sign in on your laptop with the new password.' : (j.error || 'Could not change it'); if (ok) document.getElementById('npw').value = ''; })
+      .catch(() => { msg.textContent = 'Server not reachable'; });
+  }
   else if (el.dataset.act === 'tunnel') {
     const ke = document.getElementById('tkey'), k = ke ? ke.value.trim() : '', h = document.getElementById('thost').value.trim() || 'drivecast';
     if (k && !/^tskey-auth-/.test(k)) { alertBox('An auth key starts with tskey-auth-. Or leave it empty and sign in.'); return; }

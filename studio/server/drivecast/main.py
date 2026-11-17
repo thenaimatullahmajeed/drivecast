@@ -31,6 +31,13 @@ def start(data_dir, host="127.0.0.1", port=8765, block=False, workers=2):
 
     security.load_key(os.path.join(data_dir, "master.key"))
     db.init(os.path.join(data_dir, "drivecast.db"))
+    tok_path = os.path.join(data_dir, "local.token")
+    if not os.path.exists(tok_path):
+        fd = os.open(tok_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(security.token(24))
+    with open(tok_path) as f:
+        config.LOCAL_TOKEN = f.read().strip()
     if not db.meta_get("setup_code"):
         db.meta_set("setup_code", security.code("SETUP"))
 

@@ -79,7 +79,7 @@ class Tunnel(private val ctx: Context) {
                 // the panel may still be starting; retry a few times
                 thread(isDaemon = true) {
                     repeat(30) {
-                        if (Local.post("/local/public-url", JSONObject().put("url", url))) return@thread
+                        if (Local.post(ctx, "/local/public-url", JSONObject().put("url", url))) return@thread
                         sleep(2_000)
                     }
                 }

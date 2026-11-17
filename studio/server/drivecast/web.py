@@ -1,4 +1,5 @@
 """HTTP server: routes requests to api.py, serves the web panel, sets security headers."""
+import hmac
 import json
 import logging
 import mimetypes
@@ -116,8 +117,11 @@ class Handler(BaseHTTPRequestHandler):
                 if not m or method != ("GET" if self.command == "HEAD" else self.command):
                     continue
                 self._authenticate(req)
-                if auth == "local" and not req.is_local:
-                    raise api.HttpError(403, "Local only")
+                if auth == "local":
+                    from . import config
+                    tok = self.headers.get("X-Local-Token") or ""
+                    if not req.is_local or not config.LOCAL_TOKEN or not hmac.compare_digest(tok, config.LOCAL_TOKEN):
+                        raise api.HttpError(403, "Local only")
                 if auth in ("user", "owner"):
                     if not req.user:
                         raise api.HttpError(401, "Please sign in")

@@ -56,8 +56,16 @@ object Local {
     const val PORT = 8765
     const val BASE = "http://127.0.0.1:$PORT"
 
-    fun post(path: String, body: JSONObject): Boolean = try {
+    /** Private token the Python server writes into the app's own folder. */
+    fun token(ctx: Context): String = try {
+        File(ctx.filesDir, "data/local.token").readText().trim()
+    } catch (e: Exception) {
+        ""
+    }
+
+    fun post(ctx: Context, path: String, body: JSONObject): Boolean = try {
         val c = URL(BASE + path).openConnection() as HttpURLConnection
+        c.setRequestProperty("X-Local-Token", token(ctx))
         c.connectTimeout = 3000
         c.readTimeout = 5000
         c.requestMethod = "POST"

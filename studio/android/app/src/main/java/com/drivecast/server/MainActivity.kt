@@ -63,7 +63,9 @@ class MainActivity : AppCompatActivity() {
         ) {
             ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
         }
-        if (Store.running(this)) ServerService.start(this)
+        // Opening the app always (re)starts the server; "Stop server" only lasts until the app is opened again.
+        Store.setPref(this, "running", true)
+        ServerService.start(this)
         showStarting()
     }
 
@@ -163,6 +165,9 @@ class MainActivity : AppCompatActivity() {
             "com.transsion.phonemaster" to "com.cyin.himgr.autostart.AutoStartActivity",
             "com.samsung.android.lool" to "com.samsung.android.sm.ui.battery.BatteryActivity",
         ).map { (p, c) -> Intent().setComponent(ComponentName(p, c)) }
+
+        @JavascriptInterface
+        fun localToken(): String = Local.token(ctx)
 
         @JavascriptInterface
         fun tunnelLog(): String = try {

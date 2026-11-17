@@ -106,9 +106,9 @@ class ServerService : Service() {
     private val reporter = object : Runnable {
         override fun run() {
             val info = deviceInfo(this@ServerService)
-            thread(isDaemon = true) { Local.post("/local/device", info) }
+            thread(isDaemon = true) { Local.post(this@ServerService, "/local/device", info) }
             val url = Store.tunnelState(this@ServerService).optString("url", "")
-            if (url.isNotBlank()) thread(isDaemon = true) { Local.post("/local/public-url", JSONObject().put("url", url)) }
+            if (url.isNotBlank()) thread(isDaemon = true) { Local.post(this@ServerService, "/local/public-url", JSONObject().put("url", url)) }
             main.postDelayed(this, 5 * 60_000L)
         }
     }

@@ -604,7 +604,9 @@ def healthz(req):
 @route("GET", "/local/status", auth="local")
 def local_status(req):
     owner = db.one("SELECT 1 FROM users WHERE role='owner'")
+    oe = db.one("SELECT email FROM users WHERE role='owner'")
     return {"setup_code": None if owner else db.meta_get("setup_code"), "has_owner": bool(owner),
+            "owner_email": oe["email"] if oe else None,
             "public_url": db.meta_get("public_url"), "version": VERSION,
             "accounts": db.one("SELECT COUNT(*) n FROM users")["n"],
             "channels_live": db.one("SELECT COUNT(*) n FROM channels WHERE state='live'")["n"],
@@ -681,6 +683,33 @@ def _clean_limits(l):
     return out
 
 
+@route("POST", "/api/admin/users/(\\d+)/reset-password", auth="owner")
+def admin_reset_password(req, uid):
+    u = db.one("SELECT * FROM users WHERE id=?", (int(uid),))
+    if not u or u["role"] == "owner":
+        raise HttpError(404, "User not found")
+    temp = security.code("PW").replace("PW-", "")  # e.g. 7KQ2-M9XD
+    db.run("UPDATE users SET pw_hash=? WHERE id=?", (security.hash_password(temp), u["id"]))
+    db.run("DELETE FROM sessions WHERE user_id=?", (u["id"],))
+    db.event("info", "account", f"Password reset by the server owner for {u['name']}", u["workspace_id"])
+    return {"temporary_password": temp}
+
+
+@route("POST", "/local/reset-owner", auth="local")
+def local_reset_owner(req):
+    """Owner forgot the password: only possible from the server phone itself."""
+    pw = req.json.get("password") or ""
+    if len(pw) < 8:
+        raise HttpError(400, "Password must be at least 8 characters")
+    o = db.one("SELECT * FROM users WHERE role='owner'")
+    if not o:
+        raise HttpError(404, "No owner yet — use the setup code")
+    db.run("UPDATE users SET pw_hash=?, status='active' WHERE id=?", (security.hash_password(pw), o["id"]))
+    db.run("DELETE FROM sessions WHERE user_id=?", (o["id"],))
+    _login_fail.clear()
+    return {"ok": True, "email": o["email"]}
+
+
 @route("GET", "/api/admin/invites", auth="owner")
 def admin_invites(req):
     rows = db.all("""SELECT i.*, u.name used_name FROM invites i LEFT JOIN users u ON u.id=i.used_by
@@ -718,7 +747,7 @@ def admin_load(req):
     return {"accounts": rows}
 
 
-@route("GET", "/phone", auth="local")
+@route("GET", "/phone", auth=None)
 def phone_page(req):
     import os
     with open(os.path.join(os.path.dirname(__file__), "web", "phone.html"), encoding="utf-8") as f:
