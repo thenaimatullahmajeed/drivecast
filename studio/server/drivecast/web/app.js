@@ -163,7 +163,9 @@ async function render() {
   clearTimers();
   closeModal();
   S.acts = {};
-  const [r0, ...rest] = (location.hash.replace(/^#\/?/, '') || 'dashboard').split('/');
+  const hraw = location.hash.replace(/^#\/?/, '') || 'dashboard';
+  S.hq = new URLSearchParams(hraw.includes('?') ? hraw.split('?')[1] : '');
+  const [r0, ...rest] = hraw.split('?')[0].split('/');
   if (!S.session) {
     try { S.session = await api('GET', '/api/session'); } catch (e) { return fatal(e); }
     S.user = S.session.user;
@@ -327,6 +329,13 @@ function authPage(mode) {
       <p>Instagram, YouTube, TikTok and Drive in — YouTube, Facebook and Instagram out. Every client on its own IP, every file cleaned, every post at a real peak hour.</p>
       <div class="eq">${eq}</div><div class="mono" style="font-size:12px;color:#8E94A0">● ${esc(location.host)}</div></section>
     <section class="side"><form data-form="auth" autocomplete="on">${form}</form></section></div>`;
+  // links from drivecast.site: #/register?invite=CODE and #/login?email=…
+  const hq = S.hq || new URLSearchParams();
+  const fill = (n, v) => { const i = document.querySelector(`[name=${n}]`); if (i && v) i.value = v; };
+  fill('invite_code', hq.get('invite')); fill('email', hq.get('email'));
+  if (mode === 'register' && hq.get('invite') === null && S.session && S.session.open_signup) {
+    const i = document.querySelector('[name=invite_code]'); if (i) { i.required = false; i.placeholder = 'Optional — sign-ups are open'; }
+  }
   S.acts['tab-login'] = () => { history.replaceState(null, '', '#/login'); authPage('login'); };
   S.acts['tab-register'] = () => { history.replaceState(null, '', '#/register'); authPage('register'); };
   S.acts['tab-restore'] = () => authPage('restore');
@@ -1596,6 +1605,35 @@ async function pageUserReport(id) {
 }
 
 // ------------------------------------------------------------------ server
+// ------------------------------------------------------------------ fleet: several phones behind drivecast.site
+async function drawFleet() {
+  const box = $('#flcard'); if (!box) return;
+  let f; try { f = await api('GET', '/api/fleet'); } catch (e) { return; }
+  const roleTxt = f.role === 'hub' ? 'Hub — serves the landing page' : f.role === 'node' ? `Joined · hub ${f.hub}` : 'Single phone';
+  const devs = (f.devices || []).map(d => `<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-top:1px solid var(--line)"><span class="beat ${d.online ? '' : 'off'}"></span><b class="mono" style="flex:1">${esc(d.host)}</b><span class="mini">${d.users}/${d.max_users} accounts · ${d.open_signup ? 'open sign-ups' : 'invite only'} · ${esc(d.version || '')}</span><span class="mini">${d.last_seen ? esc(rel(d.last_seen)) : ''}</span>${d.host !== f.host ? `<button class="btn sm" data-act="flhide" data-host="${esc(d.host)}">Hide</button>` : ''}</div>`).join('');
+  box.innerHTML = `<section class="card">${hd('Studios · drivecast.site', 'Several phones behind one domain. The landing page sends new users to a phone with room, and returning users to the phone that holds their account.', chip(roleTxt, f.role ? 'ok' : 'neutral'))}
+    ${!f.host ? `<div class="note warn">${ic('alert', 16)}<span>Turn on this phone’s <b>Own domain</b> first (phone screen), e.g. s1.drivecast.site.</span></div>` : ''}
+    ${f.error ? `<div class="note bad">${ic('alert', 16)}<span>${esc(f.error)}</span></div>` : ''}
+    <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(260px,1fr));margin:0 0 12px">
+      <div style="display:flex;flex-direction:column;gap:8px">${toggle('flopen', f.open_signup, 'Open sign-ups on this phone', 'People can create an account from drivecast.site without an invite, until the limit')}
+        <label class="f">Accounts limit on this phone<span style="display:flex;gap:8px"><input class="i" id="flmax" type="number" min="1" max="500" value="${f.max_users}"><button class="btn sm" data-act="flmaxsave">Save</button></span><span class="help">${f.users} account(s) now</span></label></div>
+      <div style="display:flex;flex-direction:column;gap:8px">
+        ${f.role === 'hub' ? `<b style="font-size:13px">Fleet key</b><div class="linkbox" style="padding:12px"><span class="mono" style="word-break:break-all;font-size:12px">${esc(f.key)}</span><button class="btn coral sm" data-act="copy" data-text="${esc(f.key)}">${ic('copy', 14)}Copy</button></div><span class="help">On every other phone: Server → Studios → Join, paste <b>${esc('https://' + f.host)}</b> and this key. Keep it private.</span>`
+          : f.role === 'node' ? `<span class="help">Last reached the hub ${f.seen ? esc(rel(f.seen)) : 'not yet'}.</span><button class="btn sm danger" data-act="flleave">Leave the fleet</button>`
+            : `<span class="actions"><button class="btn sm primary" data-act="flhub" ${f.host ? '' : 'disabled'}>Make this phone the hub</button></span><span class="help">Use on the phone that serves drivecast.site (the bare domain route).</span>
+               <form data-form="fljoin" style="display:flex;flex-direction:column;gap:8px;margin-top:6px"><input class="i" name="hub" placeholder="Hub address, e.g. https://s1.drivecast.site" aria-label="Hub address"><input class="i" name="key" type="password" placeholder="Fleet key from the hub" aria-label="Fleet key"><button class="btn sm" type="submit" ${f.host ? '' : 'disabled'}>Join a hub</button></form>`}
+      </div></div>
+    ${f.role === 'hub' ? `<div>${devs || '<span class="muted">No phones yet.</span>'}</div>` : ''}</section>`;
+  const save = async b => { try { await api('POST', '/api/fleet', b); } catch (e) { toast(e.message, true); } drawFleet(); };
+  Object.assign(S.acts, {
+    flopen: () => save({ open_signup: !f.open_signup }),
+    flmaxsave: () => save({ max_users: +$('#flmax').value }),
+    flhub: () => save({ action: 'hub' }),
+    fljoin: v => save({ action: 'join', hub: v.hub, key: v.key }),
+    flleave: () => { if (confirm('Leave the fleet? This phone keeps working on its own address.')) save({ action: 'leave' }); },
+    flhide: d => save({ action: 'hide', host: d.host }),
+  });
+}
 async function drawDownloader() {
   const box = $('#dlcard'); if (!box) return;
   let d = {}; try { d = await api('GET', '/api/downloader'); } catch (e) { d = {}; }
@@ -1634,10 +1672,12 @@ async function pageServer() {
             ['Storage folder', dev.storage, 'Downloads go to “Shared with my tool DriveCast” on the phone, hidden from the Gallery. Allow it from the phone checklist.'],
             ['Video tools', dev.ffmpeg, 'Built into the app — cleans every file before it leaves the phone.']].map(([t, on, h]) => `<div style="display:flex;gap:10px;padding:12px;border:1px solid var(--line);border-radius:12px"><span style="color:${on ? 'var(--ok)' : 'var(--muted)'}">${ic(on ? 'check' : 'clock', 18)}</span><div style="display:flex;flex-direction:column;gap:3px"><b style="font-size:13px">${t} · ${on ? 'On' : on === false ? 'Off' : 'unknown'}</b><span class="muted" style="font-size:12px">${h}</span></div></div>`).join('')}
        </div></section></div></div>
+     <div class="dgrid"><div class="s12" id="flcard"></div></div>
      <div class="dgrid"><div class="s12" id="dlcard"></div></div>
      <div class="dgrid"><div class="s12" id="bkcard"></div></div>`);
   drawBackup();
   drawDownloader();
+  drawFleet();
   every(60000, () => { if (!document.getElementById('modal')) render(); });
 }
 

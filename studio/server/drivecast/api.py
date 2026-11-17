@@ -71,7 +71,22 @@ def _create_user(name, email, password, role, tz, limits=None, invite=None):
                          json.dumps(limits or {}), invite, now)).lastrowid
         if invite:
             c.execute("UPDATE invites SET used_by=?, used_at=? WHERE code=?", (uid, now, invite))
+    _fleet_bg("email", email.strip())
     return db.one("SELECT * FROM users WHERE id=?", (uid,))
+
+
+def _fleet_bg(kind, value):
+    """Tell the fleet hub (in the background) that this phone now holds this account / invite."""
+    import threading
+    from . import fleet
+
+    def go():
+        try:
+            fleet.report(kind, value)
+            fleet.hello()
+        except Exception:
+            pass
+    threading.Thread(target=go, daemon=True).start()
 
 
 def _start_session(req, u):
@@ -87,7 +102,8 @@ def _start_session(req, u):
 @route("GET", "/api/session", auth=None)
 def session_info(req):
     owner = db.one("SELECT 1 FROM users WHERE role='owner'")
-    return {"user": user_view(req.user) if req.user else None, "needs_setup": not owner, "version": VERSION}
+    return {"user": user_view(req.user) if req.user else None, "needs_setup": not owner, "version": VERSION,
+            "open_signup": db.meta_get("open_signup") == "1"}
 
 
 @route("POST", "/api/setup", auth=None)
@@ -130,6 +146,17 @@ def logout(req):
 @route("POST", "/api/register", auth=None)
 def register(req):
     b = req.json
+    from . import fleet
+    if not (b.get("invite_code") or "").strip():
+        # open sign-ups on this phone (owner's choice, with a cap)
+        if not fleet.open_signup():
+            raise HttpError(403, "You need an invite code from the owner")
+        need(b, "name", "email", "password")
+        if fleet.users_count() >= fleet.max_users():
+            raise HttpError(403, "This studio is full right now. Try again later or ask for an invite.")
+        lim = db.jload(db.meta_get("open_limits"), {}) or {"max_channels": 3}
+        u = _create_user(b["name"], b["email"], b["password"], "student", b.get("timezone"), lim, None)
+        return _start_session(req, u)
     need(b, "invite_code", "name", "email", "password")
     code = b["invite_code"].strip().upper()
     inv = db.one("SELECT * FROM invites WHERE code=?", (code,))
@@ -980,7 +1007,8 @@ def admin_new_invite(req):
     db.run("INSERT INTO invites(code,label,limits_json,created_at,expires_at) VALUES(?,?,?,?,?)",
            (code, b["label"].strip()[:80], json.dumps(_clean_limits(b.get("limits") or {})), time.time(),
             time.time() + int(b.get("days") or 7) * 86400))
-    return {"code": code, "register_url": public_base(req) + "/#register"}
+    _fleet_bg("invite", code)
+    return {"code": code, "register_url": public_base(req) + f"/#/register?invite={code}"}
 
 
 @route("POST", "/api/admin/invites/([A-Z0-9-]+)/revoke", auth="owner")
@@ -1856,3 +1884,109 @@ def local_restore(req):
         os._exit(3)
     threading.Thread(target=restart, daemon=True).start()
     return {"ok": True, "summary": summ, "created": created, "restarting": True}
+
+
+# ---------------------------------------------------------------- fleet (several phones, one domain)
+def _fleet_body(req):
+    from . import fleet
+    if not fleet.verify(req.raw or b"", req.headers.get("X-DC-Fleet") or ""):
+        raise HttpError(403, "Bad fleet signature")
+    if fleet.role() != "hub":
+        raise HttpError(400, "This phone is not the hub")
+    return fleet
+
+
+@route("POST", "/fleet/hello", auth=None)
+def fleet_hello(req):
+    fleet = _fleet_body(req)
+    return {"ok": fleet.apply("/fleet/hello", req.json)}
+
+
+@route("POST", "/fleet/dir", auth=None)
+def fleet_dir(req):
+    fleet = _fleet_body(req)
+    return {"ok": fleet.apply("/fleet/dir", req.json)}
+
+
+def _panel(host):
+    return f"https://{host}"
+
+
+@route("GET", "/site/api/fleet", auth=None)
+def site_fleet(req):
+    """What the landing page shows: the studios (phones) online and whether sign-ups are open."""
+    from . import fleet
+    if fleet.role() != "hub":
+        me = fleet.my_host() or (req.headers.get("Host") or "")
+        return {"devices": [{"label": (me.split(".")[0] or "S1").upper(), "online": True}], "open": fleet.open_signup(),
+                "single": True}
+    devs = fleet.devices()
+    return {"devices": [{"label": d["label"], "online": d["online"]} for d in devs],
+            "open": any(d["online"] and d["open_signup"] and d["users"] < (d["max_users"] or 0) for d in devs), "single": False}
+
+
+@route("POST", "/site/api/where", auth=None)
+def site_where(req):
+    """Sign in: which phone holds this email."""
+    from . import fleet
+    email = (req.json.get("email") or "").strip().lower()
+    if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
+        raise HttpError(400, "Enter a valid email")
+    if fleet.role() != "hub":
+        return {"url": public_base(req) + "/#/login?email=" + email}
+    host = fleet.where(email)
+    if not host:
+        raise HttpError(404, "No studio account uses this email. Check it, or use Get started with your invite code.")
+    return {"url": _panel(host) + "/#/login?email=" + email}
+
+
+@route("POST", "/site/api/join", auth=None)
+def site_join(req):
+    """Get started: the phone that issued the invite, or the emptiest one with open sign-ups."""
+    from . import fleet
+    code = (req.json.get("invite") or "").strip().upper()
+    if fleet.role() != "hub":
+        if not code and not fleet.open_signup():
+            raise HttpError(403, "Sign-ups are by invite. Enter your invite code.")
+        return {"url": public_base(req) + "/#/register" + (f"?invite={code}" if code else "")}
+    host, by_invite = fleet.pick_for_signup(code or None)
+    if not host:
+        raise HttpError(404 if by_invite else 403, "This invite code was not found." if by_invite
+                        else "New sign-ups are closed right now. Enter an invite code, or write to support@drivecast.site.")
+    return {"url": _panel(host) + "/#/register" + (f"?invite={code}" if code else "")}
+
+
+@route("GET", "/api/fleet", auth="owner")
+def fleet_state(req):
+    from . import fleet
+    return {"role": fleet.role(), "host": fleet.my_host(), "hub": fleet.hub_url(),
+            "key": fleet.key() if fleet.role() == "hub" else None,
+            "error": db.meta_get("fleet_error") or None, "seen": float(db.meta_get("fleet_seen") or 0) or None,
+            "devices": fleet.devices() if fleet.role() == "hub" else [],
+            "open_signup": fleet.open_signup(), "max_users": fleet.max_users(), "users": fleet.users_count()}
+
+
+@route("POST", "/api/fleet", auth="owner")
+def fleet_save(req):
+    from . import fleet
+    b = req.json
+    if "open_signup" in b:
+        db.meta_set("open_signup", "1" if b["open_signup"] else "0")
+    if b.get("max_users"):
+        db.meta_set("max_users", str(max(1, min(500, int(b["max_users"])))))
+    act = b.get("action")
+    if act in ("hub", "join") and not fleet.my_host():
+        raise HttpError(400, "Turn on this phone's own domain first (phone screen → Own domain).")
+    if act == "hub":
+        fleet.make_hub()
+    elif act == "join":
+        if not b.get("hub") or not b.get("key"):
+            raise HttpError(400, "Paste the hub address and the fleet key")
+        fleet.join(b["hub"], b["key"])
+    elif act == "leave":
+        fleet.leave()
+    elif act == "hide" and fleet.role() == "hub":
+        db.run("UPDATE fleet_devices SET hidden=1 WHERE host=?", ((b.get("host") or "").lower(),))
+    if fleet.role():
+        fleet.tick()
+    return fleet_state(req)

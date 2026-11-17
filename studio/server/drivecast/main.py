@@ -6,7 +6,7 @@ import logging.handlers
 import os
 import threading
 
-from . import backup, config, db, igsync, maintenance, scheduler, security, supervisor, vidsync, web, worker
+from . import backup, config, db, fleet, igsync, maintenance, scheduler, security, supervisor, vidsync, web, worker
 
 _httpd = None
 
@@ -60,6 +60,7 @@ def start(data_dir, host="127.0.0.1", port=8765, block=False, workers=2):
         ("cleanup", lambda: maintenance.cleanup(tmp), 6 * 3600),
         ("instagram", igsync.tick, 60),
         ("video-sources", vidsync.tick, 60),
+        ("fleet", fleet.tick, 300),
         ("inbox", igsync.inbox_pass, 120),
         ("backup", backup.service, 3600),
     ], workers=workers)

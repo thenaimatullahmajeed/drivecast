@@ -251,6 +251,17 @@ SCHEMA = [
     ALTER TABLE workspaces ADD COLUMN ig_app_id TEXT;
     ALTER TABLE workspaces ADD COLUMN ig_app_secret_enc TEXT;
     """,
+    # version 8: fleet — several phones behind one domain
+    """
+    CREATE TABLE IF NOT EXISTS fleet_devices (
+        host TEXT PRIMARY KEY, label TEXT, users INTEGER NOT NULL DEFAULT 0, max_users INTEGER NOT NULL DEFAULT 0,
+        open_signup INTEGER NOT NULL DEFAULT 0, version TEXT, last_seen REAL, hidden INTEGER NOT NULL DEFAULT 0, created_at REAL NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS fleet_dir (
+        kind TEXT NOT NULL, hash TEXT NOT NULL, host TEXT NOT NULL, created_at REAL NOT NULL,
+        PRIMARY KEY (kind, hash)
+    );
+    """,
 ]
 
 

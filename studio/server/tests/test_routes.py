@@ -405,3 +405,56 @@ class OwnDomainTests(unittest.TestCase):
             self.assertEqual(web.Handler._site_page(h, path), want, (host, path))
         for f in ("index.html", "privacy.html", "terms.html", "site.css"):
             self.assertTrue(os.path.isfile(os.path.join(web.WEB_DIR, "site", f)))
+
+
+class FleetTests(unittest.TestCase):
+    def setUp(self):
+        self.dir = fresh_db()
+        from drivecast import fleet
+        self.f = fleet
+        db.meta_set("public_url_override", "https://s1.drivecast.site")
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def R(self, body, headers=None, raw=None):
+        return type("R", (), {"json": body, "headers": headers or {}, "raw": raw, "secure": True, "user": None})()
+
+    def test_hub_allocates_and_finds_accounts(self):
+        f = self.f
+        f.make_hub()
+        db.meta_set("open_signup", "1")
+        f.hello()
+        now = time.time()
+        f.apply("/fleet/hello", {"host": "s2.drivecast.site", "label": "S2", "users": 1, "max_users": 20, "open_signup": True})
+        f.apply("/fleet/hello", {"host": "s3.drivecast.site", "label": "S3", "users": 0, "max_users": 20, "open_signup": False})
+        self.assertEqual(f.pick_for_signup()[0], "s1.drivecast.site")  # emptiest open phone (0 users)
+        f.apply("/fleet/dir", {"host": "s3.drivecast.site", "kind": "invite", "hash": f.h("DC-AAAA-BBBB")})
+        out = api.site_join(self.R({"invite": "dc-aaaa-bbbb"}))
+        self.assertEqual(out["url"], "https://s3.drivecast.site/#/register?invite=DC-AAAA-BBBB")
+        f.apply("/fleet/dir", {"host": "s2.drivecast.site", "kind": "email", "hash": f.h("Zara@Example.com")})
+        self.assertTrue(api.site_where(self.R({"email": "zara@example.com"}))["url"].startswith("https://s2.drivecast.site/#/login"))
+        with self.assertRaises(api.HttpError):
+            api.site_where(self.R({"email": "nobody@example.com"}))
+        live = api.site_fleet(self.R({}))
+        self.assertEqual(len(live["devices"]), 3)
+        self.assertTrue(live["open"])
+
+    def test_signature_and_open_signup(self):
+        f = self.f
+        f.make_hub()
+        body = json.dumps({"host": "s9.drivecast.site", "label": "S9"}).encode()
+        with self.assertRaises(api.HttpError):
+            api.fleet_hello(self.R(json.loads(body), {"X-DC-Fleet": "bad"}, body))
+        api.fleet_hello(self.R(json.loads(body), {"X-DC-Fleet": f.sign(body)}, body))
+        self.assertTrue(db.one("SELECT 1 FROM fleet_devices WHERE host='s9.drivecast.site'"))
+        with self.assertRaises(api.HttpError):  # invite-only by default
+            api.register(self.R({"name": "A", "email": "a@x.com", "password": "password1"}))
+        db.meta_set("open_signup", "1")
+        db.meta_set("max_users", "1")
+        req = self.R({"name": "A", "email": "a@x.com", "password": "password1"})
+        req.set_cookie = None
+        with mock.patch.object(api, "_start_session", lambda r, u: {"user": u["email"]}):
+            self.assertEqual(api.register(req)["user"], "a@x.com")
+            with self.assertRaises(api.HttpError):  # the limit is reached
+                api.register(self.R({"name": "B", "email": "b@x.com", "password": "password1"}))

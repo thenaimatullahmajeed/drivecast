@@ -119,6 +119,7 @@ class Handler(BaseHTTPRequestHandler):
             if site:
                 return self._static(site, head)
             if not (path.startswith("/api/") or path.startswith("/connect/") or path.startswith("/oauth/")
+                    or path.startswith("/site/api/") or path.startswith("/fleet/")
                     or path.startswith("/local/") or path in ("/healthz", "/phone")):
                 return self._static(path, head)
             for method, rx, auth, fn in api.ROUTES:
@@ -136,7 +137,7 @@ class Handler(BaseHTTPRequestHandler):
                         raise api.HttpError(401, "Please sign in")
                     if auth == "owner" and req.user["role"] != "owner":
                         raise api.HttpError(403, "Owner only")
-                if self.command in ("POST", "PATCH", "PUT", "DELETE") and path.startswith("/api/") \
+                if self.command in ("POST", "PATCH", "PUT", "DELETE") and (path.startswith("/api/") or path.startswith("/site/api/")) \
                         and self.headers.get("X-DC") != "1":
                     raise api.HttpError(403, "Missing request header")
                 out = fn(req, *m.groups())
@@ -171,7 +172,7 @@ class Handler(BaseHTTPRequestHandler):
             if host in (apex, "www." + apex):
                 if path in ("/", ""):
                     return "/site/index.html"
-                if path.startswith("/site/"):
+                if path.startswith("/site/") and not path.startswith("/site/api/"):
                     return path
         return None
 
