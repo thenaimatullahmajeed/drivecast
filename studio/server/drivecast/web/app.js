@@ -155,7 +155,7 @@ function mount(active, title, sub, kick, actions, content) {
   const nav = NAV.filter(([g]) => g !== 'Admin' || S.user.role === 'owner').map(([g, items]) => `<div class="nav"><span class="kicker">${g}</span>${items.map(([i, l, r]) => `<a href="#/${r}" class="${r === active ? 'on' : ''}">${ic(i)}${l}</a>`).join('')}</div>`).join('');
   document.getElementById('app').innerHTML = `<div class="app">
     <nav class="rail" aria-label="Main">
-      <div class="brand">${LOGO}<div style="display:flex;flex-direction:column"><strong>DriveCast</strong><span class="kicker">Studio</span></div></div>
+      <a class="brand" href="#/dashboard" aria-label="DriveCast home" style="text-decoration:none">${LOGO}<div style="display:flex;flex-direction:column"><strong>DriveCast</strong><span class="kicker">Studio</span></div></a>
       <div class="srv"><span class="kicker">Server</span><div style="display:flex;align-items:center;gap:8px"><span id="srvdot" style="width:8px;height:8px;border-radius:9px;background:#3DDC97"></span><span class="mono ell" style="font-size:12px;color:#fff">${esc(location.host)}</span></div><span id="srvline" style="font-size:12px;color:#8E94A0">Online</span></div>
       ${nav}
       <div style="flex-grow:1"></div>
