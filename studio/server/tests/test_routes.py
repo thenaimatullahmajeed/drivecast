@@ -100,6 +100,14 @@ class SchemaAndLinks(unittest.TestCase):
         with self.assertRaises(CodedError) as cm:
             instagram.Client(S(200, '<form id="loginForm">'), jar, min_gap=(0, 0)).whoami()
         self.assertEqual(cm.exception.code, "IG_COOKIES_EXPIRED")
+        ok2 = instagram.Client(S(200, '<script>{"viewerId":"9","username":"tester.two"}</script>'), jar, min_gap=(0, 0)).whoami()
+        self.assertEqual(ok2["username"], "tester.two")
+        with self.assertRaises(CodedError) as cm:  # unclear page: never called "expired", cookies get saved
+            instagram.Client(S(200, '<html>new layout</html>'), jar, min_gap=(0, 0)).whoami()
+        self.assertEqual(cm.exception.code, "IG_UNKNOWN")
+        with self.assertRaises(CodedError) as cm:
+            instagram.Client(S(302, "", "https://www.instagram.com/?hl=en"), jar, min_gap=(0, 0)).whoami()
+        self.assertEqual(cm.exception.code, "IG_UNKNOWN")
 
     def test_caption_words_do_not_trip_rate_limit(self):
         r = type("R", (), {"status_code": 200, "text": '{"items":[{"caption":"please wait a few minutes for part 2"}]}',

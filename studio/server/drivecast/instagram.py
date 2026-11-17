@@ -104,10 +104,14 @@ class Client:
         except Exception as e:
             raise CodedError("PROXY_DEAD", f"instagram home: {e}")
         loc = r.headers.get("Location", "")
+        uid = str(self.cookies.get("ds_user_id") or "")
         if r.status_code in (301, 302, 303, 307, 308):
             if "challenge" in loc or "checkpoint" in loc:
                 raise CodedError("IG_CHALLENGE", f"redirect to {loc}")
-            raise CodedError("IG_COOKIES_EXPIRED", f"redirect to {loc}")
+            if "/accounts/login" in loc or "/accounts/logout" in loc:
+                raise CodedError("IG_COOKIES_EXPIRED", f"redirect to {loc}")
+            # any other redirect (language, www, consent) says nothing about the sign-in
+            raise CodedError("IG_UNKNOWN", f"home redirected to {loc}")
         if r.status_code == 429:
             raise CodedError("IG_RATE_LIMIT", "429 on home page")
         if r.status_code >= 400:
@@ -115,12 +119,18 @@ class Client:
         html = r.text or ""
         if "checkpoint_required" in html or "/challenge/" in html:
             raise CodedError("IG_CHALLENGE", "challenge page")
-        signed = "fb_dtsg" in html or ('"viewerId"' in html and '"viewerId":null' not in html) or '"is_logged_in":true' in html
-        if not signed or 'id="loginForm"' in html:
+        # signed in: the page knows who we are (the account id from the cookies, or the page token)
+        signed = (uid and (f'"{uid}"' in html or f"viewerId\":\"{uid}" in html or f'"viewerId":"{uid}"' in html)) \
+            or "fb_dtsg" in html or "DTSGInitialData" in html or '"is_logged_in":true' in html
+        # signed out: only when the page clearly says so — never guess
+        out = 'id="loginForm"' in html or '"viewerId":null' in html or '"is_logged_in":false' in html \
+            or ("/accounts/login" in html and not signed and len(html) < 200_000 and '"username"' not in html)
+        if out and not signed:
             raise CodedError("IG_COOKIES_EXPIRED", "home page is not signed in")
-        uid = self.cookies.get("ds_user_id")
+        if not signed:
+            raise CodedError("IG_UNKNOWN", f"home page did not confirm the account ({len(html)} bytes)")
         m = re.search(r'"username":"([A-Za-z0-9._]{1,30})"', html)
-        return {"username": m.group(1) if m else None, "id": str(uid)}
+        return {"username": m.group(1) if m else None, "id": uid}
 
     def profile(self, handle):
         handle = clean_handle(handle)

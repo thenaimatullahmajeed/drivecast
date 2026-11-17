@@ -699,11 +699,17 @@ function cookiesModal(gid, done) {
     <form data-form="savecookies" style="display:flex;flex-direction:column;gap:12px">
       <label class="f">Cookies<textarea class="i mono" name="cookies" id="cktext" rows="7" placeholder="# Netscape HTTP Cookie File&#10;.instagram.com  TRUE  /  TRUE  …  sessionid  …" style="height:auto;padding:10px;font-size:12px"></textarea><span class="help">cookies.txt, a JSON export, or “sessionid=…; ds_user_id=…; csrftoken=…” all work.</span></label>
       <label class="btn" style="width:fit-content;cursor:pointer">${ic('up', 16)}Choose cookies file<input type="file" id="ckfile" accept=".txt,.json" style="display:none"></label>
+      <div style="display:flex;flex-direction:column;gap:6px"><b style="font-size:13px">Read Instagram through</b><span class="actions"><label class="btn sm" style="cursor:pointer"><input type="radio" name="proxy_mode" value="group" checked> Group IP</label><label class="btn sm" style="cursor:pointer"><input type="radio" name="proxy_mode" value="phone"> Phone’s own internet</label></span><span class="help">Use the phone’s internet if the cookies come from a phone or home Wi-Fi and the group proxy is a datacenter IP. Reading only — posting always uses the group IP.</span></div>
       <div id="ckres"></div>
       <div class="actions" style="justify-content:flex-end"><button class="btn" type="button" data-act="close">Cancel</button><button class="btn primary" type="submit">Test and save</button></div></form>`);
   S.acts.savecookies = async v => {
     const out = $('#ckres'); out.innerHTML = '<div class="note info"><span class="spinner"></span><span>Signing in to Instagram through the group’s proxy…</span></div>';
-    try { const r = await api('POST', `/api/groups/${gid}/instagram`, { cookies: v.cookies, user_agent: navigator.userAgent }); closeModal(); toast(`Instagram connected · @${r.username}`); if (done) done(); }
+    try {
+      const r = await api('POST', `/api/groups/${gid}/instagram`, { cookies: v.cookies, user_agent: navigator.userAgent, proxy_mode: v.proxy_mode || 'group' });
+      closeModal();
+      toast(r.verified ? `Instagram connected · @${r.username}` : `Cookies saved · ${r.note || 'Instagram did not answer clearly'} — checked again on first use`, !r.verified);
+      if (done) done();
+    }
     catch (e) { out.innerHTML = `<div class="note bad">${ic('alert', 16)}<span>${esc(e.message)}</span></div>`; }
   };
 }
