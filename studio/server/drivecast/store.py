@@ -57,7 +57,8 @@ def uploads_today(ws_id, now=None):
     from .timeplan import next_pacific_midnight
     now = now or time.time()
     start = next_pacific_midnight(now) - 86400
-    r = db.one("SELECT COUNT(*) n FROM uploads WHERE workspace_id=? AND reserved_at>=? AND status!='failed'",
+    r = db.one("""SELECT COUNT(*) n FROM uploads WHERE workspace_id=? AND reserved_at>=? AND status!='failed'
+                  AND destination LIKE 'youtube:%'""",
                (ws_id, start))
     return r["n"]
 

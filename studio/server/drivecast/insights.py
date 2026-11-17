@@ -292,13 +292,21 @@ def attention(ws_id, now=None):
         i = errors.info(a["error_code"] or "IG_COOKIES_EXPIRED", group=a["number"])
         items.append({"level": "error", "kind": "instagram", "title": i["title"] + f" · Group {a['number']}", "detail": i["message"],
                       "action": "fix", "fix": "replace_cookies", "ref": a["group_id"], "code": i["code"]})
+    for d in db.all("""SELECT d.*, c.title FROM ig_dest d LEFT JOIN channels c ON c.id=d.channel_id
+                       WHERE d.workspace_id=? AND d.status='needs_reconnect'""", (ws_id,)):
+        i = errors.info(d["error_code"] or "IGD_TOKEN_EXPIRED")
+        items.append({"level": "error", "kind": "instagram", "title": f"@{d['username'] or d['ig_user_id']}: {i['title']}",
+                      "detail": i["message"], "action": "fix", "fix": "connect_ig_dest", "ref": d["group_id"], "code": i["code"]})
     for s in db.all("""SELECT s.*, c.title FROM sources s JOIN channels c ON c.id=s.channel_id WHERE c.workspace_id=? AND s.state='active'
-                       AND s.error_code IN ('IG_PROFILE_NOT_FOUND','IG_PROFILE_PRIVATE','DRIVE_FOLDER_GONE')""", (ws_id,)):
-        i = errors.info(s["error_code"], handle=s["handle"])
+                       AND s.error_code IN ('IG_PROFILE_NOT_FOUND','IG_PROFILE_PRIVATE','DRIVE_FOLDER_GONE',
+                                            'VID_NOT_FOUND','VID_LOGIN_NEEDED','VID_BOT_CHECK','YTDLP_OLD','YTDLP_MISSING')""", (ws_id,)):
+        site = {"youtube": "YouTube", "tiktok": "TikTok"}.get(s["kind"], "Instagram")
+        i = errors.info(s["error_code"], handle=s["handle"], site=site)
         items.append({"level": "error", "kind": "source", "title": f"{s['title']}: {i['title']}", "detail": i["message"],
-                      "action": "fix", "fix": "edit_source", "ref": s["channel_id"], "code": i["code"]})
+                      "action": "fix", "fix": i["fix"] or "edit_source", "ref": s["channel_id"], "code": i["code"]})
     for g in db.all("""SELECT g.* FROM ip_groups g WHERE g.workspace_id=? AND NOT EXISTS (SELECT 1 FROM ig_accounts a WHERE a.group_id=g.id)
-                       AND EXISTS (SELECT 1 FROM sources s JOIN channels c ON c.id=s.channel_id WHERE c.group_id=g.id AND s.state='active')""", (ws_id,)):
+                       AND EXISTS (SELECT 1 FROM sources s JOIN channels c ON c.id=s.channel_id WHERE c.group_id=g.id AND s.state='active'
+                                   AND s.kind='instagram')""", (ws_id,)):
         i = errors.info("IG_NO_ACCOUNT", group=g["number"])
         items.append({"level": "error", "kind": "instagram", "title": i["title"], "detail": i["message"], "action": "fix",
                       "fix": "add_cookies", "ref": g["id"], "code": i["code"]})
@@ -311,7 +319,8 @@ def attention(ws_id, now=None):
                       "detail": "Add videos to its Drive folder, or connect the client’s Instagram.", "action": "fix",
                       "fix": "open_channel", "ref": c["id"]})
     for u in db.all("SELECT * FROM uploads WHERE workspace_id=? AND status='uncertain' ORDER BY reserved_at DESC LIMIT 5", (ws_id,)):
-        items.append({"level": "error", "kind": "uncertain", "title": f"Check “{u['title']}” in YouTube Studio",
+        where = {"facebook": "the Facebook page", "instagram": "Instagram"}.get((u["destination"] or "").split(":")[0], "YouTube Studio")
+        items.append({"level": "error", "kind": "uncertain", "title": f"Check “{u['title']}” in {where}",
                       "detail": u["error"] or "Upload result unknown. It will not be retried.", "action": "fix",
                       "fix": "resolve_upload", "ref": u["id"], "code": "YT_UNCERTAIN"})
     shown = {i.get("code") for i in items if i.get("code")}

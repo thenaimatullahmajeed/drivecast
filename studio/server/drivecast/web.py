@@ -4,6 +4,7 @@ import json
 import logging
 import mimetypes
 import os
+import re
 import time
 import traceback
 from http.cookies import SimpleCookie
@@ -112,6 +113,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(413, {"error": "Request too large"})
             body = self.rfile.read(n) if n else b""
             req = Req(self, path, query, body)
+            if path.startswith("/media/"):
+                return self._media(path[7:], head)
             if not (path.startswith("/api/") or path.startswith("/connect/") or path.startswith("/oauth/")
                     or path.startswith("/local/") or path in ("/healthz", "/phone")):
                 return self._static(path, head)
@@ -150,6 +153,52 @@ class Handler(BaseHTTPRequestHandler):
             log.error("request %s failed: %s\n%s", path, e, traceback.format_exc())
             db.event("error", "web", f"Panel request failed: {path}: {e}")
             return self._send(500, {"error": "Something went wrong on the server. It was logged."}, head=head)
+
+    def _media(self, tok, head):
+        """Short-lived public file links that Instagram fetches posts from. Range requests supported."""
+        from . import igpost
+        full = igpost.resolve_link(tok)
+        if not full:
+            return self._send(404, {"error": "Not found"})
+        size = os.path.getsize(full)
+        ctype = mimetypes.guess_type(full)[0] or "application/octet-stream"
+        start, end, status = 0, size - 1, 200
+        rng = self.headers.get("Range") or ""
+        m = re.match(r"bytes=(\d*)-(\d*)$", rng.strip())
+        if m and (m.group(1) or m.group(2)):
+            if m.group(1):
+                start = int(m.group(1))
+                end = min(int(m.group(2)), size - 1) if m.group(2) else size - 1
+            else:
+                start = max(0, size - int(m.group(2)))
+            if start > end:
+                self.send_response(416)
+                self.send_header("Content-Range", f"bytes */{size}")
+                self.end_headers()
+                return
+            status = 206
+        self.send_response(status)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(end - start + 1))
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Cache-Control", "no-store")
+        if status == 206:
+            self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+        self.end_headers()
+        if head:
+            return
+        with open(full, "rb") as f:
+            f.seek(start)
+            left = end - start + 1
+            while left > 0:
+                chunk = f.read(min(1 << 20, left))
+                if not chunk:
+                    break
+                try:
+                    self.wfile.write(chunk)
+                except (BrokenPipeError, ConnectionResetError):
+                    return
+                left -= len(chunk)
 
     def _authenticate(self, req):
         c = SimpleCookie(self.headers.get("Cookie") or "")

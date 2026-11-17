@@ -83,11 +83,12 @@ def account_for_group(gid):
 def client_for(acc, group):
     from . import security
     cached = _clients.get(acc["id"])
-    if cached and cached[0] == acc["cookies_enc"]:
+    if cached and cached[0] == (acc["cookies_enc"], acc.get("proxy_mode")):
         return cached[1]
     cookies = ig.parse_cookies(security.unseal(acc["cookies_enc"]))
-    c = ig.Client(session_for(group), cookies, user_agent=acc.get("user_agent"), language=acc.get("language") or lang_for(group))
-    _clients[acc["id"]] = (acc["cookies_enc"], c)
+    sess = session_for(None if acc.get("proxy_mode") == "phone" else group)  # reading only; posting never skips the proxy
+    c = ig.Client(sess, cookies, user_agent=acc.get("user_agent"), language=acc.get("language") or lang_for(group))
+    _clients[acc["id"]] = ((acc["cookies_enc"], acc.get("proxy_mode")), c)
     return c
 
 
@@ -259,21 +260,7 @@ def process(m, src, ch, cl, group, progress=None):
                 a = os.path.join(tmpdir, "a.mp4")
                 cl.download(plan["audio"], a)
                 raw = cleaner.merge(v, a, os.path.join(tmpdir, "m.mp4"))
-            meta = cleaner.probe(raw)
-            bad = cleaner.quality_gate(meta)
-            if bad:
-                raise CodedError(bad, f"{meta}")
-            safe = re.sub(r'[\\/:*?"<>|]+', " ", title)[:80].strip()
-            final = os.path.join(folder, f"{safe} [{ref}].mp4")
-            cleaner.clean_video(raw, final, ref, VERSION(), meta.get("vcodec"))
-            if progress:
-                progress("Saving to Google Drive", 0)
-            fid = drive.upload(dsess, dbox, final, f"{safe}.mp4", ch["folder_id"], "video/mp4", props,
-                               on_progress=progress and (lambda f: progress("Saving to Google Drive", f)))
-            db.run("""UPDATE media SET state='in_drive', title=?, caption=?, width=?, height=?, duration=?, has_audio=?,
-                      local_path=?, local_bytes=?, drive_file_id=?, error_code=NULL, updated_at=? WHERE id=?""",
-                   (title, item["caption"], meta["width"], meta["height"], meta["duration"], 1 if meta["has_audio"] else 0,
-                    final, os.path.getsize(final), fid, time.time(), m["id"]))
+            store_video(m, ch, raw, title, item["caption"], folder, ref, dsess, dbox, props, progress)
         else:
             photos = drive.child_folder(dsess, dbox, ch["folder_id"], "Photos")
             safe = re.sub(r'[\\/:*?"<>|]+', " ", title)[:70].strip()
@@ -306,6 +293,26 @@ def process(m, src, ch, cl, group, progress=None):
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
+def store_video(m, ch, raw, title, caption, folder, ref, dsess, dbox, props, progress=None):
+    """Shared last mile for every source: quality gate → deep clean + DriveCast tag → Drive → ledger."""
+    meta = cleaner.probe(raw)
+    bad = cleaner.quality_gate(meta)
+    if bad:
+        raise CodedError(bad, f"{meta}")
+    safe = re.sub(r'[\\/:*?"<>|]+', " ", title)[:80].strip() or ref
+    final = os.path.join(folder, f"{safe} [{ref}].mp4")
+    cleaner.clean_video(raw, final, ref, VERSION(), meta.get("vcodec"))
+    if progress:
+        progress("Saving to Google Drive", 0)
+    fid = drive.upload(dsess, dbox, final, f"{safe}.mp4", ch["folder_id"], "video/mp4", props,
+                       on_progress=progress and (lambda f: progress("Saving to Google Drive", f)))
+    db.run("""UPDATE media SET state='in_drive', title=?, caption=?, width=?, height=?, duration=?, has_audio=?,
+              local_path=?, local_bytes=?, drive_file_id=?, error_code=NULL, updated_at=? WHERE id=?""",
+           (title, caption, meta["width"], meta["height"], meta["duration"], 1 if meta["has_audio"] else 0,
+            final, os.path.getsize(final), fid, time.time(), m["id"]))
+    return fid
+
+
 # ------------------------------------------------------------------ the pass
 def _publishing(ch_id):
     return db.one("SELECT 1 FROM jobs WHERE channel_id=? AND status='running'", (ch_id,)) is not None
@@ -320,7 +327,7 @@ def _next_item(src, lane):
 def account_pass(acc, now=None):
     now = now or time.time()
     g = store.group(acc["group_id"])
-    if not g or g["status"] == "down" or acc["status"] == "needs_cookies":
+    if not g or (g["status"] == "down" and acc.get("proxy_mode") != "phone") or acc["status"] == "needs_cookies":
         return "blocked"
     if (acc["paused_until"] or 0) > now or _next_action.get(acc["id"], 0) > now:
         return "waiting"
@@ -329,7 +336,7 @@ def account_pass(acc, now=None):
         return "daily_cap"
     sources = db.all("""SELECT s.*, c.id cid FROM sources s JOIN channels c ON c.id=s.channel_id
                         JOIN workspaces w ON w.id=c.workspace_id
-                        WHERE s.state='active' AND c.group_id=? AND c.state!='setup'
+                        WHERE s.state='active' AND s.kind='instagram' AND c.group_id=? AND c.state!='setup'
                           AND NOT (IFNULL(w.paused_until,0)>? AND w.pause_collect=0)""", (g["id"], now))
     if not sources:
         return "idle"

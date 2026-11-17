@@ -19,6 +19,7 @@ import android.os.Looper
 import android.os.PowerManager
 import android.provider.Settings
 import android.webkit.JavascriptInterface
+import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
@@ -35,6 +36,7 @@ import kotlin.concurrent.thread
 class MainActivity : AppCompatActivity() {
     private lateinit var web: WebView
     private val main = Handler(Looper.getMainLooper())
+    private var fileCb: ValueCallback<Array<Uri>>? = null
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -44,7 +46,20 @@ class MainActivity : AppCompatActivity() {
         web.setBackgroundColor(0xFF0E1116.toInt())
         web.settings.javaScriptEnabled = true
         web.settings.domStorageEnabled = true
-        web.webChromeClient = WebChromeClient()
+        web.webChromeClient = object : WebChromeClient() {
+            // "Restore a backup" on the phone screen: lets the user pick the .dcbackup file
+            override fun onShowFileChooser(view: WebView, cb: ValueCallback<Array<Uri>>, params: FileChooserParams): Boolean {
+                fileCb?.onReceiveValue(null)
+                fileCb = cb
+                return try {
+                    startActivityForResult(Intent(Intent.ACTION_GET_CONTENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*"), 77)
+                    true
+                } catch (e: Exception) {
+                    fileCb = null
+                    false
+                }
+            }
+        }
         web.addJavascriptInterface(Bridge(this), "DC")
         web.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(view: WebView, req: WebResourceRequest): Boolean {
@@ -71,13 +86,23 @@ class MainActivity : AppCompatActivity() {
         showStarting()
     }
 
+    @Deprecated("simple file chooser result")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == 77) {
+            val u = data?.data
+            fileCb?.onReceiveValue(if (resultCode == RESULT_OK && u != null) arrayOf(u) else null)
+            fileCb = null
+        }
+    }
+
     private fun showStarting() {
         val err = File(filesDir, "server_error.txt").takeIf { it.exists() }?.readText()
         val msg = if (err != null) "The server could not start: ${err.take(300)}" else "Starting the server…"
         web.loadDataWithBaseURL(
             null,
             "<html><body style='background:#0E1116;color:#fff;font-family:sans-serif;padding:28px'>" +
-                "<h2 style='margin:0 0 8px'>DriveCast Server</h2><p style='color:#8E94A0'>${android.text.Html.escapeHtml(msg)}</p></body></html>",
+                "<h2 style='margin:0'>DriveCast</h2><div style='color:#8E94A0;font-size:12px;letter-spacing:.08em;margin:2px 0 10px'>Studio &#124; By Naimat</div><p style='color:#8E94A0'>${android.text.Html.escapeHtml(msg)}</p></body></html>",
             "text/html", "utf-8", null
         )
         waitForServer()

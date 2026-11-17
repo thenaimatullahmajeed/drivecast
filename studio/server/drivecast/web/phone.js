@@ -2,6 +2,7 @@
 /* Phone screen: setup checklist + status. Talks to the Android app through the
    `DC` bridge (system settings) and to the local server (/local/status). */
 const B = window.DC || null;
+let s_has_owner = false;
 const TOKEN = (B && B.localToken) ? B.localToken() : '';
 const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const LOGO = '<span class="logo"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6.2 7.6a6.5 6.5 0 0 0 0 8.8M17.8 7.6a6.5 6.5 0 0 1 0 8.8" stroke="#fff" stroke-width="1.9" stroke-linecap="round"/><path d="M10 9.3c0-.7.8-1.2 1.4-.8l4.4 2.7c.6.4.6 1.2 0 1.6l-4.4 2.7c-.6.4-1.4 0-1.4-.8z" fill="#E8492A"/></svg></span>';
@@ -16,8 +17,9 @@ function checks() {
 
 async function draw() {
   if (document.activeElement && document.activeElement.tagName === 'INPUT') return; // don't wipe what is being typed
-  if (['tlog', 'fpw', 'fresh', 'dguide'].some(id => { const d = document.getElementById(id); return d && d.open; })) return;
+  if (['tlog', 'fpw', 'fresh', 'dguide', 'rst'].some(id => { const d = document.getElementById(id); return d && d.open; })) return;
   const c = checks(), s = await status();
+  s_has_owner = !!(s && s.has_owner);
   const items = c.items || [];
   const done = items.filter(i => i.ok).length;
   const ready = items.length && done === items.length;
@@ -58,7 +60,7 @@ async function draw() {
       <div style="display:flex;gap:8px;margin-top:8px"><button class="btn sm" data-copy="${esc(m.command || '')}">Copy command</button></div>
       <p class="muted" style="font-size:12px;margin:10px 0 0">Then come back here and tap Apply. You can turn it off any time from this screen. The server works without this mode too.</p></details>`}</div>`;
   document.getElementById('root').innerHTML = `
-    <div class="top">${LOGO}<b>DriveCast Server</b>${chip}</div>
+    <div class="top">${LOGO}<span style="display:flex;flex-direction:column;line-height:1.1"><b>DriveCast</b><span style="font-size:10.5px;letter-spacing:.08em;color:#8E94A0">Studio | By Naimat</span></span>${chip}</div>
     <div class="eq">${eq}</div><h1>${running ? 'Running in the background.' : 'Server is stopped.'}</h1>
       <p class="muted" style="margin:0">${running ? 'Everything is managed from your browser. Keep the phone on Wi-Fi and the charger.' : 'Uploads are paused. Start again and it resumes safely — nothing is posted twice.'}</p>
     ${!ready ? `<div class="card"><div class="kick">Recommended for 24/7 · ${done} of ${items.length}</div><p class="muted" style="font-size:12px;margin:6px 0 4px">Optional — the server already runs. Each item is checked for you; some phones don’t have every setting.</p><div class="bar" style="margin:8px 0 4px"><span style="width:${items.length ? Math.round(100 * done / items.length) : 0}%"></span></div>${rows}</div>` : ''}
@@ -73,6 +75,12 @@ async function draw() {
       <label>New password (8+ characters)<input id="npw" type="password" autocomplete="new-password"></label>
       <button class="btn coral wide" style="margin-top:10px" data-act="resetpw">Set new password</button><p id="pwmsg" style="font-size:13px;margin:8px 0 0"></p></details>` : ''}
     ${modeCard}
+    <details class="card" id="rst"${s && s.has_owner ? '' : ' open'}><summary class="muted" style="font-size:13px">${s && s.has_owner ? 'Restore a backup' : 'New phone? Restore your backup'}</summary>
+      <p class="muted" style="font-size:13px;margin:10px 0">Brings back every account, client, proxy, cookie and sign-in from a <b>.dcbackup</b> file. ${s && s.has_owner ? 'This replaces what is on this phone now.' : ''}</p>
+      <label>Google Drive link to the backup<input id="rlink" placeholder="https://drive.google.com/file/d/…" autocomplete="off"></label>
+      <label style="margin-top:8px">…or choose the file<input id="rfile" type="file" accept=".dcbackup,*/*" style="padding-top:8px"></label>
+      <label style="margin-top:8px">Backup password<input id="rpw" type="password" autocomplete="off"></label>
+      <button class="btn coral wide" style="margin-top:10px" data-act="restore">Restore</button><p id="rmsg" style="font-size:13px;margin:8px 0 0"></p></details>
     ${logBox}
     <details class="card" id="fresh"><summary class="muted" style="font-size:13px">Erase and start fresh</summary>
       <p class="muted" style="font-size:13px;margin:10px 0">Removes every account, channel, proxy, setting and this phone’s public link. Videos on YouTube and files in Drive stay. Use this to hand the phone to someone else or set it up from zero.</p>
@@ -95,6 +103,22 @@ document.addEventListener('click', e => {
       .then(r => r.json().then(j => ({ ok: r.ok, j })))
       .then(({ ok, j }) => { msg.style.color = ok ? '#3DDC97' : '#FF9B85'; msg.textContent = ok ? 'Done. Sign in on your laptop with the new password.' : (j.error || 'Could not change it'); if (ok) document.getElementById('npw').value = ''; })
       .catch(() => { msg.textContent = 'Server not reachable'; });
+  }
+  else if (el.dataset.act === 'restore') {
+    const link = document.getElementById('rlink').value.trim(), pw = document.getElementById('rpw').value, f = document.getElementById('rfile').files[0];
+    const msg = document.getElementById('rmsg');
+    if (!pw || (!link && !f)) { msg.style.color = '#FF9B85'; msg.textContent = 'Add the link or the file, and the password.'; return; }
+    if (s_has_owner && !confirm('Replace everything on this phone with the backup?')) return;
+    el.textContent = 'Restoring…'; msg.textContent = '';
+    const send = b64 => fetch('/local/restore', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Local-Token': TOKEN }, body: JSON.stringify({ link: link || null, file_b64: b64 || null, password: pw }) })
+      .then(r => r.json().then(j => ({ ok: r.ok, j })))
+      .then(({ ok, j }) => {
+        msg.style.color = ok ? '#3DDC97' : '#FF9B85';
+        msg.textContent = ok ? `Restored ${j.summary ? '(' + Object.entries(j.summary).map(([k, v]) => v + ' ' + k).join(', ') + ')' : ''}. The server restarts by itself in a few seconds.` : (j.error || 'Could not restore');
+        el.textContent = 'Restore';
+        if (ok) setTimeout(() => location.reload(), 9000);
+      }).catch(() => { msg.textContent = 'Server restarting…'; setTimeout(() => location.reload(), 9000); });
+    if (f) { const rd = new FileReader(); rd.onload = () => send(String(rd.result).split(',')[1]); rd.readAsDataURL(f); } else send(null);
   }
   else if (el.dataset.act === 'erase') {
     if (document.getElementById('erase').value.trim() !== 'ERASE') { alertBox('Type ERASE first'); return; }

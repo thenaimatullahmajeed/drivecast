@@ -64,7 +64,7 @@ class ServerService : Service() {
         )
         val n: Notification = NotificationCompat.Builder(this, App.CHANNEL)
             .setSmallIcon(R.drawable.ic_stat)
-            .setContentTitle("DriveCast server is running")
+            .setContentTitle("DriveCast Studio is on air")
             .setContentText("Posting continues with the screen off. Tap to open.")
             .setOngoing(true)
             .setContentIntent(open)

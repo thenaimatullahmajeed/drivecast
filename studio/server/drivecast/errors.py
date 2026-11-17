@@ -50,6 +50,22 @@ CATALOG = {
     "FB_BUSY": ("post", "Facebook is busy", "Facebook did not answer. It will retry.", None),
     "FB_NO_PAGE": ("channel", "No Facebook page linked", "Choose which page this channel posts to.", "edit_source"),
     "FB_REJECTED": ("post", "Facebook refused this post", "Facebook refused the post: {why}", None),
+    # --- YouTube / TikTok as a SOURCE (reading a client's own public channel) ---
+    "VID_NOT_FOUND": ("source", "Profile link not found", "{site} could not find {handle}. Check the link.", "edit_source"),
+    "VID_LOGIN_NEEDED": ("source", "{site} wants a signed-in browser", "{site} would not list {handle} without sign-in. Add cookies from a test account on this source, or paste video links by hand.", "source_cookies"),
+    "VID_BOT_CHECK": ("source", "{site} asked for a bot check", "{site} wants to confirm we are not a bot. It retries in a few hours; switch reading to the phone's internet, or add cookies, if it repeats.", "source_cookies"),
+    "VID_RATE_LIMIT": ("source", "{site} asked us to slow down", "{site} is resting this source for a while. It resumes by itself.", None),
+    "VID_GONE": ("post", "Video no longer available", "This video was removed, made private or is region-locked.", None),
+    "VID_LIVE": ("post", "Skipped: live stream", "Live streams and premieres are skipped until they become normal videos.", None),
+    "YTDLP_MISSING": ("server", "Video downloader missing", "The downloader inside the app could not start. Press Update downloader on the Server page.", "update_downloader"),
+    "YTDLP_OLD": ("server", "Video downloader needs an update", "{site} changed something. Press Update downloader on the Server page.", "update_downloader"),
+    # --- Instagram as a DESTINATION (official Content Publishing API) ---
+    "IGD_TOKEN_EXPIRED": ("channel", "Instagram posting access ended", "Reconnect the Instagram destination of this client (one Allow).", "connect_ig_dest"),
+    "IGD_NOT_PRO": ("channel", "Instagram account is not Professional", "Publishing needs an Instagram Business or Creator account. Switch it in the Instagram app (Settings › Account type).", "connect_ig_dest"),
+    "IGD_LIMIT": ("channel", "Instagram daily post limit reached", "Instagram allows a limited number of API posts per 24 hours. Posting resumes by itself.", None),
+    "IGD_MEDIA": ("post", "Instagram refused this file", "Instagram could not use this file: {why}", None),
+    "IGD_NO_PUBLIC_URL": ("server", "No public link for Instagram", "Instagram fetches the file from your panel's public link. Turn on the public link (Server page) first.", None),
+    "IGD_NO_APP": ("library", "Instagram app not set", "Add your Meta app's Instagram App ID and secret in Settings, or connect Instagram through the Facebook page instead.", "ig_app"),
     # --- YouTube ---
     "YT_AUTH_REVOKED": ("channel", "YouTube access ended", "Reconnect this channel — Google access was removed.", "reconnect_channel"),
     "YT_QUOTA": ("channel", "YouTube daily limit reached", "Posting resumes after midnight Pacific.", None),

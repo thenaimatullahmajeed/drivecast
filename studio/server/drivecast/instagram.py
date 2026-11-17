@@ -92,12 +92,35 @@ class Client:
         return classify(r, handle)
 
     def whoami(self):
+        """Signed-in check the way ReelVault 5.1 proved works: the home page of a signed-in
+        browser carries fb_dtsg (and the viewer id). Never uses the mobile-app endpoints."""
+        self._pace()
+        try:
+            r = self.s.get(BASE + "/", timeout=(20, 40), allow_redirects=False,
+                           headers={"Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                                    "X-Requested-With": None, "X-IG-App-ID": None, "X-ASBD-ID": None, "X-IG-WWW-Claim": None,
+                                    "X-CSRFToken": None, "Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "document",
+                                    "Sec-Fetch-Site": "none", "Upgrade-Insecure-Requests": "1"})
+        except Exception as e:
+            raise CodedError("PROXY_DEAD", f"instagram home: {e}")
+        loc = r.headers.get("Location", "")
+        if r.status_code in (301, 302, 303, 307, 308):
+            if "challenge" in loc or "checkpoint" in loc:
+                raise CodedError("IG_CHALLENGE", f"redirect to {loc}")
+            raise CodedError("IG_COOKIES_EXPIRED", f"redirect to {loc}")
+        if r.status_code == 429:
+            raise CodedError("IG_RATE_LIMIT", "429 on home page")
+        if r.status_code >= 400:
+            raise CodedError("IG_UNKNOWN", f"home {r.status_code}")
+        html = r.text or ""
+        if "checkpoint_required" in html or "/challenge/" in html:
+            raise CodedError("IG_CHALLENGE", "challenge page")
+        signed = "fb_dtsg" in html or ('"viewerId"' in html and '"viewerId":null' not in html) or '"is_logged_in":true' in html
+        if not signed or 'id="loginForm"' in html:
+            raise CodedError("IG_COOKIES_EXPIRED", "home page is not signed in")
         uid = self.cookies.get("ds_user_id")
-        data = self.get(f"/api/v1/users/{uid}/info/")
-        u = data.get("user") or {}
-        if not u.get("username"):
-            raise CodedError("IG_COOKIES_EXPIRED", json.dumps(data)[:500])
-        return {"username": u["username"], "id": str(u.get("pk") or uid)}
+        m = re.search(r'"username":"([A-Za-z0-9._]{1,30})"', html)
+        return {"username": m.group(1) if m else None, "id": str(uid)}
 
     def profile(self, handle):
         handle = clean_handle(handle)
@@ -167,11 +190,12 @@ def classify(r, handle=None):
         if "challenge" in loc:
             raise CodedError("IG_CHALLENGE", f"redirect to {loc}")
         raise CodedError("IG_HOME_REDIRECT", f"redirect to {loc}", handle=handle)
-    if "checkpoint_required" in low or "challenge_required" in low:
+    bad = r.status_code >= 400  # words inside a normal 200 answer (a caption!) must never trip these
+    if bad and ("checkpoint_required" in low or "challenge_required" in low):
         raise CodedError("IG_CHALLENGE", body)
-    if "feedback_required" in low:
+    if bad and "feedback_required" in low:
         raise CodedError("IG_FEEDBACK", body)
-    if r.status_code == 429 or "please wait a few minutes" in low or "rate limit" in low:
+    if r.status_code == 429 or (bad and ("please wait a few minutes" in low or "rate limit" in low)):
         raise CodedError("IG_RATE_LIMIT", body)
     if "login_required" in low or r.status_code == 401:
         raise CodedError("IG_COOKIES_EXPIRED", body)
@@ -189,6 +213,10 @@ def classify(r, handle=None):
         raise CodedError("IG_UNKNOWN", body, handle=handle)
     if isinstance(data, dict) and data.get("status") == "fail":
         msg = (data.get("message") or "").lower()
+        if "checkpoint" in msg or "challenge" in msg:
+            raise CodedError("IG_CHALLENGE", body)
+        if "feedback" in msg:
+            raise CodedError("IG_FEEDBACK", body)
         if "login" in msg:
             raise CodedError("IG_COOKIES_EXPIRED", body)
         if "wait" in msg:

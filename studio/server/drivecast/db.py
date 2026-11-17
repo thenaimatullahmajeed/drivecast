@@ -212,6 +212,45 @@ SCHEMA = [
     ALTER TABLE channels ADD COLUMN youtube_on INTEGER NOT NULL DEFAULT 1;
     ALTER TABLE uploads ADD COLUMN post_id TEXT;
     """,
+    # version 7: YouTube + TikTok sources, Instagram as a destination, routes without YouTube
+    """
+    CREATE TABLE media_v7 (
+        id INTEGER PRIMARY KEY, workspace_id INTEGER NOT NULL, channel_id INTEGER NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+        source_id INTEGER, origin TEXT NOT NULL CHECK (origin IN ('instagram','inbox','drive','youtube','tiktok')),
+        ext_id TEXT NOT NULL, code TEXT, kind TEXT NOT NULL DEFAULT 'video' CHECK (kind IN ('video','photo','carousel')),
+        lane TEXT NOT NULL DEFAULT 'backfill' CHECK (lane IN ('fresh','drive','backfill')),
+        taken_at REAL, caption TEXT, title TEXT, ref TEXT UNIQUE,
+        width INTEGER, height INTEGER, duration REAL, has_audio INTEGER,
+        local_path TEXT, local_bytes INTEGER, drive_file_id TEXT,
+        state TEXT NOT NULL DEFAULT 'found' CHECK (state IN ('found','downloading','cleaned','in_drive','published','skipped','failed','waiting_facebook')),
+        skip_reason TEXT, error_code TEXT, attempts INTEGER NOT NULL DEFAULT 0, next_try REAL,
+        published_at REAL, local_deleted_at REAL, created_at REAL NOT NULL, updated_at REAL,
+        UNIQUE (channel_id, origin, ext_id)
+    );
+    INSERT INTO media_v7 SELECT * FROM media;
+    DROP TABLE media;
+    ALTER TABLE media_v7 RENAME TO media;
+    CREATE INDEX IF NOT EXISTS ix_media_state ON media(channel_id, state, lane);
+    CREATE INDEX IF NOT EXISTS ix_media_drive ON media(drive_file_id);
+    ALTER TABLE sources ADD COLUMN proxy_mode TEXT NOT NULL DEFAULT 'group';
+    ALTER TABLE sources ADD COLUMN cookies_enc TEXT;
+    ALTER TABLE sources ADD COLUMN url TEXT;
+    ALTER TABLE ig_accounts ADD COLUMN proxy_mode TEXT NOT NULL DEFAULT 'group';
+    ALTER TABLE fb_pages ADD COLUMN ig_user_id TEXT;
+    ALTER TABLE fb_pages ADD COLUMN ig_username TEXT;
+    CREATE TABLE IF NOT EXISTS ig_dest (
+        id INTEGER PRIMARY KEY, workspace_id INTEGER NOT NULL, group_id INTEGER NOT NULL REFERENCES ip_groups(id) ON DELETE CASCADE,
+        via TEXT NOT NULL CHECK (via IN ('facebook','instagram')), ig_user_id TEXT NOT NULL, username TEXT, picture TEXT,
+        page_id TEXT, token_enc TEXT NOT NULL, token_expires REAL,
+        status TEXT NOT NULL DEFAULT 'ok', error_code TEXT, error_detail TEXT,
+        channel_id INTEGER REFERENCES channels(id) ON DELETE SET NULL,
+        created_at REAL NOT NULL, updated_at REAL,
+        UNIQUE (group_id, ig_user_id)
+    );
+    ALTER TABLE channels ADD COLUMN ig_dest_id INTEGER;
+    ALTER TABLE workspaces ADD COLUMN ig_app_id TEXT;
+    ALTER TABLE workspaces ADD COLUMN ig_app_secret_enc TEXT;
+    """,
 ]
 
 

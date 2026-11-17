@@ -68,6 +68,7 @@ chaquopy {
             install("requests")
             install("PySocks")
             install("tzdata")
+            install("yt-dlp")  // YouTube + TikTok sources (updatable at runtime from the panel)
         }
     }
     sourceSets {

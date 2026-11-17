@@ -91,7 +91,8 @@ def _group_down(g, why):
 
 def run(job, adapters=None):
     """Execute one job. ``adapters`` lets tests inject fakes:
-    {'session': fn(group), 'ip': fn(session), 'drive': module, 'platform': module}."""
+    {'session': fn(group), 'ip': fn(session), 'drive': module, 'platform': module,
+     'facebook': module, 'igpost': module}."""
     a = adapters or {}
     make_session = a.get("session", session_for)
     check_ip = a.get("ip", outgoing_ip)
@@ -99,7 +100,6 @@ def run(job, adapters=None):
     ch = store.channel(job["channel_id"])
     if not ch:
         return finish(job, "failed", "Channel removed", "skipped", "Channel removed")
-    pmod = a.get("platform") or platform(ch["platform"])
     ws = store.workspace(ch["workspace_id"])
     now = time.time()
 
@@ -116,14 +116,20 @@ def run(job, adapters=None):
         return finish(job, "failed", "No IP group", "held", "No IP group")
     if g["status"] == "down":
         return finish(job, "failed", "Proxy down", "held", f"Group {g['number']} not responding")
-    lim = store.limits_for_workspace(ws["id"])
-    if store.uploads_today(ws["id"], now) >= lim["daily_cap"]:
-        return finish(job, "failed", "Daily cap", "held", "Daily upload cap reached — resets at midnight Pacific")
+    dests = destinations(ch, a)
+    if not dests:
+        return finish(job, "failed", "No destination", "held", "No destination is on — connect YouTube, Facebook or Instagram")
+    if any(d["kind"] == "youtube" for d in dests):
+        lim = store.limits_for_workspace(ws["id"])
+        if store.uploads_today(ws["id"], now) >= lim["daily_cap"]:
+            dests = [d for d in dests if d["kind"] != "youtube"]
+            if not dests:
+                return finish(job, "failed", "Daily cap", "held", "Daily upload cap reached — resets at midnight Pacific")
     if not ch["folder_id"]:
         return finish(job, "failed", "No folder", "held", "No Drive folder connected")
 
     session = make_session(g)
-    phase, upload_id, tmp = "prepare", None, None
+    phase, upload_id, tmp, primary = "prepare", None, None, None
     _stage(ch["id"], "Checking proxy IP", 0)
     try:
         # --- never leave from the wrong IP ---
@@ -139,125 +145,142 @@ def run(job, adapters=None):
                (ip, ms, now, g["id"]))
 
         dbox = store.drive_box(ws)
-        cbox = store.channel_box(ch)
-        # --- pick the next file: Fresh → Drive (your edits / Inbox) → Backfill → Encore ---
-        dest = f"{ch['platform']}:{ch['external_id']}"
-        files = order_queue(dmod.videos(session, dbox, ch["folder_id"]))
+        # --- pick the next item: Fresh → Drive (your edits / Inbox) → older posts → Encore ---
+        files = dmod.videos(session, dbox, ch["folder_id"])
+        if any(d["photo"] for d in dests):
+            files = files + photo_candidates(ch)
+        files = order_queue(files)
         db.run("UPDATE channels SET queue_count=?, queue_checked_at=? WHERE id=?", (len(files), now, ch["id"]))
-        chosen, encore = None, None
+        chosen, encore, m, targets = None, None, None, []
         for f in files:
             mid = _media_id(f)
+            fm = db.one("SELECT * FROM media WHERE id=?", (mid,)) if mid else None
+            targets = [d for d in dests if (d["photo"] if f.get("photo") else d["video"]) and not loop_blocked(d, ch, fm)]
+            if not targets:
+                continue
+            primary = targets[0]
             try:
                 with db.tx() as c:
                     cur = c.execute("""INSERT INTO uploads(workspace_id,channel_id,destination,file_id,file_name,title,
                                        status,reserved_at,outgoing_ip,media_id) VALUES(?,?,?,?,?,?,'reserved',?,?,?)""",
-                                    (ws["id"], ch["id"], dest, f["id"], f["name"], pmod.title_from_filename(f["name"]),
+                                    (ws["id"], ch["id"], primary["key"], f["id"], f["name"], _plain_title(f["name"]),
                                      now, ip, mid))
                     upload_id = cur.lastrowid
-                chosen = f
+                chosen, m = f, fm
                 break
             except Exception:  # UNIQUE(file_id,destination): already handled before
                 continue
         if not chosen and ch.get("encore", 1):
-            encore = encore_pick(ch, dest, now)
+            vd = [d for d in dests if d["video"]]
+            encore = encore_pick(ch, vd[0]["key"], now) if vd else None
             if encore:
+                m = db.one("SELECT * FROM media WHERE id=?", (encore["media_id"],)) if encore.get("media_id") else None
+                targets = [d for d in vd if not loop_blocked(d, ch, m)]
+                primary = targets[0] if targets else None
+            if encore and primary:
                 with db.tx() as c:
                     cur = c.execute("""INSERT INTO uploads(workspace_id,channel_id,destination,file_id,file_name,title,
                                        status,reserved_at,outgoing_ip,media_id,encore_of) VALUES(?,?,?,?,?,?,'reserved',?,?,?,?)""",
-                                    (ws["id"], ch["id"], dest, encore["key"], encore["file_name"], encore["title"], now, ip,
+                                    (ws["id"], ch["id"], primary["key"], encore["key"], encore["file_name"], encore["title"], now, ip,
                                      encore["media_id"], encore["original"]))
                     upload_id = cur.lastrowid
                 chosen = {"id": encore["file_id"], "name": encore["file_name"], "size": None, "appProperties": {}}
+            else:
+                encore = None
         if not chosen:
             if not files:
-                db.event("warn", "empty", f"{ch['title']}: nothing left to post — add videos or connect Instagram.", ws["id"], ch["id"], "QUEUE_EMPTY")
-            return finish(job, "done", None, "skipped", "No new video in the Drive folder")
+                db.event("warn", "empty", f"{ch['title']}: nothing left to post — add videos or connect a source.", ws["id"], ch["id"], "QUEUE_EMPTY")
+            return finish(job, "done", None, "skipped", "Nothing new to post")
+        key = encore["key"] if encore else chosen["id"]
+        is_photo = bool(chosen.get("photo"))
 
-        # --- the video file: the phone copy when we still have it, else from Drive ---
-        m = db.one("SELECT * FROM media WHERE id=?", (_media_id(chosen),)) if _media_id(chosen) else None
-        title0 = encore["title"] if encore else (m and m.get("title")) or pmod.title_from_filename(chosen["name"])
+        # --- the file(s): the phone copy when we still have it, else from Drive ---
+        title0 = encore["title"] if encore else (m and m.get("title")) or _plain_title(chosen["name"])
         tmp = tempfile.mkdtemp(prefix="dc-", dir=TMP_DIR)
-        path = os.path.join(tmp, "video" + (os.path.splitext(chosen["name"])[1] or ".mp4"))
-        processing = None
-        if not encore:
-            _stage(ch["id"], "Downloading from Drive", 0, title0)
-            processing = dmod.child_folder(session, dbox, ch["folder_id"], "Processing")
-            dmod.move(session, dbox, chosen["id"], ch["folder_id"], processing)
-        local = m and m.get("local_path") and not m.get("local_deleted_at") and os.path.isfile(m["local_path"]) and m["local_path"]
-        if local:
-            _stage(ch["id"], "Using the phone copy", 1.0, title0)
-            shutil.copyfile(local, path)
+        processing, path, photos = None, None, []
+        if is_photo:
+            _stage(ch["id"], "Getting the photos", 0, title0)
+            photos = photo_paths(m, tmp, session, dmod, dbox)
         else:
-            _stage(ch["id"], "Downloading from Drive", 0, title0)
-            size = int(chosen.get("size") or 0)
-            try:
-                dmod.download(session, dbox, chosen["id"], path,
-                              on_progress=(lambda n: _stage(ch["id"], "Downloading from Drive", n / size)) if size else None)
-            except TypeError:  # test doubles without progress support
-                dmod.download(session, dbox, chosen["id"], path)
-
-        # --- privacy: anything that did not come through DriveCast is cleaned before it leaves ---
-        props = chosen.get("appProperties") or {}
-        if not props.get("dc_ref") and not encore and CLEAN_BEFORE_PUBLISH:
-            from . import cleaner, igsync
-            _stage(ch["id"], "Removing hidden data", None)
-            ref = igsync.new_ref()
-            cleaned = os.path.join(tmp, "clean.mp4")
-            cleaner.clean_video(path, cleaned, ref, _version())
-            path = cleaned
+            path = os.path.join(tmp, "video" + (os.path.splitext(chosen["name"])[1] or ".mp4"))
+            if not encore:
+                processing = dmod.child_folder(session, dbox, ch["folder_id"], "Processing")
+                dmod.move(session, dbox, chosen["id"], ch["folder_id"], processing)
+            local = m and m.get("local_path") and not m.get("local_deleted_at") and os.path.isfile(m["local_path"]) and m["local_path"]
+            if local:
+                _stage(ch["id"], "Using the phone copy", 1.0, title0)
+                shutil.copyfile(local, path)
+            else:
+                _stage(ch["id"], "Downloading from Drive", 0, title0)
+                size = int(chosen.get("size") or 0)
+                try:
+                    dmod.download(session, dbox, chosen["id"], path,
+                                  on_progress=(lambda n: _stage(ch["id"], "Downloading from Drive", n / size)) if size else None)
+                except TypeError:  # test doubles without progress support
+                    dmod.download(session, dbox, chosen["id"], path)
+            # --- privacy: anything that did not come through DriveCast is cleaned before it leaves ---
+            props = chosen.get("appProperties") or {}
+            if not props.get("dc_ref") and not encore and CLEAN_BEFORE_PUBLISH:
+                from . import cleaner, igsync
+                _stage(ch["id"], "Removing hidden data", None)
+                cleaned = os.path.join(tmp, "clean.mp4")
+                cleaner.clean_video(path, cleaned, igsync.new_ref(), _version())
+                path = cleaned
 
         title, desc = _title_and_description(ch, chosen, m, encore)
         db.run("UPDATE uploads SET status='uploading', title=? WHERE id=?", (title, upload_id))
         phase = "upload"
-        _stage(ch["id"], "Uploading to YouTube", 0, title)
-        try:
-            res = pmod.publish(session, cbox, path, title, desc,
-                               on_progress=lambda f: _stage(ch["id"], "Uploading to YouTube", f))
-        except TypeError as te:
-            if "on_progress" not in str(te):
-                raise
-            res = pmod.publish(session, cbox, path, title, desc)
+        res = send(primary, ch, session, a, path, photos, title, desc)
         phase = "after"
-        db.run("UPDATE uploads SET status='published', external_video_id=?, visibility=?, published_at=? WHERE id=?",
-               (res["video_id"], res["visibility"], time.time(), upload_id))
+        db.run("UPDATE uploads SET status='published', external_video_id=?, post_id=?, visibility=?, published_at=? WHERE id=?",
+               (res.get("video_id"), res.get("post_id"), res.get("visibility") or "public", time.time(), upload_id))
         # stats for this channel come back ~5 minutes after the post, then every 20 minutes
         db.run("UPDATE channels SET consecutive_failures=0, paused_until=NULL, state='live', state_reason=NULL, stats_at=? WHERE id=?",
                (time.time() - 15 * 60, ch["id"]))
+        _dest_ok(primary)
         if m:
             db.run("UPDATE media SET state='published', published_at=?, updated_at=? WHERE id=? AND state!='published'",
                    (time.time(), time.time(), m["id"]))
-        _crosspost_facebook(ch, ws, chosen, m, path, session, title, desc)
+        # --- the other destinations: each one isolated, a problem there never undoes this post ---
+        for d in targets[1:]:
+            extra(d, ch, ws, key, chosen, m, session, a, path, photos, title, desc, ip)
         if processing:
             try:
                 done = dmod.child_folder(session, dbox, ch["folder_id"], "Done")
                 dmod.move(session, dbox, chosen["id"], processing, done)
             except Exception as e:  # the post is live; a failed tidy-up must not undo that
                 db.event("warn", "drive", f"Published, but could not move the file to Done: {e}", ws["id"], ch["id"])
-        if res["visibility"] != "public":
-            db.event("warn", "visibility", f"“{title}” was accepted but YouTube shows it as {res['visibility']}.",
+        if res.get("visibility") not in (None, "public"):
+            db.event("warn", "visibility", f"“{title}” was accepted but {primary['label']} shows it as {res['visibility']}.",
                      ws["id"], ch["id"])
-        return finish(job, "done", None, "done", res["video_id"], upload_id)
+        return finish(job, "done", None, "done", res.get("video_id") or res.get("post_id"), upload_id)
 
     except Uncertain as e:
+        where = primary["label"] if primary else "the platform"
         db.run("UPDATE uploads SET status='uncertain', error=? WHERE id=?", (e.user_message, upload_id))
-        db.event("error", "uncertain", f"{ch['title']}: {e.user_message}. Check YouTube Studio — it will not be retried.",
-                 ws["id"], ch["id"])
+        db.event("error", "uncertain", f"{ch['title']}: {e.user_message}. Check {where} — it will not be retried.",
+                 ws["id"], ch["id"], "YT_UNCERTAIN")
         return finish(job, "failed", str(e), "uncertain", e.user_message, upload_id)
-    except CodedError as e:  # cleaning problems: privacy first, never post an uncleaned file
-        inf = e.info()
-        if e.code == "CLEAN_FAILED":
-            _release(upload_id, session, dmod, ch, permanent=True)
-            db.event("error", "clean", f"{ch['title']}: {inf['message']} File moved to Failed.", ws["id"], ch["id"], e.code, e.detail)
-            return finish(job, "failed", inf["title"], "failed", inf["title"])
-        _release(upload_id, session, dmod, ch)
-        db.event("error", "server", inf["message"], ws["id"], ch["id"], e.code, e.detail)
-        return finish(job, "failed", inf["title"], "held", inf["title"])
+    except CodedError as e:
+        inf = e.info(group=g["number"])
+        if e.code == "PROXY_DEAD":
+            _release(upload_id, session, dmod, ch)
+            _group_down(g, e.detail[:120])
+            return finish(job, "failed", inf["title"], "held", "Proxy down")
+        _dest_problem(primary, e)
+        permanent = e.scope == "post" and e.code not in ("FB_BUSY",)
+        _release(upload_id, session, dmod, ch, permanent=permanent)
+        extra_txt = " File moved to Failed." if permanent else ""
+        db.event("error" if inf.get("fix") or permanent else "warn", (primary or {}).get("kind") or "server",
+                 f"{ch['title']}: {inf['message']}{extra_txt}", ws["id"], ch["id"], e.code, e.detail)
+        return finish(job, "failed", inf["title"], "failed" if permanent else "held", inf["title"])
     except Exception as e:
         err = e.user_message if isinstance(e, DriveCastError) else f"Unexpected error: {e}"
         if phase == "upload" and not isinstance(e, DriveCastError):
             # an unknown crash while bytes may have been sent is treated as uncertain
             db.run("UPDATE uploads SET status='uncertain', error=? WHERE id=?", (err, upload_id))
-            db.event("error", "uncertain", f"{ch['title']}: upload interrupted. Check YouTube Studio.", ws["id"], ch["id"])
+            db.event("error", "uncertain", f"{ch['title']}: upload interrupted. Check {primary['label'] if primary else 'the platform'}.",
+                     ws["id"], ch["id"])
             return finish(job, "failed", err, "uncertain", err, upload_id)
         _release(upload_id, session, dmod, ch, permanent=isinstance(e, Permanent))
         if isinstance(e, AuthRevoked):
@@ -281,6 +304,172 @@ def run(job, adapters=None):
         PROGRESS.pop(ch["id"], None)
         if tmp:
             shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _plain_title(name):
+    return os.path.splitext(os.path.basename(name or ""))[0].strip() or "Untitled"
+
+
+# ------------------------------------------------------------------ destinations
+def destinations(ch, a=None):
+    """Where this client's posts go, in order: YouTube (if on) → Facebook Page → Instagram.
+    Only destinations that can post right now are listed."""
+    out = []
+    if ch.get("youtube_on", 1) and ch.get("token_enc") and ch.get("platform") == "youtube":
+        out.append({"kind": "youtube", "key": f"{ch['platform']}:{ch['external_id']}", "label": "YouTube",
+                    "video": True, "photo": False})
+    if ch.get("fb_page_id"):
+        pg = db.one("SELECT * FROM fb_pages WHERE channel_id=? AND page_id=?", (ch["id"], ch["fb_page_id"]))
+        acc = pg and db.one("SELECT * FROM fb_accounts WHERE id=?", (pg["fb_account_id"],))
+        if pg and pg.get("can_post") and acc and acc["status"] != "needs_reconnect":
+            out.append({"kind": "facebook", "key": f"facebook:{pg['page_id']}", "label": "Facebook",
+                        "video": True, "photo": True, "page": pg, "acc": acc})
+    if ch.get("ig_dest_id"):
+        d = db.one("SELECT * FROM ig_dest WHERE id=?", (ch["ig_dest_id"],))
+        if d and d["status"] == "ok":
+            from . import igpost
+            if igpost.published_today(d["id"]) < igpost.DAILY_LIMIT:
+                out.append({"kind": "instagram", "key": f"instagram:{d['id']}", "label": "Instagram",
+                            "video": True, "photo": True, "dest": d})
+    return out
+
+
+def loop_blocked(d, ch, m):
+    """Loop guard: a post is never sent back to the account it was read from."""
+    if not m or not m.get("source_id"):
+        return False
+    src = db.one("SELECT * FROM sources WHERE id=?", (m["source_id"],))
+    if not src:
+        return False
+    if d["kind"] == "youtube" and m["origin"] == "youtube":
+        return bool(src.get("ig_user_id")) and src["ig_user_id"] == ch.get("external_id")
+    if d["kind"] == "instagram" and m["origin"] == "instagram":
+        dest = d["dest"]
+        same_id = src.get("ig_user_id") and str(src["ig_user_id"]) == str(dest.get("ig_user_id"))
+        same_name = (src["handle"] or "").lstrip("@").lower() == (dest.get("username") or "").lower()
+        return bool(same_id or same_name)
+    return False
+
+
+def photo_candidates(ch):
+    """Photo / carousel posts waiting in the ledger, shaped like Drive files for order_queue."""
+    rows = db.all("""SELECT * FROM media WHERE channel_id=? AND kind IN ('photo','carousel') AND state='waiting_facebook'
+                     AND drive_file_id IS NOT NULL""", (ch["id"],))
+    return [{"id": f"media:{r['id']}", "name": f"{r['title'] or 'Photo'}.jpg", "photo": True, "size": None,
+             "createdTime": time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(r["created_at"])),
+             "appProperties": {"dc_media": r["id"], "dc_lane": r["lane"], "dc_taken": int(r["taken_at"] or 0),
+                               "dc_ref": r["ref"]}} for r in rows]
+
+
+def photo_paths(m, tmp, session, dmod, dbox):
+    import glob
+    paths = []
+    if m.get("local_path") and not m.get("local_deleted_at") and os.path.isdir(m["local_path"]) and m.get("ref"):
+        paths = sorted(glob.glob(os.path.join(glob.escape(m["local_path"]), f"*[[]{m['ref']}[]] *.jpg")),
+                       key=lambda p: int(os.path.splitext(p)[0].rsplit(" ", 1)[-1] or 0))
+    if not paths:
+        for i, fid in enumerate([x for x in (m.get("drive_file_id") or "").split(",") if x], 1):
+            p = os.path.join(tmp, f"p{i:02d}.jpg")
+            dmod.download(session, dbox, fid, p)
+            paths.append(p)
+    if not paths:
+        raise CodedError("IG_MEDIA_GONE", "photos missing locally and in Drive")
+    return paths[:10]
+
+
+def _ig_token(dest, session, a):
+    from . import igpost, security
+    tok = security.unseal(dest["token_enc"])
+    if dest["via"] == "instagram" and (dest.get("token_expires") or 0) < time.time() + 7 * 86400:
+        tok, exp = (a.get("igpost") or igpost).refresh(session, tok)
+        db.run("UPDATE ig_dest SET token_enc=?, token_expires=?, updated_at=? WHERE id=?",
+               (security.seal(tok), exp, time.time(), dest["id"]))
+    return tok
+
+
+def send(d, ch, session, a, path, photos, title, desc):
+    """Publish to one destination. Returns {'video_id','post_id','visibility'}."""
+    from . import facebook as fbm, igpost as igm, security
+    label = d["label"]
+    prog = lambda f: _stage(ch["id"], f"Posting to {label}", f)  # noqa: E731
+    _stage(ch["id"], f"Posting to {label}", 0, title)
+    if d["kind"] == "youtube":
+        pmod = a.get("platform") or platform(ch["platform"])
+        cbox = store.channel_box(ch)
+        try:
+            return pmod.publish(session, cbox, path, title, desc, on_progress=prog)
+        except TypeError as te:
+            if "on_progress" not in str(te):
+                raise
+            return pmod.publish(session, cbox, path, title, desc)
+    if d["kind"] == "facebook":
+        fb = a.get("facebook") or fbm
+        token = security.unseal(d["page"]["token_enc"])
+        if photos:
+            r = fb.publish_photos(session, d["page"]["page_id"], token, photos, desc or title)
+        else:
+            r = fb.publish_video(session, d["page"]["page_id"], token, path, title, desc, on_progress=prog)
+        return {"video_id": r.get("video_id"), "post_id": r.get("post_id"), "visibility": "public"}
+    if d["kind"] == "instagram":
+        ig = a.get("igpost") or igm
+        items = [(p, "photo") for p in photos] if photos else [(path, "video")]
+        r = ig.publish(session, d["dest"], _ig_token(d["dest"], session, a), items, desc or title, on_progress=prog)
+        return {"post_id": r.get("post_id"), "visibility": "public"}
+    raise CodedError("FB_NO_PAGE", d["kind"])
+
+
+def _dest_ok(d):
+    if not d:
+        return
+    if d["kind"] == "facebook":
+        db.run("UPDATE fb_accounts SET status='ok', error_code=NULL WHERE id=?", (d["acc"]["id"],))
+    elif d["kind"] == "instagram":
+        db.run("UPDATE ig_dest SET status='ok', error_code=NULL, error_detail=NULL WHERE id=?", (d["dest"]["id"],))
+
+
+def _dest_problem(d, e):
+    if not d:
+        return
+    if d["kind"] == "facebook" and e.code == "FB_TOKEN_EXPIRED":
+        db.run("UPDATE fb_accounts SET status='needs_reconnect', error_code=?, error_detail=? WHERE id=?",
+               (e.code, e.detail, d["acc"]["id"]))
+    if d["kind"] == "instagram" and e.code in ("IGD_TOKEN_EXPIRED", "IGD_NOT_PRO"):
+        db.run("UPDATE ig_dest SET status='needs_reconnect', error_code=?, error_detail=?, updated_at=? WHERE id=?",
+               (e.code, e.detail, time.time(), d["dest"]["id"]))
+
+
+def extra(d, ch, ws, key, chosen, m, session, a, path, photos, title, desc, ip):
+    """One more destination for the same item. Isolated: its problems stay its own."""
+    now = time.time()
+    try:
+        with db.tx() as c:
+            cur = c.execute("""INSERT INTO uploads(workspace_id,channel_id,destination,file_id,file_name,title,
+                               status,reserved_at,outgoing_ip,media_id) VALUES(?,?,?,?,?,?,'uploading',?,?,?)""",
+                            (ws["id"], ch["id"], d["key"], key, chosen["name"], title, now, ip, _media_id(chosen)))
+            uid = cur.lastrowid
+    except Exception:
+        return  # already posted there (UNIQUE file_id+destination)
+    try:
+        res = send(d, ch, session, a, path, photos, title, desc)
+        db.run("UPDATE uploads SET status='published', external_video_id=?, post_id=?, visibility='public', published_at=? WHERE id=?",
+               (res.get("video_id"), res.get("post_id"), time.time(), uid))
+        _dest_ok(d)
+    except Uncertain as e:
+        db.run("UPDATE uploads SET status='uncertain', error=? WHERE id=?", (getattr(e, "user_message", str(e)), uid))
+        db.event("error", "uncertain", f"{ch['title']}: {d['label']} result unknown — check it there. It will not be retried.",
+                 ws["id"], ch["id"], "YT_UNCERTAIN")
+    except CodedError as e:
+        g = store.group(ch["group_id"])
+        inf = e.info(group=g["number"] if g else "?")
+        _dest_problem(d, e)
+        if e.scope == "post" and e.code != "FB_BUSY":
+            db.run("UPDATE uploads SET status='failed', error=? WHERE id=?", (inf["title"], uid))
+        else:
+            db.run("DELETE FROM uploads WHERE id=?", (uid,))
+        db.event("warn", d["kind"], f"{ch['title']} → {d['label']}: {inf['message']}", ws["id"], ch["id"], e.code, e.detail)
+    except Exception as e:  # never let one destination break the others
+        db.run("DELETE FROM uploads WHERE id=?", (uid,))
+        db.event("warn", d["kind"], f"{ch['title']}: could not post to {d['label']} — {e}", ws["id"], ch["id"])
 
 
 CLEAN_BEFORE_PUBLISH = True
@@ -348,56 +537,6 @@ def _title_and_description(ch, f, m, encore):
     return title, titles.description(caption, title)
 
 
-def _crosspost_facebook(ch, ws, chosen, m, path, session, title, desc):
-    """After YouTube: post the same video to the channel's linked Facebook page.
-    Isolated: a Facebook problem never undoes the YouTube post or fails the job."""
-    if not ch.get("fb_page_id"):
-        return
-    from . import facebook, security
-    pg = db.one("SELECT * FROM fb_pages WHERE channel_id=? AND page_id=?", (ch["id"], ch["fb_page_id"]))
-    if not pg or not pg.get("can_post"):
-        return
-    acc = db.one("SELECT * FROM fb_accounts WHERE id=?", (pg["fb_account_id"],))
-    if not acc or acc["status"] == "needs_reconnect":
-        return
-    dest = f"facebook:{pg['page_id']}"
-    now = time.time()
-    try:
-        with db.tx() as c:
-            cur = c.execute("""INSERT INTO uploads(workspace_id,channel_id,destination,file_id,file_name,title,
-                               status,reserved_at,outgoing_ip,media_id) VALUES(?,?,?,?,?,?,'uploading',?,?,?)""",
-                            (ws["id"], ch["id"], dest, chosen["id"], chosen["name"], title, now,
-                             db.one("SELECT outgoing_ip FROM ip_groups WHERE id=?", (ch["group_id"],))["outgoing_ip"],
-                             _media_id(chosen)))
-            fb_upload = cur.lastrowid
-    except Exception:
-        return  # already posted to this page (UNIQUE file_id+destination)
-    _stage(ch["id"], "Posting to Facebook", 0, title)
-    try:
-        token = security.unseal(pg["token_enc"])
-        res = facebook.publish_video(session, pg["page_id"], token, path, title, desc,
-                                     on_progress=lambda f: _stage(ch["id"], "Posting to Facebook", f))
-        db.run("UPDATE uploads SET status='published', external_video_id=?, post_id=?, visibility='public', published_at=? WHERE id=?",
-               (res.get("video_id"), res.get("post_id"), time.time(), fb_upload))
-        db.run("UPDATE fb_accounts SET status='ok', error_code=NULL WHERE id=?", (acc["id"],))
-    except Uncertain as e:
-        db.run("UPDATE uploads SET status='uncertain', error=? WHERE id=?", (getattr(e, 'user_message', str(e)), fb_upload))
-        db.event("error", "uncertain", f"{ch['title']}: Facebook upload result unknown — check the page. It will not be retried.",
-                 ws["id"], ch["id"], "YT_UNCERTAIN")
-    except CodedError as e:
-        inf = e.info(group=store.group(ch["group_id"])["number"] if store.group(ch["group_id"]) else "?")
-        if e.scope in ("fb",) and e.code == "FB_TOKEN_EXPIRED":
-            db.run("UPDATE fb_accounts SET status='needs_reconnect', error_code=?, error_detail=? WHERE id=?", (e.code, e.detail, acc["id"]))
-        if e.scope == "post":
-            db.run("UPDATE uploads SET status='failed', error=? WHERE id=?", (inf["title"], fb_upload))
-        else:
-            db.run("DELETE FROM uploads WHERE id=?", (fb_upload,))  # not posted; let it try again next time
-        db.event("warn", "facebook", f"{ch['title']}: {inf['message']}", ws["id"], ch["id"], e.code, e.detail)
-    except Exception as e:  # never let Facebook break the finished YouTube post
-        db.run("DELETE FROM uploads WHERE id=?", (fb_upload,))
-        db.event("warn", "facebook", f"{ch['title']}: could not post to Facebook — {e}", ws["id"], ch["id"])
-
-
 def _release(upload_id, session, dmod, ch, permanent=False):
     """Nothing was published: free the reservation and put the file back
     (or into Failed when the file itself is the problem)."""
@@ -408,6 +547,14 @@ def _release(upload_id, session, dmod, ch, permanent=False):
         return
     if "#e" in (u["file_id"] or ""):  # an Encore never moved its file
         db.run("DELETE FROM uploads WHERE id=?", (upload_id,))
+        return
+    if (u["file_id"] or "").startswith("media:"):  # photo post: lives in the ledger, not in the queue folder
+        if permanent:
+            db.run("UPDATE uploads SET status='failed', error='Rejected' WHERE id=?", (upload_id,))
+            db.run("UPDATE media SET state='failed', skip_reason='Refused by the platform', updated_at=? WHERE id=?",
+                   (time.time(), u["media_id"]))
+        else:
+            db.run("DELETE FROM uploads WHERE id=?", (upload_id,))
         return
     try:
         dbox = store.drive_box(store.workspace(ch["workspace_id"]))

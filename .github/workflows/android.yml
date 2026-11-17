@@ -24,7 +24,7 @@ jobs:
         working-directory: studio/server
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg > /dev/null
-          pip install requests PySocks cryptography tzdata
+          pip install requests PySocks cryptography tzdata yt-dlp
           python -m unittest discover -s tests -v
 
       - uses: actions/setup-go@v5
@@ -102,24 +102,24 @@ jobs:
         working-directory: studio/android
         env:
           DC_KEYSTORE_PASS: ${{ secrets.DC_KEYSTORE_PASS }}
-        run: gradle assembleRelease --no-daemon -PdcVersionCode=${{ github.run_number }} -PdcVersionName=1.1.${{ github.run_number }}
+        run: gradle assembleRelease --no-daemon -PdcVersionCode=${{ github.run_number }} -PdcVersionName=1.2.${{ github.run_number }}
 
       - name: Name APK
         run: |
           mkdir -p dist
-          cp studio/android/app/build/outputs/apk/release/*.apk dist/DriveCast-Server-1.1.${{ github.run_number }}.apk
+          cp studio/android/app/build/outputs/apk/release/*.apk dist/DriveCast-Studio-1.2.${{ github.run_number }}.apk
           ls -la dist
 
       - uses: actions/upload-artifact@v4
         with:
-          name: DriveCast-Server-1.1.${{ github.run_number }}
+          name: DriveCast-Studio-1.2.${{ github.run_number }}
           path: dist/*.apk
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: server-1.1.${{ github.run_number }}
-          name: DriveCast Server 1.1.${{ github.run_number }}
+          tag_name: server-1.2.${{ github.run_number }}
+          name: DriveCast Studio 1.2.${{ github.run_number }}
           target_commitish: ${{ github.sha }}
           prerelease: true
           files: dist/*.apk
