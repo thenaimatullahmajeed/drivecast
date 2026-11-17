@@ -57,11 +57,15 @@ def check_groups():
 STATS_EVERY = 20 * 60  # per channel; ~2 quota units each time, well inside 10,000/day
 
 
-def sync_stats():
+def sync_stats(ws_id=None, force=False):
     today = dt.datetime.now(dt.timezone.utc).date().isoformat()
-    fresh = time.time() - STATS_EVERY
-    for ch in db.all("SELECT * FROM channels WHERE state!='setup' AND token_enc IS NOT NULL AND (stats_at IS NULL OR stats_at<?)",
-                     (fresh,)):
+    fresh = time.time() - (0 if force else STATS_EVERY)
+    q = "SELECT * FROM channels WHERE state!='setup' AND token_enc IS NOT NULL AND (stats_at IS NULL OR stats_at<?)"
+    args = [fresh]
+    if ws_id:
+        q += " AND workspace_id=?"
+        args.append(ws_id)
+    for ch in db.all(q, args):
         g = store.group(ch["group_id"])
         if not g or g["status"] == "down":
             continue  # stats also travel only through the channel's own IP
@@ -74,6 +78,9 @@ def sync_stats():
                    (cs["subscribers"], cs["total_views"], cs["title"], cs["handle"], cs["thumbnail"], time.time(), ch["id"]))
             db.run("INSERT OR REPLACE INTO channel_points(channel_id,day,views,subscribers) VALUES(?,?,?,?)",
                    (ch["id"], today, cs["total_views"], cs["subscribers"]))
+            now = time.time()
+            db.run("INSERT INTO channel_ticks(channel_id,at,views,subscribers) VALUES(?,?,?,?)",
+                   (ch["id"], now, cs["total_views"], cs["subscribers"]))
             ups = db.all("SELECT id, external_video_id FROM uploads WHERE channel_id=? AND status='published' AND published_at>?",
                          (ch["id"], time.time() - 90 * 86400))
             ids = [u["external_video_id"] for u in ups if u["external_video_id"]]
@@ -85,6 +92,7 @@ def sync_stats():
                 db.run("UPDATE uploads SET views=?, likes=?, comments=?, visibility=COALESCE(?,visibility), stats_at=? WHERE id=?",
                        (v["views"], v["likes"], v["comments"], v["visibility"], time.time(), u["id"]))
                 db.run("INSERT OR REPLACE INTO stat_points(upload_id,day,views) VALUES(?,?,?)", (u["id"], today, v["views"]))
+                db.run("INSERT INTO upload_ticks(upload_id,at,views) VALUES(?,?,?)", (u["id"], now, v["views"]))
         except Exception as e:
             msg = getattr(e, "user_message", str(e))
             db.event("warn", "stats", f"{ch['title']}: stats not updated ({msg})", ch["workspace_id"], ch["id"])
@@ -95,6 +103,8 @@ def cleanup(tmp_dir):
     db.run("DELETE FROM sessions WHERE expires_at<?", (now,))
     db.run("DELETE FROM connect_links WHERE expires_at<?", (now - 86400,))
     db.run("DELETE FROM events WHERE at<?", (now - 60 * 86400,))
+    db.run("DELETE FROM channel_ticks WHERE at<?", (now - 70 * 86400,))
+    db.run("DELETE FROM upload_ticks WHERE at<?", (now - 70 * 86400,))
     db.run("DELETE FROM jobs WHERE status IN ('done','failed') AND finished_at<?", (now - 30 * 86400,))
     db.run("DELETE FROM slots WHERE due_at<? AND status NOT IN ('done','uncertain')", (now - 120 * 86400,))
     if tmp_dir and os.path.isdir(tmp_dir):

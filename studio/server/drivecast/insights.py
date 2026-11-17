@@ -1,4 +1,5 @@
 """Dashboard and report numbers. All "day" buckets use the viewer's timezone."""
+import bisect
 import datetime as dt
 import time
 from collections import defaultdict
@@ -15,35 +16,104 @@ def _tz(name):
         return dt.timezone(dt.timedelta(hours=5))
 
 
-def _channel_daily(ws_id, days):
-    """{channel_id: {utc_day: views gained that day}} from daily channel snapshots."""
-    since = (dt.datetime.now(dt.timezone.utc).date() - dt.timedelta(days=days + 1)).isoformat()
-    rows = db.all("""SELECT p.channel_id, p.day, p.views FROM channel_points p JOIN channels c ON c.id=p.channel_id
-                     WHERE c.workspace_id=? AND p.day>=? ORDER BY p.channel_id, p.day""", (ws_id, since))
-    out, prev = defaultdict(dict), {}
+def _series(rows, key):
+    """rows sorted by (id, at) -> {id: ([at...], [value...])}"""
+    out = defaultdict(lambda: ([], []))
     for r in rows:
-        if r["channel_id"] in prev and r["views"] is not None and prev[r["channel_id"]] is not None:
-            out[r["channel_id"]][r["day"]] = max(0, r["views"] - prev[r["channel_id"]])
-        prev[r["channel_id"]] = r["views"]
+        if r[key] is None:
+            continue
+        a, v = out[r["id"]]
+        a.append(r["at"])
+        v.append(r[key])
     return out
 
 
-def _day_list(n):
-    today = dt.datetime.now(dt.timezone.utc).date()
-    return [(today - dt.timedelta(days=n - 1 - i)).isoformat() for i in range(n)]
+def _at(ser, ts):
+    """Last reading at or before ts, else None."""
+    ats, vals = ser
+    i = bisect.bisect_right(ats, ts)
+    return vals[i - 1] if i else None
 
 
-def dashboard(ws_id, tz_name, now=None):
+def _gain(ser, s, e):
+    """Growth between s and e. Without a reading before s, the first reading inside the window is the base."""
+    ats, vals = ser
+    end = _at(ser, e)
+    if end is None:
+        return 0
+    base = _at(ser, s)
+    if base is None:
+        i = bisect.bisect_left(ats, s)
+        if i >= len(ats) or ats[i] >= e:
+            return 0
+        base = vals[i]
+    return end - base
+
+
+def _day_bounds(tz_name, now, n):
+    """n local days ending today: [(start, end, iso_day)] oldest first."""
+    out = []
+    for k in range(n - 1, -1, -1):
+        s0, e0, d0 = local_day_bounds(tz_name, now - k * 86400)
+        out.append((s0, e0, d0.isoformat()))
+    return out
+
+
+class Views:
+    """Views gained per channel in any window: the larger of the channel counter
+    (YouTube updates it slowly) and the sum of our own videos' counters (fast)."""
+
+    def __init__(self, ws_id, since, now):
+        self.now = now
+        ct = db.all("""SELECT t.channel_id id, t.at, t.views, t.subscribers FROM channel_ticks t JOIN channels c ON c.id=t.channel_id
+                       WHERE c.workspace_id=? AND t.at>=? ORDER BY t.channel_id, t.at""", (ws_id, since - 86400))
+        self.ch = _series(ct, "views")
+        self.subs = _series(ct, "subscribers")
+        ups = db.all("""SELECT id, channel_id, published_at FROM uploads WHERE workspace_id=? AND status='published'
+                        AND published_at>?""", (ws_id, since - 30 * 86400))
+        self.up_ch = defaultdict(list)
+        self.up = {}
+        if ups:
+            ids = [u["id"] for u in ups]
+            rows = []
+            for i in range(0, len(ids), 500):
+                chunk = ids[i:i + 500]
+                rows += db.all(f"SELECT upload_id id, at, views FROM upload_ticks WHERE upload_id IN ({','.join('?' * len(chunk))}) ORDER BY upload_id, at", chunk)
+            ser = _series(rows, "views")
+            for u in ups:
+                a, v = ser[u["id"]] if u["id"] in ser else ([], [])
+                # a video starts at zero views when it is published
+                self.up[u["id"]] = ([u["published_at"]] + a, [0] + v)
+                self.up_ch[u["channel_id"]].append(u["id"])
+
+    def video_gain(self, uid, s, e):
+        return max(0, _gain(self.up[uid], s, e)) if uid in self.up else 0
+
+    def channel(self, cid, s, e):
+        c = max(0, _gain(self.ch[cid], s, e)) if cid in self.ch else 0
+        v = sum(self.video_gain(u, s, e) for u in self.up_ch.get(cid, []))
+        return max(c, v)
+
+    def subs_gain(self, cid, s, e):
+        return _gain(self.subs[cid], s, e) if cid in self.subs else 0
+
+
+def dashboard(ws_id, tz_name, now=None, since=None):
     now = now or time.time()
     tz = _tz(tz_name)
-    chans = db.all("SELECT c.*, g.number group_number, g.status group_status FROM channels c "
+    chans = db.all("SELECT c.*, g.number group_number, g.status group_status, g.country group_country FROM channels c "
                    "LEFT JOIN ip_groups g ON g.id=c.group_id WHERE c.workspace_id=? AND c.state!='setup'", (ws_id,))
     cmap = {c["id"]: c for c in chans}
     start, end, _ = local_day_bounds(tz_name, now)
+    bounds = _day_bounds(tz_name, now, 60)
+    V = Views(ws_id, bounds[0][0], now)
+    days = [b[2] for b in bounds]
+    per_ch = {c["id"]: [V.channel(c["id"], s0, e0) for s0, e0, _ in bounds] for c in chans}
+    total_by_day = [sum(per_ch[c][i] for c in per_ch) for i in range(len(bounds))]
 
     # --- Today card ---
     tslots = db.all("""SELECT s.* FROM slots s JOIN channels c ON c.id=s.channel_id
-                       WHERE c.workspace_id=? AND s.due_at>=? AND s.due_at<?""", (ws_id, start, end))
+                       WHERE c.workspace_id=? AND s.due_at>=? AND s.due_at<? ORDER BY s.due_at""", (ws_id, start, end))
     by_ch = defaultdict(lambda: {"done": 0, "total": 0, "next": None, "states": []})
     counts = defaultdict(int)
     for s in tslots:
@@ -53,56 +123,85 @@ def dashboard(ws_id, tz_name, now=None):
         b["states"].append(s["status"])
         if s["status"] == "done":
             b["done"] += 1
-        if s["status"] in ("planned", "queued") and s["due_at"] >= now and (b["next"] is None or s["due_at"] < b["next"]):
-            b["next"] = s["due_at"]
+    nxt_rows = db.all("""SELECT s.channel_id, MIN(s.due_at) due_at FROM slots s JOIN channels c ON c.id=s.channel_id
+                         WHERE c.workspace_id=? AND s.status IN ('planned','queued') AND s.due_at>=? GROUP BY s.channel_id""",
+                      (ws_id, now - 60))
+    next_by_ch = {r["channel_id"]: r["due_at"] for r in nxt_rows}
     nxt = db.one("""SELECT s.due_at, s.channel_id, c.title FROM slots s JOIN channels c ON c.id=s.channel_id
                     WHERE c.workspace_id=? AND s.status IN ('planned','queued') AND s.due_at>=? ORDER BY s.due_at LIMIT 1""",
                  (ws_id, now - 60))
-    daily = _channel_daily(ws_id, 62)
-    days = _day_list(62)
-    total_by_day = [sum(daily[c].get(d, 0) for c in daily) for d in days]
+    from . import worker
+    live = {cid: p for cid, p in list(worker.PROGRESS.items()) if cid in cmap}
     today_card = {
         "done": counts["done"], "total": len(tslots),
         "upcoming": counts["planned"] + counts["queued"] + counts["running"],
         "held": counts["held"] + counts["failed"] + counts["uncertain"] + counts["missed"],
-        "next": nxt, "views_today": total_by_day[-1] if total_by_day else 0,
-        "channels": sorted([{"id": cid, "title": cmap[cid]["title"], **{k: v for k, v in b.items()}}
+        "next": nxt, "views_today": total_by_day[-1],
+        "channels": sorted([{"id": cid, "title": cmap[cid]["title"], **b, "next": next_by_ch.get(cid)}
                             for cid, b in by_ch.items() if cid in cmap], key=lambda x: x["title"].lower()),
+        "live": [{"channel_id": cid, "channel": cmap[cid]["title"], "thumbnail": cmap[cid]["thumbnail"], **p} for cid, p in live.items()],
     }
 
-    # --- KPIs ---
-    v7, p7 = sum(total_by_day[-7:]), sum(total_by_day[-14:-7])
-    ups = db.all("""SELECT u.*, c.title channel_title FROM uploads u JOIN channels c ON c.id=u.channel_id
+    # --- uploads ---
+    ups = db.all("""SELECT u.*, c.title channel_title, c.thumbnail channel_thumb FROM uploads u JOIN channels c ON c.id=u.channel_id
                     WHERE u.workspace_id=? AND u.status='published' AND u.published_at>? ORDER BY u.published_at DESC""",
                  (ws_id, now - 60 * 86400))
     first24 = _first_day_views(ups)
     recent = [first24[u["id"]] for u in ups if u["id"] in first24 and u["published_at"] > now - 30 * 86400]
     older = [first24[u["id"]] for u in ups if u["id"] in first24 and u["published_at"] <= now - 30 * 86400]
+    ups30 = [u for u in ups if u["published_at"] > now - 30 * 86400 and u["views"] is not None]
+    posts7 = sum(1 for u in ups if u["published_at"] > now - 7 * 86400)
+    posts7p = sum(1 for u in ups if now - 14 * 86400 < u["published_at"] <= now - 7 * 86400)
     past = db.all("""SELECT s.status FROM slots s JOIN channels c ON c.id=s.channel_id
                      WHERE c.workspace_id=? AND s.due_at BETWEEN ? AND ? AND s.status NOT IN ('planned','queued','running','skipped')""",
                   (ws_id, now - 7 * 86400, now))
     ok = sum(1 for s in past if s["status"] == "done")
+
+    # --- channel pulse ---
+    w7 = (bounds[-7][0], now)
+    pulse = []
+    for c in chans:
+        plan = db.jload(c["plan_json"], {})
+        ppd = int(plan.get("posts_per_day") or 2)
+        q = c["queue_count"]
+        last = next((u for u in ups if u["channel_id"] == c["id"]), None)
+        b = by_ch.get(c["id"], {"done": 0, "total": 0, "states": []})
+        series = per_ch[c["id"]][-14:]
+        pulse.append({
+            "id": c["id"], "title": c["title"], "handle": c["handle"], "thumbnail": c["thumbnail"], "state": c["state"],
+            "group_number": c["group_number"], "group_status": c["group_status"], "group_country": c["group_country"],
+            "posts_per_day": ppd, "queue": q, "runway_days": None if q is None else round(q / max(1, ppd), 1),
+            "done": b["done"], "total": b["total"], "states": b["states"], "next": next_by_ch.get(c["id"]),
+            "live": live.get(c["id"]), "subscribers": c["subscribers"], "subs_7d": V.subs_gain(c["id"], *w7),
+            "views_today": per_ch[c["id"]][-1], "views_7d": sum(series[-7:]), "prev_7d": sum(series[:7]), "series": series,
+            "total_views": c["total_views"], "stats_at": c["stats_at"],
+            "last_post": {"title": last["title"], "at": last["published_at"], "views": last["views"]} if last else None,
+        })
+    pulse.sort(key=lambda x: (x["state"] != "live", -(x["views_7d"] or 0), x["title"].lower()))
+    runways = [p["runway_days"] for p in pulse if p["state"] == "live" and p["runway_days"] is not None]
+    subs_total = sum(c["subscribers"] or 0 for c in chans)
+
     kpis = {
-        "views_7d": v7, "views_7d_prev": p7, "views_series": total_by_day[-14:],
+        "views_today": total_by_day[-1], "views_yesterday": total_by_day[-2],
+        "views_7d": sum(total_by_day[-7:]), "views_7d_prev": sum(total_by_day[-14:-7]), "views_series": total_by_day[-14:],
+        "subscribers": subs_total, "subs_7d": sum(p["subs_7d"] for p in pulse),
+        "posts_7d": posts7, "posts_7d_prev": posts7p,
         "published_today": counts["done"], "planned_today": len(tslots),
         "avg_first24": round(sum(recent) / len(recent)) if recent else None,
         "avg_first24_prev": round(sum(older) / len(older)) if older else None,
+        "avg_views": round(sum(u["views"] for u in ups30) / len(ups30)) if ups30 else None,
         "health": round(100 * ok / len(past)) if past else None,
+        "runway_min": min(runways) if runways else None,
+        "stats_at": max((c["stats_at"] or 0) for c in chans) if chans else None,
     }
 
-    # --- views trend (30 days, with previous 30) ---
     trend = {"days": days[-30:], "views": total_by_day[-30:], "previous": total_by_day[-60:-30],
              "total_views": sum((c["total_views"] or 0) for c in chans)}
 
-    # --- leaderboard ---
-    board = []
-    for c in chans:
-        series = [daily[c["id"]].get(d, 0) for d in days[-14:]]
-        board.append({"id": c["id"], "title": c["title"], "handle": c["handle"], "thumbnail": c["thumbnail"],
-                      "views_7d": sum(series[-7:]), "prev_7d": sum(series[:7]), "series": series})
+    board = [{"id": p["id"], "title": p["title"], "handle": p["handle"], "thumbnail": p["thumbnail"],
+              "views_7d": p["views_7d"], "prev_7d": p["prev_7d"], "series": p["series"]} for p in pulse]
     board.sort(key=lambda x: -x["views_7d"])
 
-    # --- best hours heatmap (viewer's local weekday x hour) ---
     cells = defaultdict(list)
     for u in ups:
         if u["id"] in first24:
@@ -110,27 +209,45 @@ def dashboard(ws_id, tz_name, now=None):
             cells[(t.weekday(), t.hour)].append(first24[u["id"]])
     heat = [[round(sum(cells[(d, h)]) / len(cells[(d, h)])) if cells[(d, h)] else None for h in range(24)] for d in range(7)]
 
-    # --- consistency (14 local days) ---
     cons = []
-    for k in range(13, -1, -1):
-        s0, e0, d0 = local_day_bounds(tz_name, now - k * 86400)
+    for s0, e0, d0 in bounds[-14:]:
         pl = db.one("""SELECT COUNT(*) n FROM slots s JOIN channels c ON c.id=s.channel_id
                        WHERE c.workspace_id=? AND s.due_at>=? AND s.due_at<? AND s.status!='skipped'""", (ws_id, s0, e0))["n"]
-        pb = db.one("SELECT COUNT(*) n FROM uploads WHERE workspace_id=? AND status='published' AND published_at>=? AND published_at<?",
-                    (ws_id, s0, e0))["n"]
-        cons.append({"day": d0.isoformat(), "planned": pl, "published": pb, "today": k == 0})
+        pb = sum(1 for u in ups if s0 <= u["published_at"] < e0)
+        cons.append({"day": d0, "planned": pl, "published": pb, "today": s0 <= now < e0})
 
-    upnext = db.all("""SELECT s.id, s.due_at, s.status, s.market, c.id channel_id, c.title, g.number group_number, g.status group_status
+    upnext = db.all("""SELECT s.id, s.due_at, s.status, s.market, c.id channel_id, c.title, c.thumbnail, g.number group_number, g.status group_status
                        FROM slots s JOIN channels c ON c.id=s.channel_id LEFT JOIN ip_groups g ON g.id=c.group_id
                        WHERE c.workspace_id=? AND s.status IN ('planned','queued','running') AND s.due_at>=?
-                       ORDER BY s.due_at LIMIT 6""", (ws_id, now - 120))
-    from . import worker
-    today_card["live"] = [{"channel_id": cid, "channel": cmap[cid]["title"], **p} for cid, p in list(worker.PROGRESS.items()) if cid in cmap]
-    return {"now": now, "today": today_card, "kpis": kpis, "trend": trend, "leaderboard": board[:8],
+                       ORDER BY s.due_at LIMIT 8""", (ws_id, now - 120))
+
+    recent_posts = []
+    for u in ups[:10]:
+        hours = max(0.25, (now - u["published_at"]) / 3600)
+        recent_posts.append({"id": u["id"], "title": u["title"], "channel": u["channel_title"], "thumbnail": u["channel_thumb"],
+                             "published_at": u["published_at"], "views": u["views"], "likes": u["likes"], "comments": u["comments"],
+                             "video_id": u["external_video_id"], "visibility": u["visibility"],
+                             "per_hour": round((u["views"] or 0) / hours) if u["views"] is not None else None,
+                             "last_hour": V.video_gain(u["id"], now - 3600, now), "today": V.video_gain(u["id"], start, now)})
+
+    feed = [{"at": u["published_at"], "level": "ok", "kind": "published", "message": f"Published “{u['title']}”",
+             "channel": u["channel_title"], "video_id": u["external_video_id"]} for u in ups[:20]]
+    for e in db.all("SELECT e.level, e.kind, e.message, e.at, c.title channel FROM events e LEFT JOIN channels c ON c.id=e.channel_id "
+                    "WHERE e.workspace_id=? ORDER BY e.at DESC LIMIT 25", (ws_id,)):
+        feed.append(dict(e))
+    feed.sort(key=lambda x: -x["at"])
+
+    away = None
+    if since and since < now - 300:
+        since = max(since, now - 30 * 86400)
+        away = {"since": since,
+                "published": sum(1 for u in ups if u["published_at"] >= since),
+                "views": sum(V.channel(c["id"], since, now) for c in chans),
+                "problems": db.one("SELECT COUNT(*) n FROM events WHERE workspace_id=? AND level='error' AND at>=?", (ws_id, since))["n"]}
+
+    return {"now": now, "today": today_card, "kpis": kpis, "trend": trend, "leaderboard": board[:8], "pulse": pulse,
             "heatmap": heat, "heat_samples": sum(len(v) for v in cells.values()), "consistency": cons,
-            "upnext": upnext, "attention": attention(ws_id, now),
-            "recent": [{"id": u["id"], "title": u["title"], "channel": u["channel_title"], "published_at": u["published_at"],
-                        "views": u["views"], "video_id": u["external_video_id"], "visibility": u["visibility"]} for u in ups[:8]]}
+            "upnext": upnext, "attention": attention(ws_id, now), "recent": recent_posts, "feed": feed[:30], "away": away}
 
 
 def _first_day_views(ups):

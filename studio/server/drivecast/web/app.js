@@ -46,10 +46,13 @@ const ICON = {
   key: '<circle cx="8" cy="15" r="4"/><path d="m11 12 9-9M17 6l3 3M15 8l2 2"/>', bolt: '<path d="M13 2 4 14h7l-1 8 9-12h-7z"/>',
   logout: '<path d="M15 4h4a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1h-4M10 17l5-5-5-5M15 12H4"/>', shield: '<path d="M12 3 4 6v6c0 4.5 3.4 8 8 9 4.6-1 8-4.5 8-9V6z"/><path d="m9 12 2 2 4-4"/>',
   refresh: '<path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/>', search: '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>',
+  more: '<circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/>',
+  batt: '<rect x="2" y="7" width="17" height="10" rx="2"/><path d="M22 11v2"/>', flame: '<path d="M12 22c4 0 7-3 7-7 0-5-5-7-5-12-3 2-5 5-5 8-1-1-2-2-2-4-2 2-2 5-2 8 0 4 3 7 7 7z"/>',
+  eye: '<path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>', clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
   ext: '<path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/>', trash: '<path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/>',
 };
 const ic = (n, s = 18) => `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON[n] || ''}</svg>`;
-const LOGO = '<span class="logo"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#0E1116" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M5 8v8M9.5 5v14M14 9v6M18.5 6.5v11"/></svg></span>';
+const LOGO = '<span class="logo"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6.2 7.6a6.5 6.5 0 0 0 0 8.8M17.8 7.6a6.5 6.5 0 0 1 0 8.8" stroke="#fff" stroke-width="1.9" stroke-linecap="round"/><path d="M10 9.3c0-.7.8-1.2 1.4-.8l4.4 2.7c.6.4.6 1.2 0 1.6l-4.4 2.7c-.6.4-1.4 0-1.4-.8z" fill="#E8492A"/></svg></span>';
 const chip = (t, tone = 'neutral', dot = true) => `<span class="chip ${tone}">${dot ? '<i></i>' : ''}${esc(t)}</span>`;
 function avatar(name, i = 0, img = null, size = 32) {
   const inner = img ? `<img src="${esc(img)}" alt="">` : esc((name || '?').trim().charAt(0).toUpperCase());
@@ -108,7 +111,7 @@ function areaChart(days, vals, prev, label) {
   const idx = [0, Math.floor(days.length / 3), Math.floor(2 * days.length / 3), days.length - 1];
   idx.forEach(i => { if (days[i]) g += `<text x="${pc[i][0].toFixed(1)}" y="${H - 8}" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#5B606B">${esc(new Date(days[i] + 'T12:00:00Z').toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }))}</text>`; });
   const last = pc[pc.length - 1];
-  return `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" role="img" aria-label="${esc(label)}">
+  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;max-height:${H}px;display:block" role="img" aria-label="${esc(label)}">
     <defs><linearGradient id="ga" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#0E1116" stop-opacity="0.14"/><stop offset="1" stop-color="#0E1116" stop-opacity="0"/></linearGradient></defs>
     ${g}${pp ? `<path d="${path(pp)}" fill="none" stroke="#B9B6AD" stroke-width="1.5" stroke-dasharray="4 4"/>` : ''}
     <path d="${path(pc)} L${last[0].toFixed(1)} ${H - PB} L${pc[0][0].toFixed(1)} ${H - PB} Z" fill="url(#ga)"/>
@@ -163,21 +166,49 @@ async function render() {
 }
 function fatal(e) { document.getElementById('app').innerHTML = `<div style="padding:40px"><h1>DriveCast</h1><p>${esc(e.message)}</p><button class="btn" data-act="reload">Retry</button></div>`; }
 
+const MTABS = [['grid', 'Home', 'dashboard'], ['cal', 'Schedule', 'schedule'], ['tv', 'Channels', 'channels'], ['film', 'Videos', 'videos']];
 function mount(active, title, sub, kick, actions, content) {
-  const nav = NAV.filter(([g]) => g !== 'Admin' || S.user.role === 'owner').map(([g, items]) => `<div class="nav"><span class="kicker">${g}</span>${items.map(([i, l, r]) => `<a href="#/${r}" class="${r === active ? 'on' : ''}">${ic(i)}${l}</a>`).join('')}</div>`).join('');
+  const groups = NAV.filter(([g]) => g !== 'Admin' || S.user.role === 'owner');
+  const nav = groups.map(([g, items]) => `<div class="nav"><span class="kicker">${g}</span>${items.map(([i, l, r]) => `<a href="#/${r}" class="${r === active ? 'on' : ''}">${ic(i)}${l}</a>`).join('')}</div>`).join('');
+  const inTabs = MTABS.some(t => t[2] === active);
+  const sheet = groups.flatMap(([, items]) => items).filter(([, , r]) => !MTABS.some(t => t[2] === r)).map(([i, l, r]) => `<a href="#/${r}" class="${r === active ? 'on' : ''}">${ic(i, 20)}${l}</a>`).join('');
   document.getElementById('app').innerHTML = `<div class="app">
+    <header class="mtop"><a class="brand" href="#/dashboard" aria-label="DriveCast home" style="text-decoration:none;padding:0">${LOGO}<strong>DriveCast</strong></a><span class="pill" id="mdev"><span style="width:7px;height:7px;border-radius:9px;background:#3DDC97"></span>Online</span></header>
     <nav class="rail" aria-label="Main">
       <a class="brand" href="#/dashboard" aria-label="DriveCast home" style="text-decoration:none">${LOGO}<div style="display:flex;flex-direction:column"><strong>DriveCast</strong><span class="kicker">Studio</span></div></a>
-      <div class="srv"><span class="kicker">Server</span><div style="display:flex;align-items:center;gap:8px"><span id="srvdot" style="width:8px;height:8px;border-radius:9px;background:#3DDC97"></span><span class="mono ell" style="font-size:12px;color:#fff">${esc(location.host)}</span></div><span id="srvline" style="font-size:12px;color:#8E94A0">Online</span></div>
+      <div class="srv"><span class="kicker">Server</span><div style="display:flex;align-items:center;gap:8px"><span id="srvdot" style="width:8px;height:8px;border-radius:9px;background:#3DDC97"></span><span class="mono ell" style="font-size:12px;color:#fff">${esc(location.host)}</span></div><div class="dev" id="devline"><span>Online</span></div></div>
       ${nav}
       <div style="flex-grow:1"></div>
-      <div class="me"><span class="av" style="width:34px;height:34px">${esc(S.user.name.charAt(0).toUpperCase())}</span><div style="display:flex;flex-direction:column;flex-grow:1;min-width:0"><span class="ell" style="font-size:13px;color:#fff;font-weight:600">${esc(S.user.name)}</span><span style="font-size:12px;color:#8E94A0">${S.user.role === 'owner' ? 'Owner' : 'Member'}</span></div><button data-act="logout" aria-label="Sign out" title="Sign out">${ic('logout')}</button></div>
+      <div class="me"><span class="av" style="width:32px;height:32px">${esc(S.user.name.charAt(0).toUpperCase())}</span><div style="display:flex;flex-direction:column;flex-grow:1;min-width:0"><span class="ell" style="font-size:13px;color:#fff;font-weight:600">${esc(S.user.name)}</span><span style="font-size:11.5px;color:#8E94A0">${S.user.role === 'owner' ? 'Owner' : 'Member'}</span></div><button data-act="logout" aria-label="Sign out" title="Sign out">${ic('logout')}</button></div>
     </nav>
     <main class="main"><div class="wrap">
       <header class="top"><div><div class="kick">${esc(kick)}</div><h1>${esc(title)}</h1><div class="sub">${sub}</div></div><div class="actions">${actions}</div></header>
       <div id="content">${content}</div>
-    </div></main></div>`;
+    </div></main>
+    <nav class="mnav" aria-label="Main">${MTABS.map(([i, l, r]) => `<a href="#/${r}" class="${r === active ? 'on' : ''}">${ic(i, 20)}${l}</a>`).join('')}<button data-act="msheet" class="${inTabs ? '' : 'on'}">${ic('more', 20)}More</button></nav>
+    <div class="sheet" id="sheet"><div><span class="kicker" style="color:var(--muted);padding:6px 10px">More</span>${sheet}<button data-act="logout">${ic('logout', 20)}Sign out · ${esc(S.user.name)}</button></div></div></div>`;
+  showDevice();
 }
+async function loadDevice(force) {
+  if (S.user.role !== 'owner') return null;
+  if (!force && S.dev && Date.now() - S.devAt < 60000) return S.dev;
+  try { S.dev = await api('GET', '/api/device'); S.devAt = Date.now(); } catch (e) { /* keep last */ }
+  return S.dev;
+}
+function devText(d) {
+  if (!d || d.battery == null) return null;
+  const stale = d.at && Date.now() / 1000 - d.at > 600;
+  const low = d.battery <= 20 && !d.charging;
+  return { stale, low, html: `${ic('batt', 14)}<b style="color:${low ? '#FF9B85' : '#fff'}">${d.battery}%</b>${d.charging ? `<span class="bolt">${ic('bolt', 13)}</span><span>Charging</span>` : '<span style="color:#F2B54A">On battery</span>'}${d.temp ? `<span>· ${d.temp}°C</span>` : ''}${stale ? '<span>· not reporting</span>' : ''}` };
+}
+async function showDevice() {
+  const d = await loadDevice();
+  const t = devText(d);
+  const line = document.getElementById('devline'), pill = document.getElementById('mdev');
+  if (t && line) line.innerHTML = t.html;
+  if (t && pill) pill.innerHTML = `${d.battery}%${d.charging ? `<span class="bolt">${ic('bolt', 12)}</span>` : ''}${t.stale ? ' · offline?' : ''}`;
+}
+document.addEventListener('click', e => { const sh = document.getElementById('sheet'); if (sh && sh.classList.contains('open') && (e.target === sh || e.target.closest('.sheet a'))) sh.classList.remove('open'); });
 
 // global click / submit delegation
 document.addEventListener('click', async e => {
@@ -209,6 +240,7 @@ const GLOBAL_ACTS = {
   reload: () => render(),
   copy: async d => { await copyText(d.text); toast('Copied'); },
   close: () => closeModal(),
+  msheet: () => document.getElementById('sheet').classList.add('open'),
 };
 async function copyText(t) {
   try { await navigator.clipboard.writeText(t); } catch (e) {
@@ -257,23 +289,42 @@ function authPage(mode) {
 
 // ------------------------------------------------------------------ dashboard
 async function pageDashboard() {
-  const d = await api('GET', '/api/dashboard');
-  const hasChannels = d.today.channels.length || d.leaderboard.length;
+  let last = 0; try { last = +localStorage.getItem('dc_seen') || 0; } catch (e) { /* private mode */ }
+  const d = await api('GET', `/api/dashboard${last ? '?since=' + last : ''}`);
+  if (!S.awayShown) { S.away = d.away; S.awayShown = true; try { localStorage.setItem('dc_seen', String(Math.floor(Date.now() / 1000))); } catch (e) { /* */ } }
+  const hasChannels = d.today.channels.length || d.pulse.length;
   const nxt = d.today.next;
-  const sub = hasChannels ? `${d.today.done} of ${plural(d.today.total, 'post')} done today${nxt ? ` · next ${esc(rel(nxt.due_at))}` : ''}` : 'Let’s get your first channel on air';
+  const fresh = d.kpis.stats_at ? `stats ${esc(rel(d.kpis.stats_at))}` : 'waiting for first stats';
+  const sub = hasChannels ? `${d.today.done} of ${plural(d.today.total, 'post')} done${nxt ? ` · next ${esc(rel(nxt.due_at))}` : ''} · <span title="YouTube numbers refresh about every 20 minutes">${fresh}</span>` : 'Let’s get your first channel on air';
   const content = hasChannels ? [
+    S.away ? safe(() => awayBar(S.away), 'Since last visit') : '',
     safe(() => todayCard(d), 'Today'),
     safe(() => kpis(d), 'Numbers'),
-    `<div class="row"><div class="f2">${safe(() => trendCard(d), 'Views')}</div><div class="f1">${safe(() => leaderCard(d), 'Leaderboard')}</div></div>`,
-    `<div class="row"><div class="f3">${safe(() => heatCard(d), 'Best hours')}</div><div class="f1">${safe(() => consCard(d), 'Consistency')}</div></div>`,
-    `<div class="row"><div class="f3">${safe(() => upnextCard(d), 'Up next')}</div><div class="f1">${safe(() => attentionCard(d), 'Needs you')}</div></div>`,
+    `<div class="dgrid"><div class="s8">${safe(() => trendCard(d), 'Views')}</div><div class="s4">${safe(() => postsCard(d), 'Latest posts')}</div></div>`,
+    `<div class="dgrid"><div class="s12">${safe(() => pulseCard(d), 'Channels')}</div></div>`,
+    `<div class="dgrid"><div class="s4">${safe(() => upnextCard(d), 'Up next')}</div><div class="s4">${safe(() => feedCard(d), 'Activity')}</div><div class="s4">${safe(() => attentionCard(d), 'Needs you')}</div></div>`,
+    `<div class="dgrid"><div class="s8">${safe(() => heatCard(d), 'Best hours')}</div><div class="s4">${safe(() => consCard(d), 'Consistency')}</div></div>`,
   ].join('') : onboarding(d);
-  mount('dashboard', 'On air today', sub, fmt(Date.now() / 1000, { weekday: 'long', day: 'numeric', month: 'long' }), `<button class="btn" data-act="reload">${ic('refresh', 16)}Refresh</button>${addBtn}`, content);
+  mount('dashboard', 'On air today', sub, fmt(Date.now() / 1000, { weekday: 'long', day: 'numeric', month: 'long' }), `<button class="btn" data-act="statsnow" title="Fetch fresh numbers from YouTube now">${ic('refresh', 16)}Refresh stats</button>${addBtn}`, content);
   every(1000, () => document.querySelectorAll('[data-count]').forEach(el => { el.textContent = countdown(+el.dataset.count); }));
-  const fast = (d.today.live || []).length > 0;
-  every(fast ? 4000 : 60000, () => { if (!document.getElementById('modal')) render(); });
+  const liveNow = (d.today.live || []).length > 0;
+  every(liveNow ? 4000 : 60000, () => { if (!document.getElementById('modal') && !document.querySelector('.sheet.open')) render(); });
   S.acts['post-now'] = async x => { await api('POST', `/api/channels/${x.id}/post-now`); toast('Queued — it will post in a moment'); render(); };
   S.acts.dismiss = async x => { await api('POST', `/api/events/${x.id}/dismiss`); render(); };
+  S.acts.awayx = () => { S.away = null; render(); };
+  S.acts.statsnow = async (x, el) => {
+    const r = await api('POST', '/api/stats/refresh');
+    el.innerHTML = `<span class="spinner"></span>Fetching from YouTube…`;
+    toast(r.started ? 'Fetching fresh numbers through each channel’s proxy' : 'Already refreshing — one moment');
+    setTimeout(() => { if (location.hash.includes('dashboard') || !location.hash.replace('#/', '')) render(); }, 9000);
+    el.dataset.keep = '1';
+  };
+}
+function awayBar(a) {
+  const hrs = (Date.now() / 1000 - a.since) / 3600;
+  const ago = hrs < 24 ? `${Math.max(1, Math.round(hrs))}h` : `${Math.round(hrs / 24)}d`;
+  const bits = [`<b>${plural(a.published, 'post')}</b> published`, `<b>+${num(a.views)}</b> views`, a.problems ? `<b style="color:var(--bad)">${plural(a.problems, 'problem')}</b>` : '<span style="color:var(--ok)">no problems</span>'];
+  return `<div class="away">${ic('clock', 16)}<span>While you were away <span class="muted">(${ago})</span>:</span>${bits.join('<span class="muted">·</span>')}<button class="btn sm" style="margin-left:auto;height:26px" data-act="awayx" aria-label="Hide">Got it</button></div>`;
 }
 function onboarding(d) {
   const step = (n, t, p, href, b) => `<div style="display:flex;gap:14px;padding:16px 0;border-top:1px solid var(--line)"><span class="av av1" style="width:32px;height:32px">${n}</span><div style="flex:1"><strong>${t}</strong><p class="muted" style="margin:4px 0 0">${p}</p></div><a class="btn sm" href="${href}">${b}</a></div>`;
@@ -282,69 +333,118 @@ function onboarding(d) {
     ${step(2, 'Connect Google Drive', 'Authorize your Drive once and paste your main folder link.', '#/drive', 'Connect Drive')}
     ${step(3, 'Add a channel', 'Pick an IP group, send the sign-in link, choose its folder and plan.', '#/add', 'Add channel')}</div></section>`;
 }
+function ringSvg(done, total, size = 44) {
+  const r = size / 2 - 4, c = 2 * Math.PI * r, p = total ? done / total : 0;
+  return `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" aria-hidden="true"><circle cx="${size / 2}" cy="${size / 2}" r="${r}" fill="none" stroke="#232A35" stroke-width="5"/><circle cx="${size / 2}" cy="${size / 2}" r="${r}" fill="none" stroke="#3DDC97" stroke-width="5" stroke-linecap="round" stroke-dasharray="${(c * p).toFixed(1)} ${c.toFixed(1)}" transform="rotate(-90 ${size / 2} ${size / 2})"/></svg>`;
+}
+function dotsHtml(states) {
+  return `<span class="dots">${(states || []).map(s => `<i class="${s === 'done' ? 'done' : ['held', 'failed', 'uncertain', 'missed'].includes(s) ? 'held' : 'next'}" title="${esc(s)}"></i>`).join('')}</span>`;
+}
 function todayCard(d) {
-  const t = d.today;
-  const nx = t.next ? `<strong data-count="${t.next.due_at}">${countdown(t.next.due_at)}</strong><span style="color:#C9CDD6">${esc(tTime(t.next.due_at))} · ${esc(t.next.title)}</span>` : '<strong>—</strong><span>Nothing planned</span>';
-  const rows = t.channels.map(c => {
-    const dots = c.states.map(s => `<i class="${s === 'done' ? 'done' : ['held', 'failed', 'uncertain', 'missed'].includes(s) ? 'held' : 'next'}" title="${esc(s)}"></i>`).join('');
-    return `<div><span class="ell" style="color:#fff">${esc(c.title)}</span><span style="display:flex;align-items:center;gap:10px"><span class="dots">${dots}</span><span class="mono" style="font-size:11px;color:#8E94A0">${c.next ? esc(tTime(c.next)) : 'done'}</span></span></div>`;
-  }).join('');
-  return `<section class="today"><div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap"><span class="onair"><i></i>ON AIR</span><h2 style="font-size:20px">Today</h2><span class="mono" style="font-size:12px;color:#8E94A0">Times in ${esc(S.tz)}</span></div>
-    <div class="cols"><div class="stat"><span>Published</span><strong>${t.done} / ${t.total}</strong></div><div class="stat"><span>Next post</span>${nx}</div>
-    <div class="stat"><span>Views today</span><strong>${num(t.views_today)}</strong></div><div class="stat"><span>Held or missed</span><strong style="color:${t.held ? '#F2B54A' : '#fff'}">${t.held}</strong></div></div>
-    ${(t.live || []).length ? `<div style="margin-top:18px;padding-top:16px;border-top:1px solid #232A35;display:flex;flex-direction:column;gap:12px"><span class="kicker" style="color:#FF9B85">Posting right now</span>${t.live.map(p => `<div style="display:grid;grid-template-columns:minmax(120px,200px) 1fr;gap:16px;align-items:center"><b class="ell" style="font-size:14px">${esc(p.channel || '')}</b>${liveBar(p, true)}</div>`).join('')}</div>` : ''}
-    ${rows ? `<div class="chrow">${rows}</div>` : ''}</section>`;
+  const t = d.today, k = d.kpis;
+  const vy = k.views_yesterday ? delta(k.views_today, k.views_yesterday) : '';
+  const nx = t.next ? `<strong data-count="${t.next.due_at}">${countdown(t.next.due_at)}</strong><em class="ell">${esc(tTime(t.next.due_at))} · ${esc(t.next.title)}</em>` : '<strong>—</strong><em>Nothing planned</em>';
+  const live = (t.live || []);
+  const rows = t.channels.map(c => `<div><span class="ell" style="color:#fff">${esc(c.title)}</span><span style="display:flex;align-items:center;gap:10px">${dotsHtml(c.states)}<span class="mono" style="font-size:11px;color:#8E94A0;min-width:52px;text-align:right">${c.next ? esc(tTime(c.next)) : 'done'}</span></span></div>`).join('');
+  return `<section class="today"><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><span class="onair"><i></i>${live.length ? 'POSTING' : 'ON AIR'}</span><h2 style="font-size:17px">Today</h2><span class="mono" style="font-size:11px;color:#8E94A0">Times in ${esc(S.tz)}</span>${S.tz !== browserTz() ? `<a href="#/settings" style="font-size:11px;color:#FF9B85;margin-left:auto">Your device is in ${esc(browserTz())} — change?</a>` : ''}</div>
+    <div class="strip">
+      <div><span>Published</span><div style="display:flex;align-items:center;gap:10px">${ringSvg(t.done, t.total, 34)}<strong>${t.done}<span style="color:#5B606B"> / ${t.total}</span></strong></div></div>
+      <div><span>Next post</span>${nx}</div>
+      <div><span>Views today</span><strong>${num(t.views_today)}</strong><em>${vy || 'live from your videos'}</em></div>
+      <div><span>Posting now</span><strong style="color:${live.length ? '#FF9B85' : '#fff'}">${live.length}</strong><em>${live.length ? esc(live[0].stage || '') : 'idle'}</em></div>
+      <div><span>Held or missed</span><strong style="color:${t.held ? '#F2B54A' : '#fff'}">${t.held}</strong><em>${t.held ? 'see Needs you' : 'all good'}</em></div>
+    </div>
+    ${live.length ? `<div style="margin-top:12px;display:flex;flex-direction:column;gap:10px">${live.map(p => `<div style="display:grid;grid-template-columns:minmax(110px,200px) 1fr;gap:14px;align-items:center"><span class="who" style="gap:8px">${avatar(p.channel, hashI(p.channel || ''), p.thumbnail, 24)}<b class="ell" style="font-size:13px">${esc(p.channel || '')}</b></span>${liveBar(p, true)}</div>`).join('')}</div>` : ''}
+    ${rows ? `<div class="chrow" style="margin-top:12px;padding-top:10px">${rows}</div>` : ''}</section>`;
 }
 function kpis(d) {
   const k = d.kpis;
-  const card = (label, val, dl, series, color, foot) => `<section class="card" style="padding:18px 20px"><div style="display:flex;flex-direction:column;gap:10px"><span class="muted" style="font-size:13px;font-weight:500">${label}</span>
-    <div style="display:flex;align-items:flex-end;justify-content:space-between;gap:8px"><strong class="big">${val}</strong>${series ? spark(series, 84, 30, color) : ''}</div>
-    <div style="display:flex;align-items:center;gap:8px">${dl}<span class="muted" style="font-size:12px">${foot}</span></div></div></section>`;
-  return `<div class="grid g-auto">${card('Views · 7 days', num(k.views_7d), delta(k.views_7d, k.views_7d_prev), k.views_series, '#0E1116', 'vs previous 7 days')}
-    ${card('Published today', `${k.published_today} / ${k.planned_today}`, '', null, '', 'planned for today')}
-    ${card('Avg views · first day', k.avg_first24 == null ? '—' : num(k.avg_first24), delta(k.avg_first24 || 0, k.avg_first24_prev), null, '', k.avg_first24 == null ? 'needs a day of stats' : 'per post, last 30 days')}
-    ${card('Posting health', k.health == null ? '—' : k.health + '%', '', null, '', 'posts that went out on time, 7 days')}</div>`;
+  const tile = (label, icon, val, foot, extra = '', cls = '') => `<div class="kpi ${cls}"><span class="l">${ic(icon, 13)}${label}</span><div style="display:flex;align-items:flex-end;justify-content:space-between;gap:6px"><span class="v">${val}</span>${extra}</div><span class="f">${foot}</span></div>`;
+  const rw = k.runway_min;
+  return `<div class="kp">
+    ${tile('Views · 7 days', 'eye', num(k.views_7d), `${delta(k.views_7d, k.views_7d_prev)}<span>vs last week</span>`, spark(k.views_series, 64, 24, '#0E1116'))}
+    ${tile('Subscribers', 'users', num(k.subscribers), k.subs_7d ? `<span class="delta ${k.subs_7d >= 0 ? 'up' : 'down'}">${k.subs_7d >= 0 ? '+' : ''}${num(k.subs_7d)}</span><span>this week</span>` : '<span>all channels</span>')}
+    ${tile('Posts · 7 days', 'film', k.posts_7d, `${delta(k.posts_7d, k.posts_7d_prev)}<span>${k.published_today}/${k.planned_today} today</span>`)}
+    ${tile('Avg views / post', 'bolt', k.avg_first24 != null ? num(k.avg_first24) : num(k.avg_views), k.avg_first24 != null ? '<span>after the first day</span>' : '<span>so far · last 30 days</span>')}
+    ${tile('Posting health', 'check', k.health == null ? '—' : k.health + '%', '<span>on time · 7 days</span>', '', k.health != null && k.health < 80 ? 'alert' : '')}
+    ${tile('Content runway', 'folder', rw == null ? '—' : rw < 1 ? '<1 day' : `${rw} ${rw === 1 ? 'day' : 'days'}`, rw == null ? '<span>videos left in Drive</span>' : '<span>shortest channel</span>', '', rw != null && rw < 3 ? 'alert' : '')}
+  </div>`;
 }
 function trendCard(d) {
   const t = d.trend, sum = t.views.reduce((a, b) => a + b, 0), prev = (t.previous || []).reduce((a, b) => a + b, 0);
-  const hasData = t.views.some(v => v > 0);
-  return `<section class="card">${hd('Views across all channels', 'Daily views gained, from YouTube channel stats')}
-    <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:4px"><strong class="big" style="font-size:28px">${num(sum)}</strong>${delta(sum, prev)}<span class="muted" style="font-size:12px">last 30 days · ${num(t.total_views)} lifetime</span></div>
-    ${hasData ? areaChart(t.days, t.views, t.previous, 'Daily views, last 30 days') : '<div class="empty">The chart fills in after the first two days of stats.</div>'}
-    <div style="display:flex;gap:16px;margin-top:6px;font-size:12px" class="muted"><span>━ This period</span><span>┄ Previous period</span></div></section>`;
+  const nonzero = t.views.filter(v => v > 0).length;
+  const chart = nonzero >= 2 ? areaChart(t.days, t.views, t.previous, 'Daily views, last 30 days')
+    : nonzero === 1 ? barsChart(t.days.slice(-14).map((day, i) => ({ day, published: t.views.slice(-14)[i], today: i === 13 })), 'published', null, 150) + '<p class="mini" style="margin:6px 0 0">The line chart appears once there are two days of numbers.</p>'
+      : '<div class="empty">Views appear here after the first stats come in (about 5 minutes after a post).</div>';
+  return `<section class="card" style="height:100%">${hd('Views across all channels', 'Views gained per day, in your time')}
+    <div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:4px"><strong class="big" style="font-size:24px">${num(sum)}</strong>${delta(sum, prev)}<span class="mini">last 30 days · ${num(t.total_views)} lifetime</span></div>
+    ${chart}
+    ${nonzero >= 2 ? '<div style="display:flex;gap:14px;margin-top:4px;font-size:11.5px" class="muted"><span>━ This period</span><span>┄ Previous period</span></div>' : ''}</section>`;
 }
-function leaderCard(d) {
-  const rows = d.leaderboard.map((c, i) => `<div style="display:grid;grid-template-columns:22px minmax(0,1fr) 72px 64px;gap:12px;align-items:center;padding:11px 0;border-top:1px solid var(--line)">
-    <span class="mono muted">${i + 1}</span><div class="who">${avatar(c.title, hashI(c.title), c.thumbnail, 30)}<div><span class="ell" style="font-weight:600">${esc(c.title)}</span>${handle(c.handle)}</div></div>
-    ${spark(c.series, 72, 24, c.views_7d >= c.prev_7d ? '#0B5E57' : '#B42318', false)}<div style="display:flex;flex-direction:column;align-items:flex-end"><strong>${num(c.views_7d)}</strong>${delta(c.views_7d, c.prev_7d)}</div></div>`).join('');
-  return `<section class="card" style="height:100%">${hd('Channel leaderboard', 'Views gained in the last 7 days')}${rows || '<div class="empty">No stats yet.</div>'}</section>`;
+function postsCard(d) {
+  const ps = d.recent || [];
+  const rates = ps.filter(p => p.per_hour != null).map(p => p.per_hour);
+  const avg = rates.length ? rates.reduce((a, b) => a + b, 0) / rates.length : 0;
+  const rows = ps.slice(0, 6).map(p => {
+    const hot = p.per_hour != null && p.views >= 100 && rates.length > 1 && p.per_hour >= 1.5 * avg;
+    return `<div class="post"><div style="min-width:0;display:flex;flex-direction:column;gap:2px"><a class="ell" style="font-weight:600;color:var(--ink);text-decoration:none" ${p.video_id ? `href="https://youtu.be/${esc(p.video_id)}" target="_blank" rel="noopener"` : ''} title="${esc(p.title)}">${esc(p.title)}</a><span class="mini ell">${esc(p.channel)} · ${esc(rel(p.published_at))}</span></div>
+      <div style="text-align:right;display:flex;flex-direction:column;align-items:flex-end;gap:2px"><b class="mono" style="font-size:14px">${num(p.views)}</b><span class="mini">${hot ? `<span class="chip coralc" style="height:18px;font-size:10.5px;padding:0 6px">${ic('flame', 11)}Hot</span> ` : ''}${p.per_hour != null ? `${num(p.per_hour)}/h` : ''}${p.last_hour ? ` · <span style="color:var(--ok)">+${num(p.last_hour)}</span> last hr` : ''}</span></div></div>`;
+  }).join('');
+  return `<section class="card" style="height:100%">${hd('Latest posts', 'Views and speed since publishing', '<a href="#/videos" style="font-size:12px;font-weight:600">All videos</a>')}${rows || '<div class="empty">Your posts will show here with live views.</div>'}</section>`;
+}
+function runwayHtml(p) {
+  if (p.queue == null) return '<span class="mini">—</span>';
+  const days = p.runway_days, pct = Math.min(100, Math.round(100 * days / 14));
+  const col = days < 3 ? '#B42318' : days < 7 ? '#C27A12' : '#0B5E57';
+  return `<div style="display:flex;flex-direction:column;gap:4px;min-width:0"><span style="font-size:12px"><b style="color:${col}">${days < 1 ? '<1' : days} d</b> <span class="mini">· ${plural(p.queue, 'video')}</span></span><div class="runway"><span style="width:${pct}%;background:${col}"></span></div></div>`;
+}
+function pulseCard(d) {
+  const rows = d.pulse.map((p, i) => {
+    const gdown = p.group_status === 'down';
+    const next = p.live ? liveBar(p.live) : p.next ? `<div style="display:flex;flex-direction:column"><b class="mono" data-count="${p.next}" style="font-size:13px">${countdown(p.next)}</b><span class="mini">${esc(tTime(p.next))}</span></div>` : `<span class="mini">${p.state === 'live' ? 'Nothing planned' : esc(p.state)}</span>`;
+    return `<div class="pt tr"><div class="who">${avatar(p.title, hashI(p.title), p.thumbnail, 32)}<div><b class="ell">${esc(p.title)}</b><span class="mini ell">${p.handle ? esc(p.handle.startsWith('@') ? p.handle : '@' + p.handle) + ' · ' : ''}${gdown ? '<span style="color:var(--bad)">Group ' + esc(p.group_number) + ' down</span>' : `Group ${esc(p.group_number ?? '—')} ${flag(p.group_country)}`}</span></div></div>
+      <div style="display:flex;flex-direction:column;gap:4px">${dotsHtml(p.states)}<span class="mini">${p.done}/${p.total} today</span></div>
+      <div>${next}</div>
+      <div><b class="mono">${num(p.views_today)}</b><div class="mini">today</div></div>
+      <div style="display:flex;align-items:center;gap:8px">${spark(p.series, 64, 24, p.views_7d >= p.prev_7d ? '#0B5E57' : '#B42318', false)}<div><b class="mono">${num(p.views_7d)}</b>${delta(p.views_7d, p.prev_7d) || '<div class="mini">7 days</div>'}</div></div>
+      <div><b class="mono">${num(p.subscribers)}</b><div class="mini">${p.subs_7d ? `<span style="color:${p.subs_7d > 0 ? 'var(--ok)' : 'var(--bad)'}">${p.subs_7d > 0 ? '+' : ''}${num(p.subs_7d)}</span> this week` : 'subscribers'}</div></div>
+      ${runwayHtml(p)}
+      <div style="min-width:0">${p.last_post ? `<span class="ell" style="display:block;font-size:12.5px;font-weight:600" title="${esc(p.last_post.title)}">${esc(p.last_post.title)}</span><span class="mini">${num(p.last_post.views)} views · ${esc(rel(p.last_post.at))}</span>` : '<span class="mini">No posts yet</span>'}</div></div>`;
+  }).join('');
+  return `<section class="card">${hd('Channel pulse', 'Every channel at a glance — today, next post, growth and how long its Drive videos will last', `<a href="#/channels" style="font-size:12px;font-weight:600">Manage channels</a>`)}
+    <div class="scroll-x"><div style="min-width:1060px" class="pmin"><div class="pt tr th"><span>Channel</span><span>Today</span><span>Next post</span><span>Views</span><span>Last 7 days</span><span>Subscribers</span><span>Runway</span><span>Last post</span></div>${rows}</div></div></section>`;
 }
 function heatCard(d) {
   const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-  if (d.heat_samples < 10) return `<section class="card">${hd('Best hours to post', 'Average first-day views by publish hour, in your time')}<div class="empty">This map appears after about 10 posts have a full day of stats. Until then the scheduler uses known peak hours for your audience.</div></section>`;
+  if (d.heat_samples < 10) return `<section class="card" style="height:100%">${hd('Best hours to post', 'Average first-day views by publish hour, in your time')}<div class="empty" style="padding:16px">Appears after about 10 posts have a full day of stats (${d.heat_samples}/10). Until then the scheduler uses known peak hours for each audience.</div></section>`;
   const all = d.heatmap.flat().filter(v => v != null), mx = Math.max(1, ...all);
   let cells = '';
   d.heatmap.forEach((row, i) => { cells += `<span class="mono muted" style="font-size:11px;align-self:center">${days[i]}</span>` + row.map((v, h) => `<span class="c" title="${days[i]} ${h}:00 — ${v == null ? 'no posts' : num(v) + ' views'}" style="background:${v == null ? '#F2F1EC' : `rgba(15,118,110,${(0.12 + 0.88 * v / mx).toFixed(2)})`}"></span>`).join(''); });
   cells += '<span></span>' + Array.from({ length: 24 }, (_, h) => `<span class="mono muted" style="font-size:10px;text-align:center">${h % 3 === 0 ? String(h).padStart(2, '0') : ''}</span>`).join('');
-  return `<section class="card">${hd('Best hours to post', `Average first-day views by publish hour (${esc(S.tz)}) · ${d.heat_samples} posts`)}<div class="tbl"><div class="heat">${cells}</div></div></section>`;
+  return `<section class="card" style="height:100%">${hd('Best hours to post', `Average first-day views by publish hour (${esc(S.tz)}) · ${d.heat_samples} posts`)}<div class="tbl" style="overflow-x:auto"><div class="heat">${cells}</div></div></section>`;
 }
 function consCard(d) {
-  return `<section class="card" style="height:100%">${hd('Upload consistency', 'Published vs planned, last 14 days')}${barsChart(d.consistency, 'published', 'planned')}
-    <div style="display:flex;gap:14px;margin-top:12px;font-size:12px" class="muted"><span>■ Published</span><span>┄ Planned</span><span style="color:#E8492A">■ Today</span></div></section>`;
+  return `<section class="card" style="height:100%">${hd('Upload consistency', 'Published vs planned, last 14 days')}${barsChart(d.consistency, 'published', 'planned', 120)}
+    <div style="display:flex;gap:12px;margin-top:8px;font-size:11.5px" class="muted"><span>■ Published</span><span>┄ Planned</span><span style="color:#E8492A">■ Today</span></div></section>`;
 }
 function upnextCard(d) {
-  const rows = d.upnext.map(s => `<div style="display:grid;grid-template-columns:90px minmax(0,1fr) auto;gap:14px;align-items:center;padding:12px 0;border-top:1px solid var(--line)">
-    <div style="display:flex;flex-direction:column"><strong class="mono" style="font-size:14px">${esc(tTime(s.due_at))}</strong><span class="muted" style="font-size:11px">${esc(rel(s.due_at))}</span></div>
-    <div class="who">${avatar(s.title, hashI(s.title), null, 30)}<div><span class="ell" style="font-weight:600">${esc(s.title)}</span><span class="muted" style="font-size:12px">Group ${esc(s.group_number ?? '—')} · ${esc(s.market)} audience</span></div></div>
+  const rows = d.upnext.slice(0, 7).map(s => `<div style="display:grid;grid-template-columns:84px minmax(0,1fr) auto;gap:10px;align-items:center;padding:8px 0;border-top:1px solid var(--line)">
+    <div style="display:flex;flex-direction:column;min-width:0"><strong class="mono" style="font-size:13px">${esc(tTime(s.due_at))}</strong><span class="mini ell" data-count="${s.due_at}">${countdown(s.due_at)}</span></div>
+    <div class="who" style="gap:8px">${avatar(s.title, hashI(s.title), s.thumbnail, 26)}<div><span class="ell" style="font-weight:600;font-size:13px">${esc(s.title)}</span><span class="mini">${esc(s.market)} audience</span></div></div>
     ${s.group_status === 'down' ? chip('Held', 'warn') : s.status === 'planned' ? `<button class="btn sm" data-act="post-now" data-id="${s.channel_id}">Post now</button>` : chip('Posting', 'info')}</div>`).join('');
-  return `<section class="card">${hd('Up next', 'Natural times inside peak hours', '<a href="#/schedule" style="font-size:13px;font-weight:600">Full schedule</a>')}${rows || '<div class="empty">Nothing planned yet.</div>'}</section>`;
+  return `<section class="card" style="height:100%">${hd('Up next', 'Natural times inside peak hours', '<a href="#/schedule" style="font-size:12px;font-weight:600">Schedule</a>')}${rows || '<div class="empty">Nothing planned yet.</div>'}</section>`;
+}
+function feedCard(d) {
+  const col = { ok: '#1F9D55', info: '#4F46E5', warn: '#C27A12', error: '#B42318' };
+  const rows = (d.feed || []).slice(0, 9).map(f => `<div><span class="fdot" style="background:${col[f.level] || '#8E94A0'}"></span><div style="min-width:0"><span style="display:block;line-height:1.35">${esc(f.message)}</span>${f.channel && !f.message.includes(f.channel) ? `<span class="mini">${esc(f.channel)}</span>` : ''}</div><span class="mini mono" style="white-space:nowrap">${esc(rel(f.at))}</span></div>`).join('');
+  return `<section class="card" style="height:100%">${hd('Activity', 'What the server did, newest first')}<div class="feed">${rows || '<div class="empty">Nothing yet.</div>'}</div></section>`;
 }
 function attentionCard(d) {
   const href = { groups: '#/groups', channels: '#/channels', uncertain: '#/videos' };
-  const rows = d.attention.map(a => `<div style="display:flex;gap:12px;padding:12px 0;border-top:1px solid var(--line)"><span class="chip ${a.level === 'error' ? 'bad' : 'warn'}" style="width:32px;height:32px;padding:0;justify-content:center;border-radius:10px">${ic('alert', 16)}</span>
-    <div style="display:flex;flex-direction:column;gap:3px;flex:1;min-width:0"><strong style="font-size:14px">${esc(a.title)}</strong>${a.detail ? `<span class="muted" style="font-size:13px">${esc(a.detail)}</span>` : ''}${a.at ? `<span class="muted mono" style="font-size:11px">${esc(rel(a.at))}</span>` : ''}</div>
+  const rows = d.attention.map(a => `<div style="display:flex;gap:10px;padding:9px 0;border-top:1px solid var(--line)"><span class="chip ${a.level === 'error' ? 'bad' : 'warn'}" style="width:28px;height:28px;padding:0;justify-content:center;border-radius:8px;flex-shrink:0">${ic('alert', 14)}</span>
+    <div style="display:flex;flex-direction:column;gap:2px;flex:1;min-width:0"><strong style="font-size:13px">${esc(a.title)}</strong>${a.detail ? `<span class="mini">${esc(a.detail)}</span>` : ''}${a.at ? `<span class="mini mono">${esc(rel(a.at))}</span>` : ''}</div>
     ${a.action === 'event' ? `<button class="btn sm" data-act="dismiss" data-id="${a.ref}">Dismiss</button>` : `<a class="btn sm" href="${href[a.action] || '#/dashboard'}">Open</a>`}</div>`).join('');
-  return `<section class="card" style="height:100%">${hd('Needs you', null, d.attention.length ? chip(d.attention.length + ' open', 'coralc') : chip('All clear', 'ok'))}${rows || '<div class="empty">Nothing needs you right now.</div>'}</section>`;
+  return `<section class="card" style="height:100%">${hd('Needs you', null, d.attention.length ? chip(d.attention.length + ' open', 'coralc') : chip('All clear', 'ok'))}${rows || `<div class="empty" style="padding:16px"><span style="color:var(--ok)">${ic('check', 22)}</span><div style="margin-top:6px">Nothing needs you right now.</div></div>`}</section>`;
 }
 
 // ------------------------------------------------------------------ add channel wizard
@@ -817,12 +917,29 @@ async function pageUserReport(id) {
 // ------------------------------------------------------------------ server
 async function pageServer() {
   const s = await api('GET', '/api/server');
-  const svc = Object.entries(s.services).map(([n, v]) => { const age = Date.now() / 1000 - v.at; const okay = v.state !== 'error' && age < 900; return `<div style="display:flex;align-items:center;gap:12px;padding:12px 0;border-top:1px solid var(--line)"><span style="width:8px;height:8px;border-radius:9px;background:${okay ? '#1F9D55' : '#B42318'}"></span><div style="flex:1"><b>${esc(n)}</b><div class="muted" style="font-size:13px">${esc(v.state)}${v.last_error ? ' · ' + esc(v.last_error) : ''}</div></div><span class="mono muted" style="font-size:12px">${esc(rel(v.at))}</span></div>`; }).join('');
+  const svc = Object.entries(s.services).map(([n, v]) => { const age = Date.now() / 1000 - v.at; const okay = v.state !== 'error' && age < 900; return `<div style="display:flex;align-items:center;gap:12px;padding:8px 0;border-top:1px solid var(--line)"><span style="width:8px;height:8px;border-radius:9px;background:${okay ? '#1F9D55' : '#B42318'}"></span><div style="flex:1"><b>${esc(n)}</b><div class="muted" style="font-size:13px">${esc(v.state)}${v.last_error ? ' · ' + esc(v.last_error) : ''}</div></div><span class="mono muted" style="font-size:12px">${esc(rel(v.at))}</span></div>`; }).join('');
   const up = s.uptime, upTxt = `${Math.floor(up / 86400)}d ${Math.floor((up % 86400) / 3600)}h`;
   let dev = {}; try { dev = JSON.parse(s.device || '{}'); } catch (e) { /* none */ }
-  mount('server', 'Server', 'The phone that runs DriveCast — health and services', 'Admin', '',
-    `<div class="grid g-auto">${[['Uptime', upTxt], ['Version', s.version], ['Free storage', (s.disk_free / 1e9).toFixed(1) + ' GB'], ['Queue', `${s.jobs.queued || 0} waiting · ${s.jobs.running || 0} running`], ['Battery', dev.battery != null ? dev.battery + '%' : '—'], ['Temperature', dev.temp != null ? dev.temp + '°C' : '—']].map(([a, b]) => `<section class="card" style="padding:18px 20px"><span class="muted" style="font-size:13px">${a}</span><div class="big" style="font-size:24px;margin-top:6px">${esc(b)}</div></section>`).join('')}</div>
-     <div class="row"><div class="f3"><section class="card">${hd('Services', 'Each service reports a heartbeat and restarts itself after an error.')}${svc}</section></div><div class="f1"><section class="card">${hd('Public link')}<span class="mono" style="word-break:break-all">${esc(s.public_url)}</span>${dev.model ? `<p class="muted" style="font-size:13px">${esc(dev.model)} · Android ${esc(dev.android || '')}</p>` : ''}</section></div></div>`);
+  const d2 = await loadDevice(true); if (d2) dev = { ...dev, ...d2 };
+  const b = dev.battery, low = b != null && b <= 20 && !dev.charging;
+  const battCol = low ? '#B42318' : b != null && b < 40 ? '#C27A12' : '#0B5E57';
+  const tile = (label, icon, val, foot, cls = '') => `<div class="kpi ${cls}"><span class="l">${ic(icon, 13)}${label}</span><span class="v">${val}</span><span class="f">${foot}</span></div>`;
+  const okSvc = Object.values(s.services).filter(v => v.state !== 'error' && Date.now() / 1000 - v.at < 900).length, allSvc = Object.keys(s.services).length;
+  mount('server', 'Server', 'The phone that runs DriveCast — power, health and services', 'Admin', `<button class="btn" data-act="reload">${ic('refresh', 16)}Refresh</button>`,
+    `<div class="kp">
+      ${tile('Battery', 'batt', b != null ? b + '%' : '—', b == null ? 'not reported yet' : `<div class="runway" style="flex:1"><span style="width:${b}%;background:${battCol}"></span></div>`, low ? 'alert' : '')}
+      ${tile('Power', 'bolt', dev.charging == null ? '—' : dev.charging ? '<span style="color:var(--ok)">Charging</span>' : '<span style="color:var(--warn)">On battery</span>', dev.charging === false ? 'plug the charger in' : dev.at ? 'reported ' + esc(rel(dev.at)) : '', dev.charging === false ? 'alert' : '')}
+      ${tile('Temperature', 'flame', dev.temp != null ? dev.temp + '°C' : '—', dev.temp >= 42 ? '<span style="color:var(--bad)">too hot — move to a cooler spot</span>' : 'normal is below 40°C', dev.temp >= 42 ? 'alert' : '')}
+      ${tile('Uptime', 'clock', upTxt, 'since the server last started')}
+      ${tile('Free storage', 'folder', (s.disk_free / 1e9).toFixed(1) + ' GB', 'videos are deleted after upload')}
+      ${tile('Services', 'check', `${okSvc}/${allSvc}`, `${s.jobs.queued || 0} waiting · ${s.jobs.running || 0} uploading`, okSvc < allSvc ? 'alert' : '')}
+    </div>
+     <div class="dgrid"><div class="s8"><section class="card" style="height:100%">${hd('Services', 'Each service reports a heartbeat and restarts itself after an error.')}${svc}</section></div><div class="s4"><section class="card" style="height:100%">${hd('This phone')}
+       <div style="display:flex;flex-direction:column;gap:10px;font-size:13px">${dev.model ? `<div><span class="mini">Device</span><div><b>${esc(dev.model)}</b> · Android ${esc(dev.android || '')}</div></div>` : ''}
+       <div><span class="mini">Public link</span><div class="mono" style="word-break:break-all">${esc(s.public_url)}</div></div>
+       <div><span class="mini">Version</span><div class="mono">${esc(s.version)}</div></div>
+       <div class="note info">${ic('phone', 16)}<span>Keep the phone on Wi-Fi and the charger. Use “Erase and start fresh” on the phone screen only to reset it completely.</span></div></div></section></div></div>`);
+  every(60000, () => { if (!document.getElementById('modal')) render(); });
 }
 
 const PAGES = { dashboard: pageDashboard, add: pageAdd, channels: pageChannels, groups: pageGroups, schedule: pageSchedule, videos: pageVideos, drive: pageDrive, settings: pageSettings, users: pageUsers, server: pageServer, login: () => authPage('login'), register: () => authPage('register') };

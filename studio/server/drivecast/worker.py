@@ -187,8 +187,9 @@ def run(job, adapters=None):
         phase = "after"
         db.run("UPDATE uploads SET status='published', external_video_id=?, visibility=?, published_at=? WHERE id=?",
                (res["video_id"], res["visibility"], time.time(), upload_id))
-        db.run("UPDATE channels SET consecutive_failures=0, paused_until=NULL, state='live', state_reason=NULL WHERE id=?",
-               (ch["id"],))
+        # stats for this channel come back ~5 minutes after the post, then every 20 minutes
+        db.run("UPDATE channels SET consecutive_failures=0, paused_until=NULL, state='live', state_reason=NULL, stats_at=? WHERE id=?",
+               (time.time() - 15 * 60, ch["id"]))
         try:
             done = dmod.child_folder(session, dbox, ch["folder_id"], "Done")
             dmod.move(session, dbox, chosen["id"], processing, done)

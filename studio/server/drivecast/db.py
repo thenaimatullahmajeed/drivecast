@@ -117,6 +117,23 @@ SCHEMA = [
     ALTER TABLE ip_groups ADD COLUMN city TEXT;
     ALTER TABLE ip_groups ADD COLUMN isp TEXT;
     """,
+    # version 3: every stats reading (not one per day), so views show the same day
+    """
+    CREATE TABLE IF NOT EXISTS channel_ticks (
+        channel_id INTEGER NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+        at REAL NOT NULL, views INTEGER, subscribers INTEGER);
+    CREATE INDEX IF NOT EXISTS ix_channel_ticks ON channel_ticks(channel_id, at);
+    CREATE TABLE IF NOT EXISTS upload_ticks (
+        upload_id INTEGER NOT NULL REFERENCES uploads(id) ON DELETE CASCADE,
+        at REAL NOT NULL, views INTEGER);
+    CREATE INDEX IF NOT EXISTS ix_upload_ticks ON upload_ticks(upload_id, at);
+    INSERT INTO channel_ticks(channel_id, at, views, subscribers)
+        SELECT channel_id, MIN(CAST(strftime('%s', day || ' 23:59:59') AS REAL), CAST(strftime('%s','now') AS REAL)), views, subscribers
+        FROM channel_points;
+    INSERT INTO upload_ticks(upload_id, at, views)
+        SELECT upload_id, MIN(CAST(strftime('%s', day || ' 23:59:59') AS REAL), CAST(strftime('%s','now') AS REAL)), views
+        FROM stat_points;
+    """,
 ]
 
 

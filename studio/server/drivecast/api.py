@@ -171,7 +171,37 @@ def save_settings(req):
 # ---------------------------------------------------------------- dashboard
 @route("GET", "/api/dashboard")
 def dashboard(req):
-    return insights.dashboard(req.ws, req.user["timezone"])
+    try:
+        since = float(req.query.get("since") or 0) or None
+    except ValueError:
+        since = None
+    return insights.dashboard(req.ws, req.user["timezone"], since=since)
+
+
+_REFRESHING = {}
+
+
+@route("POST", "/api/stats/refresh")
+def stats_refresh(req):
+    """Fetch fresh YouTube numbers for this workspace now (through each channel's own proxy)."""
+    import threading
+    from . import maintenance
+    last = _REFRESHING.get(req.ws, 0)
+    if time.time() - last < 60:
+        return {"ok": True, "started": False}
+    _REFRESHING[req.ws] = time.time()
+    threading.Thread(target=maintenance.sync_stats, kwargs={"ws_id": req.ws, "force": True}, daemon=True).start()
+    return {"ok": True, "started": True}
+
+
+@route("GET", "/api/device", auth="owner")
+def device(req):
+    try:
+        d = json.loads(db.meta_get("device_info") or "{}")
+    except ValueError:
+        d = {}
+    d["at"] = float(db.meta_get("device_at") or 0) or None
+    return d
 
 
 @route("POST", "/api/events/(\\d+)/dismiss")
@@ -678,6 +708,7 @@ def local_public_url(req):
 @route("POST", "/local/device", auth="local")
 def local_device(req):
     db.meta_set("device_info", json.dumps(req.json)[:500])
+    db.meta_set("device_at", str(time.time()))
     return {"ok": True}
 
 

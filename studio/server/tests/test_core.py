@@ -233,3 +233,26 @@ class SchedulerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ViewsTest(unittest.TestCase):
+    def test_views_show_same_day(self):
+        """A video published today shows its views today, even with a single channel reading."""
+        from drivecast import insights
+        fresh_db()
+        ws, g, ch = make_world()
+        now = dt.datetime.now(dt.timezone.utc).replace(hour=12, minute=0, second=0).timestamp()
+        db.run("INSERT INTO channel_ticks(channel_id,at,views,subscribers) VALUES(?,?,?,?)", (ch, now - 600, 106800, 500))
+        u = db.run("""INSERT INTO uploads(workspace_id,channel_id,destination,file_id,file_name,title,status,reserved_at,published_at,views)
+                      VALUES(?,?,'youtube',?,?,?, 'published',?,?,?)""", (ws, ch, "f1", "a.mp4", "A", now - 3000, now - 2900, 973))
+        db.run("INSERT INTO upload_ticks(upload_id,at,views) VALUES(?,?,?)", (u, now - 60, 973))
+        d = insights.dashboard(ws, "UTC", now=now)
+        self.assertEqual(d["today"]["views_today"], 973)
+        self.assertEqual(d["kpis"]["views_7d"], 973)
+        self.assertEqual(d["pulse"][0]["views_today"], 973)
+        self.assertEqual(d["recent"][0]["today"], 973)
+        # later the channel counter catches up and is larger: that wins
+        db.run("INSERT INTO channel_ticks(channel_id,at,views,subscribers) VALUES(?,?,?,?)", (ch, now - 30, 108000, 510))
+        d = insights.dashboard(ws, "UTC", now=now)
+        self.assertEqual(d["today"]["views_today"], 1200)
+        self.assertEqual(d["kpis"]["subs_7d"], 10)

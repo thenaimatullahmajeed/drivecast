@@ -109,7 +109,7 @@ class ServerService : Service() {
             thread(isDaemon = true) { Local.post(this@ServerService, "/local/device", info) }
             val url = Store.tunnelState(this@ServerService).optString("url", "")
             if (url.isNotBlank()) thread(isDaemon = true) { Local.post(this@ServerService, "/local/public-url", JSONObject().put("url", url)) }
-            main.postDelayed(this, 5 * 60_000L)
+            main.postDelayed(this, 60_000L)
         }
     }
 

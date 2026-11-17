@@ -4,7 +4,7 @@
 const B = window.DC || null;
 const TOKEN = (B && B.localToken) ? B.localToken() : '';
 const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const LOGO = '<span class="logo"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#0E1116" stroke-width="2.4" stroke-linecap="round"><path d="M5 8v8M9.5 5v14M14 9v6M18.5 6.5v11"/></svg></span>';
+const LOGO = '<span class="logo"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6.2 7.6a6.5 6.5 0 0 0 0 8.8M17.8 7.6a6.5 6.5 0 0 1 0 8.8" stroke="#fff" stroke-width="1.9" stroke-linecap="round"/><path d="M10 9.3c0-.7.8-1.2 1.4-.8l4.4 2.7c.6.4.6 1.2 0 1.6l-4.4 2.7c-.6.4-1.4 0-1.4-.8z" fill="#E8492A"/></svg></span>';
 
 async function status() {
   try { const r = await fetch('/local/status', { cache: 'no-store', headers: { 'X-Local-Token': TOKEN } }); return r.ok ? await r.json() : null; } catch (e) { return null; }
