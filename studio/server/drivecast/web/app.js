@@ -644,10 +644,10 @@ function sourceEditor(X, group, opts = {}) {
   const accLine = !group ? '' : !acc ? `<div class="note warn">${ic('alert', 16)}<span>Group ${group.number} has no Instagram account yet. <button type="button" class="btn sm" data-act="cookies" data-id="${group.id}">${ic('cookie', 14)}Add cookies</button></span></div>`
     : acc.status === 'needs_cookies' ? `<div class="note bad">${ic('alert', 16)}<span>Group ${group.number}’s Instagram sign-in expired. <button type="button" class="btn sm" data-act="cookies" data-id="${group.id}">Replace cookies</button></span></div>`
       : `<span class="help">Read with Group ${group.number}’s test account @${esc(acc.username || '')}${acc.proxy_mode === 'phone' ? ' · through the phone’s own internet' : ' · through the group IP'}.</span>`;
-  const prof = X.profile ? `<div style="display:flex;align-items:center;gap:12px;padding:12px;border-radius:12px;background:var(--paper);flex-wrap:wrap">${avatar(X.profile.username, hashI(X.profile.username), X.profile.picture, 44)}<div style="flex:1 1 200px;display:flex;flex-direction:column;gap:2px"><b>@${esc(X.profile.username)}</b><span class="muted" style="font-size:12px">${esc(X.profile.full_name || '')}${X.profile.posts != null ? ` · ${num(X.profile.posts)} posts` : ''}${X.profile.is_private ? ' · private' : ' · public'}</span></div>${X.profile.is_private && !X.profile.followed ? chip('Private — follow it from the test account', 'warn') : chip('Profile found', 'ok')}</div>` : '';
+  const prof = X.profile ? `<div style="display:flex;align-items:center;gap:12px;padding:12px;border-radius:12px;background:var(--paper);flex-wrap:wrap">${avatar(X.profile.username, hashI(X.profile.username), X.profile.picture, 44)}<div style="flex:1 1 200px;display:flex;flex-direction:column;gap:2px"><b>@${esc(X.profile.username)}</b><span class="muted" style="font-size:12px">${esc(X.profile.full_name || '')}${X.profile.posts != null ? ` · ${num(X.profile.posts)} posts` : ''}${X.profile.is_private ? ' · private' : ' · public'}</span></div>${X.profile.unchecked ? chip('Will be checked', 'neutral') : X.profile.is_private && !X.profile.followed ? chip('Private — follow it from the test account', 'warn') : chip('Profile found', 'ok')}</div>` : '';
   const igPart = `<div style="display:flex;flex-direction:column;gap:14px">
     <label class="f">Client’s Instagram link or @handle<div style="display:flex;gap:8px;flex-wrap:wrap"><input class="i" id="srch" style="flex:1 1 240px" placeholder="instagram.com/handle or @handle" value="${esc(X.handle)}" autocomplete="off"><button type="button" class="btn primary" data-act="srccheck" ${acc && acc.status !== 'needs_cookies' ? '' : 'disabled'}>${X.checking ? '<span class="spinner"></span>Checking…' : 'Check profile'}</button></div></label>
-    ${accLine}${X.err ? `<div class="note bad">${ic('alert', 16)}<span>${esc(X.err)}</span></div>` : ''}${prof}
+    ${accLine}${X.err ? `<div class="note bad">${ic('alert', 16)}<span>${esc(X.err)}${X.handle ? ` <button type="button" class="btn sm" data-act="srcskip">Continue without the check</button>` : ''}${acc && acc.proxy_mode !== 'phone' ? ` <button type="button" class="btn sm" data-act="srcphone">Read through the phone’s internet</button>` : ''}</span></div>` : ''}${prof}
     <div><b style="font-size:13px">What should we take?</b><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin-top:8px">${Object.entries(CT).map(([v, [t, d]]) => pick('srctype', v, X.ctype === v, t, d)).join('')}</div></div>
     ${oldPosts(X)}</div>`;
   const toggles = opts.toggles === false ? '' : `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin-top:16px">
@@ -672,6 +672,8 @@ function srcActs(X, redraw, getGroup) {
     srccap: d => { keep(); X.cap = Math.max(1, Math.min(30, X.cap + +d.d)); redraw(); },
     srcenc: () => { keep(); X.encore = !X.encore; redraw(); },
     srcinbox: () => { keep(); X.inbox = !X.inbox; redraw(); },
+    srcskip: () => { keep(); const h = String(X.handle || '').trim().replace(/^.*instagram\.com\//, '').replace(/[/?#].*$/, '').replace(/^@/, ''); if (!h) return; X.profile = { username: h, full_name: 'Not checked yet — checked automatically', picture: null, id: null, is_private: false, unchecked: true }; X.handle = h; X.err = null; redraw(); },
+    srcphone: async () => { keep(); const g = getGroup(); if (!g) return; await api('POST', `/api/groups/${g.id}/instagram/proxy`, { proxy_mode: 'phone' }); if (g.instagram) g.instagram.proxy_mode = 'phone'; X.err = null; toast('Instagram is now read through the phone’s own internet'); redraw(); },
     srccheck: async () => {
       keep();
       const h = ($('#srch') || {}).value || X.handle; X.handle = h; X.err = null; X.profile = null; X.checking = true; redraw();
@@ -691,7 +693,7 @@ document.addEventListener('input', e => {
 });
 function srcPayload(X) {
   if (!X.ig) return null;
-  return { handle: X.handle, content_type: X.ctype, include_old: X.include_old, daily_cap: X.cap, ig_user_id: X.profile && X.profile.id, full_name: X.profile && X.profile.full_name, picture: X.profile && X.profile.picture };
+  return { handle: X.handle, content_type: X.ctype, include_old: X.include_old, daily_cap: X.cap, ig_user_id: X.profile && X.profile.id, full_name: X.profile && !X.profile.unchecked ? X.profile.full_name : null, picture: X.profile && X.profile.picture };
 }
 function vidSources(X) {
   const out = [];

@@ -1039,6 +1039,10 @@ from . import igsync, instagram as _ig  # noqa: E402
 
 
 def _ig_error(e, **ctx):
+    if isinstance(e, _errors.CodedError) and e.code == "IG_RATE_LIMIT" and "until" not in ctx:
+        # a one-off check from the panel: nothing is resting, just say what to do
+        return HttpError(429, "Instagram asked to slow down for this check. Try again in a few minutes — or continue "
+                              "without the check; the profile is checked automatically once the client is saved.")
     if isinstance(e, _errors.CodedError):
         i = e.info(**ctx)
         return HttpError(400, f"{i['title']}. {i['message']}")
