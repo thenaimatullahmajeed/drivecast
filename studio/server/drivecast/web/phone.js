@@ -16,7 +16,7 @@ function checks() {
 
 async function draw() {
   if (document.activeElement && document.activeElement.tagName === 'INPUT') return; // don't wipe what is being typed
-  const open = document.getElementById('tlog'), fp = document.getElementById('fpw'); if ((open && open.open) || (fp && fp.open)) return;
+  if (['tlog', 'fpw', 'fresh'].some(id => { const d = document.getElementById(id); return d && d.open; })) return;
   const c = checks(), s = await status();
   const items = c.items || [];
   const done = items.filter(i => i.ok).length;
@@ -57,6 +57,10 @@ async function draw() {
       <label>New password (8+ characters)<input id="npw" type="password" autocomplete="new-password"></label>
       <button class="btn coral wide" style="margin-top:10px" data-act="resetpw">Set new password</button><p id="pwmsg" style="font-size:13px;margin:8px 0 0"></p></details>` : ''}
     ${logBox}
+    <details class="card" id="fresh"><summary class="muted" style="font-size:13px">Erase and start fresh</summary>
+      <p class="muted" style="font-size:13px;margin:10px 0">Removes every account, channel, proxy, setting and this phone’s public link. Videos on YouTube and files in Drive stay. Use this to hand the phone to someone else or set it up from zero.</p>
+      <label>Type ERASE to confirm<input id="erase" autocomplete="off"></label>
+      <button class="btn wide" style="margin-top:10px;color:#FF9B85" data-act="erase">Erase this server</button></details>
     <button class="btn wide" data-act="${running ? 'stop' : 'start'}" style="${running ? 'color:#FF9B85' : 'background:#E8492A;color:#0E1116;border-color:#E8492A'}">${running ? 'Stop server' : 'Start server'}</button>`;
 }
 
@@ -74,6 +78,10 @@ document.addEventListener('click', e => {
       .then(r => r.json().then(j => ({ ok: r.ok, j })))
       .then(({ ok, j }) => { msg.style.color = ok ? '#3DDC97' : '#FF9B85'; msg.textContent = ok ? 'Done. Sign in on your laptop with the new password.' : (j.error || 'Could not change it'); if (ok) document.getElementById('npw').value = ''; })
       .catch(() => { msg.textContent = 'Server not reachable'; });
+  }
+  else if (el.dataset.act === 'erase') {
+    if (document.getElementById('erase').value.trim() !== 'ERASE') { alertBox('Type ERASE first'); return; }
+    el.textContent = 'Erasing…'; B.factoryReset();
   }
   else if (el.dataset.act === 'tunnel') {
     const ke = document.getElementById('tkey'), k = ke ? ke.value.trim() : '', h = document.getElementById('thost').value.trim() || 'drivecast';

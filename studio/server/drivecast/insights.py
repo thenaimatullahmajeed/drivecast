@@ -124,6 +124,8 @@ def dashboard(ws_id, tz_name, now=None):
                        FROM slots s JOIN channels c ON c.id=s.channel_id LEFT JOIN ip_groups g ON g.id=c.group_id
                        WHERE c.workspace_id=? AND s.status IN ('planned','queued','running') AND s.due_at>=?
                        ORDER BY s.due_at LIMIT 6""", (ws_id, now - 120))
+    from . import worker
+    today_card["live"] = [{"channel_id": cid, "channel": cmap[cid]["title"], **p} for cid, p in list(worker.PROGRESS.items()) if cid in cmap]
     return {"now": now, "today": today_card, "kpis": kpis, "trend": trend, "leaderboard": board[:8],
             "heatmap": heat, "heat_samples": sum(len(v) for v in cells.values()), "consistency": cons,
             "upnext": upnext, "attention": attention(ws_id, now),

@@ -98,7 +98,7 @@ input.i:focus,select.i:focus{outline:2px solid var(--ink);outline-offset:1px}
 
 /* today card */
 .today{background:var(--ink);color:#fff;border-radius:18px;padding:22px 26px;margin-bottom:16px}
-.onair{display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 10px;border-radius:99px;background:var(--coral);color:var(--ink);font-family:var(--mono);font-size:11px;font-weight:500;letter-spacing:.1em}
+.onair{align-self:flex-start;width:fit-content;display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 10px;border-radius:99px;background:var(--coral);color:var(--ink);font-family:var(--mono);font-size:11px;font-weight:500;letter-spacing:.1em}
 .onair i{width:6px;height:6px;border-radius:9px;background:var(--ink)}
 .today .cols{display:flex;flex-wrap:wrap;gap:28px;margin-top:18px}
 .today .stat{display:flex;flex-direction:column;gap:4px;min-width:130px}
@@ -154,3 +154,21 @@ input.i:focus,select.i:focus{outline:2px solid var(--ink);outline-offset:1px}
 .tabs{display:flex;background:#EAE8E2;padding:4px;border-radius:12px}
 .tabs button{flex:1 1 0;height:40px;border:0;border-radius:9px;background:transparent;font-weight:600;color:var(--muted);cursor:pointer}
 .tabs button.on{background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.08);color:var(--ink)}
+
+/* schedule */
+.daygrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:16px;align-items:start}
+.dayhead{display:flex;justify-content:space-between;align-items:flex-end;gap:12px}
+.dayhead h2{font-size:22px;margin-top:4px}
+.today-col{border:2px solid var(--ink)}
+.slot{display:grid;grid-template-columns:92px minmax(0,1fr);gap:4px 14px;padding:14px 0;border-top:1px solid var(--line);align-items:center}
+.slot-time{display:flex;flex-direction:column;gap:6px;align-items:flex-start}
+.slot-time b{font-size:15px}
+.slot-time .chip{height:20px;font-size:10px;padding:0 7px}
+.slot-body{display:flex;flex-direction:column;gap:8px;min-width:0}
+.slot-side{grid-column:2;display:flex;align-items:center;justify-content:space-between;gap:8px}
+.slot.past{opacity:.62}
+.slot.done{opacity:1}
+.slot.running,.slot.queued{background:linear-gradient(90deg,#FDEBE6 0,#fff 60%);margin:0 -12px;padding:14px 12px;border-radius:12px}
+.nowline{position:relative;margin:10px 0;border-top:2px solid var(--coral)}
+.nowline span{position:absolute;left:0;top:-11px;background:var(--coral);color:var(--ink);font:500 10px var(--mono);letter-spacing:.06em;padding:2px 8px;border-radius:99px}
+.barfill{transition:width .6s ease}

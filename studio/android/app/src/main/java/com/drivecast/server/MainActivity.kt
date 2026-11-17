@@ -169,6 +169,22 @@ class MainActivity : AppCompatActivity() {
         @JavascriptInterface
         fun localToken(): String = Local.token(ctx)
 
+        /** Erase this server: accounts, channels, settings and its public link identity. */
+        @JavascriptInterface
+        fun factoryReset() {
+            thread(isDaemon = true) {
+                ServerService.stop(ctx)
+                Thread.sleep(3000) // let the server process exit before removing its files
+                listOf("data", "ts", "prefs.json", "tunnel.json", "tunnel.log", "server_error.txt").forEach {
+                    File(ctx.filesDir, it).deleteRecursively()
+                }
+                ctx.cacheDir.listFiles()?.forEach { it.deleteRecursively() }
+                Store.setPref(ctx, "running", true)
+                ServerService.start(ctx)
+                act.runOnUiThread { act.showStarting() }
+            }
+        }
+
         @JavascriptInterface
         fun tunnelLog(): String = try {
             val f = File(ctx.filesDir, "tunnel.log")

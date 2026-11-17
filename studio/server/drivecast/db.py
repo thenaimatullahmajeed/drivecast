@@ -110,6 +110,13 @@ SCHEMA = [
     CREATE INDEX IF NOT EXISTS ix_events_ws ON events(workspace_id, at);
     CREATE INDEX IF NOT EXISTS ix_jobs_status ON jobs(status);
     """,
+    # version 2: where each proxy IP is
+    """
+    ALTER TABLE ip_groups ADD COLUMN country TEXT;
+    ALTER TABLE ip_groups ADD COLUMN country_name TEXT;
+    ALTER TABLE ip_groups ADD COLUMN city TEXT;
+    ALTER TABLE ip_groups ADD COLUMN isp TEXT;
+    """,
 ]
 
 

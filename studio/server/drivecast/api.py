@@ -6,7 +6,7 @@ import time
 
 from . import VERSION, db, drive, insights, maintenance, scheduler, security, store, supervisor
 from .google import DRIVE_SCOPES, TokenBox, consent_url, exchange
-from .net import DriveCastError, check_group, session_for
+from .net import DriveCastError, check_group, parse_proxy, probe, session_for
 from .platforms import get as platform
 from .timeplan import AUDIENCES, normalize_plan
 
@@ -190,6 +190,43 @@ def _group_out(g):
     return out
 
 
+def _proxy_fields(b, partial=False):
+    """Proxy parts from a pasted string ('proxy') or separate fields."""
+    if b.get("proxy"):
+        try:
+            p = parse_proxy(b["proxy"])
+        except ValueError as e:
+            raise HttpError(400, str(e))
+    else:
+        if partial and not b.get("host"):
+            return None
+        need(b, "host", "port")
+        try:
+            port = int(b["port"])
+            assert 0 < port < 65536
+        except (ValueError, AssertionError):
+            raise HttpError(400, "Port must be a number between 1 and 65535")
+        p = {"host": b["host"].strip(), "port": port, "username": (b.get("username") or "").strip() or None,
+             "password": b.get("password") or None}
+    return p
+
+
+def _probe(p):
+    g = {"host": p["host"], "port": p["port"], "username": p["username"],
+         "password_enc": security.seal(p["password"]) if p.get("password") else None}
+    try:
+        return probe(g)
+    except DriveCastError as e:
+        raise HttpError(400, f"Proxy test failed: {e.user_message}. Check host, port and login.")
+
+
+def _save_probe(gid, r):
+    hist = db.jload(db.one("SELECT latency_json FROM ip_groups WHERE id=?", (gid,))["latency_json"], [])[-23:] + [r["ms"]]
+    db.run("""UPDATE ip_groups SET status='ok', latency_ms=?, last_check=?, last_error=NULL, fail_count=0, latency_json=?,
+              country=COALESCE(?,country), country_name=COALESCE(?,country_name), city=COALESCE(?,city), isp=COALESCE(?,isp)
+              WHERE id=?""", (r["ms"], time.time(), json.dumps(hist), r["country"], r["country_name"], r["city"], r["isp"], gid))
+
+
 @route("GET", "/api/groups")
 def groups(req):
     return {"groups": [_group_out(g) for g in db.all("SELECT * FROM ip_groups WHERE workspace_id=? ORDER BY number", (req.ws,))]}
@@ -198,41 +235,31 @@ def groups(req):
 @route("POST", "/api/groups")
 def add_group(req):
     b = req.json
-    need(b, "host", "port")
     lim = store.limits_for_workspace(req.ws)
     have = db.one("SELECT COUNT(*) n FROM ip_groups WHERE workspace_id=?", (req.ws,))["n"]
     if lim["max_groups"] and have >= int(lim["max_groups"]):
         raise HttpError(403, f"Your account allows {lim['max_groups']} IP groups")
-    try:
-        port = int(b["port"])
-        assert 0 < port < 65536
-    except (ValueError, AssertionError):
-        raise HttpError(400, "Port must be a number between 1 and 65535")
-    g = {"host": b["host"].strip(), "port": port, "username": (b.get("username") or "").strip() or None,
-         "password_enc": security.seal(b["password"]) if b.get("password") else None}
-    try:
-        ip, ms = check_group(g)
-    except DriveCastError as e:
-        raise HttpError(400, f"Proxy test failed: {e.user_message}. Check host, port and login.")
+    p = _proxy_fields(b)
+    r = _probe(p)
     num = db.one("SELECT COALESCE(MAX(number),0)+1 n FROM ip_groups WHERE workspace_id=?", (req.ws,))["n"]
     gid = db.run("""INSERT INTO ip_groups(workspace_id,number,host,port,username,password_enc,max_channels,priority,status,
-                    outgoing_ip,latency_ms,last_check,latency_json,created_at) VALUES(?,?,?,?,?,?,?,?, 'ok',?,?,?,?,?)""",
-                 (req.ws, num, g["host"], port, g["username"], g["password_enc"], max(1, int(b.get("max_channels") or 5)),
-                  b.get("priority") or "normal", ip, ms, time.time(), json.dumps([ms]), time.time()))
+                    outgoing_ip,latency_ms,last_check,latency_json,created_at,country,country_name,city,isp)
+                    VALUES(?,?,?,?,?,?,?,?,'ok',?,?,?,?,?,?,?,?,?)""",
+                 (req.ws, num, p["host"], p["port"], p["username"], security.seal(p["password"]) if p.get("password") else None,
+                  max(1, int(b.get("max_channels") or 5)), b.get("priority") or "normal", r["ip"], r["ms"], time.time(),
+                  json.dumps([r["ms"]]), time.time(), r["country"], r["country_name"], r["city"], r["isp"]))
     return {"group": _group_out(store.group(gid))}
 
 
 @route("POST", "/api/groups/test", auth="user")
 def test_group_form(req):
-    b = req.json
-    need(b, "host", "port")
-    g = {"host": b["host"].strip(), "port": int(b["port"]), "username": b.get("username") or None,
-         "password_enc": security.seal(b["password"]) if b.get("password") else None}
     try:
-        ip, ms = check_group(g)
-        return {"ok": True, "ip": ip, "latency_ms": ms}
-    except DriveCastError as e:
-        return {"ok": False, "error": e.user_message}
+        p = _proxy_fields(req.json)
+        r = _probe(p)
+        return {"ok": True, "ip": r["ip"], "latency_ms": r["ms"], "country": r["country"], "country_name": r["country_name"],
+                "city": r["city"], "isp": r["isp"], "parsed": {k: v for k, v in p.items() if k != "password"}}
+    except HttpError as e:
+        return {"ok": False, "error": e.message}
 
 
 def _own_group(req, gid):
@@ -252,14 +279,13 @@ def test_group(req, gid):
 def maintenance_one_group(gid):
     g = store.group(gid)
     try:
-        ip, ms = check_group(g)
-        hist = db.jload(g["latency_json"], [])[-23:] + [ms]
-        if g["outgoing_ip"] and ip != g["outgoing_ip"]:
-            db.run("UPDATE ip_groups SET status='down', last_error=?, last_check=?, latency_json=? WHERE id=?",
-                   (f"Outgoing IP changed to {ip}. Confirm to accept it.", time.time(), json.dumps(hist), gid))
+        r = probe(g)
+        if g["outgoing_ip"] and r["ip"] != g["outgoing_ip"]:
+            db.run("UPDATE ip_groups SET status='down', last_error=?, last_check=? WHERE id=?",
+                   (f"Outgoing IP changed to {r['ip']}. Confirm to accept it.", time.time(), gid))
         else:
-            db.run("UPDATE ip_groups SET status='ok', outgoing_ip=COALESCE(outgoing_ip,?), latency_ms=?, last_check=?, last_error=NULL, fail_count=0, latency_json=? WHERE id=?",
-                   (ip, ms, time.time(), json.dumps(hist), gid))
+            db.run("UPDATE ip_groups SET outgoing_ip=COALESCE(outgoing_ip,?) WHERE id=?", (r["ip"], gid))
+            _save_probe(gid, r)
     except DriveCastError as e:
         db.run("UPDATE ip_groups SET status='down', last_error=?, last_check=? WHERE id=?", (e.user_message, time.time(), gid))
 
@@ -267,8 +293,12 @@ def maintenance_one_group(gid):
 @route("POST", "/api/groups/(\\d+)/accept-ip")
 def accept_ip(req, gid):
     g = _own_group(req, gid)
-    ip, ms = check_group(g)
-    db.run("UPDATE ip_groups SET outgoing_ip=?, status='ok', last_error=NULL, latency_ms=? WHERE id=?", (ip, ms, g["id"]))
+    try:
+        r = probe(g)
+    except DriveCastError as e:
+        raise HttpError(400, e.user_message)
+    db.run("UPDATE ip_groups SET outgoing_ip=? WHERE id=?", (r["ip"], g["id"]))
+    _save_probe(g["id"], r)
     return {"group": _group_out(store.group(g["id"]))}
 
 
@@ -276,6 +306,19 @@ def accept_ip(req, gid):
 def edit_group(req, gid):
     g = _own_group(req, gid)
     b = req.json
+    p = _proxy_fields(b, partial=True)
+    if p:
+        if not p.get("password") and g["password_enc"] and p.get("username") == g["username"]:
+            p["password"] = security.unseal(g["password_enc"])  # keep the saved password
+        r = _probe(p)
+        n = db.one("SELECT COUNT(*) n FROM channels WHERE group_id=?", (g["id"],))["n"]
+        if g["outgoing_ip"] and r["ip"] != g["outgoing_ip"] and n and not b.get("accept_new_ip"):
+            loc = ", ".join(x for x in (r["city"], r["country"]) if x)
+            raise HttpError(409, f"The new proxy leaves from {r['ip']}{' (' + loc + ')' if loc else ''}, not {g['outgoing_ip']}. "
+                                 f"The {n} channel(s) in this group will post from the new IP. Confirm to continue.")
+        db.run("UPDATE ip_groups SET host=?, port=?, username=?, password_enc=?, outgoing_ip=? WHERE id=?",
+               (p["host"], p["port"], p["username"], security.seal(p["password"]) if p.get("password") else None, r["ip"], g["id"]))
+        _save_probe(g["id"], r)
     if "max_channels" in b:
         db.run("UPDATE ip_groups SET max_channels=? WHERE id=?", (max(1, int(b["max_channels"])), g["id"]))
     if b.get("priority") in ("high", "normal", "low"):
@@ -461,6 +504,8 @@ def _channel_out(c):
         diffs = [max(0, pts[i]["views"] - pts[i - 1]["views"]) for i in range(1, len(pts)) if pts[i]["views"] is not None and pts[i - 1]["views"] is not None]
         out["series"] = diffs[-10:]
         out["views_7d"] = sum(diffs[-7:])
+    from . import worker
+    out["live"] = worker.PROGRESS.get(c["id"])
     out["published_total"] = db.one("SELECT COUNT(*) n FROM uploads WHERE channel_id=? AND status='published'", (c["id"],))["n"]
     return out
 
@@ -553,12 +598,17 @@ def channel_action(req, cid, action):
 
 @route("GET", "/api/schedule")
 def schedule(req):
-    days = min(7, int(req.query.get("days", 2)))
+    from . import worker
+    days = min(7, int(req.query.get("days", 3)))
     now = time.time()
-    rows = db.all("""SELECT s.*, c.title, g.number group_number FROM slots s JOIN channels c ON c.id=s.channel_id
-                     LEFT JOIN ip_groups g ON g.id=c.group_id WHERE c.workspace_id=? AND s.due_at BETWEEN ? AND ?
-                     ORDER BY s.due_at""", (req.ws, now - 86400, now + days * 86400))
-    return {"slots": rows}
+    rows = db.all("""SELECT s.*, c.title, c.handle, c.thumbnail, c.state channel_state, g.number group_number, g.status group_status,
+                     g.country group_country, g.city group_city, u.external_video_id, u.title video_title
+                     FROM slots s JOIN channels c ON c.id=s.channel_id LEFT JOIN ip_groups g ON g.id=c.group_id
+                     LEFT JOIN uploads u ON u.id=s.upload_id
+                     WHERE c.workspace_id=? AND s.due_at BETWEEN ? AND ? ORDER BY s.due_at""",
+                  (req.ws, now - 86400, now + days * 86400))
+    live = {cid: p for cid, p in worker.PROGRESS.items()}
+    return {"slots": rows, "live": live, "now": now}
 
 
 @route("GET", "/api/videos")

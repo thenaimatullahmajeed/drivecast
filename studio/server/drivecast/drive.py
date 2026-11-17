@@ -85,7 +85,7 @@ def move(session, box, file_id, from_id, to_id):
     _check(r, "move")
 
 
-def download(session, box, file_id, path, chunk=1 << 20):
+def download(session, box, file_id, path, chunk=1 << 20, on_progress=None):
     r = authed(session, box, "GET", f"{API}/files/{file_id}", params={"alt": "media", "supportsAllDrives": "true"},
                stream=True, timeout=(20, 300))
     if r.status_code >= 400:
@@ -95,6 +95,8 @@ def download(session, box, file_id, path, chunk=1 << 20):
         for part in r.iter_content(chunk):
             f.write(part)
             size += len(part)
+            if on_progress:
+                on_progress(size)
     if size == 0:
         raise Permanent("The Drive file is empty")
     return size

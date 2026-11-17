@@ -9,6 +9,7 @@ from . import security
 
 TIMEOUT = (20, 120)
 IP_ENDPOINTS = ("https://api.ipify.org?format=json", "https://www.cloudflare.com/cdn-cgi/trace")
+GEO_ENDPOINTS = ("https://ipinfo.io/json", "https://ipwho.is/")
 
 
 class DriveCastError(Exception):
@@ -78,6 +79,55 @@ def outgoing_ip(session):
         except Exception as e:  # try the next endpoint
             last = e
     raise ProxyDown("The proxy did not respond", str(last))
+
+
+def probe(group):
+    """Outgoing IP, latency and location as seen through the proxy.
+    Location is best effort; the IP check is what protects uploads."""
+    s = session_for(group)
+    ip, ms = None, None
+    for url in GEO_ENDPOINTS:
+        t0 = time.monotonic()
+        try:
+            r = s.get(url, timeout=(15, 20))
+            r.raise_for_status()
+            j = r.json()
+            ms = int((time.monotonic() - t0) * 1000)
+            if "ipinfo.io" in url:
+                ip = j.get("ip")
+                return {"ip": ip, "ms": ms, "country": j.get("country"), "country_name": None,
+                        "city": j.get("city"), "isp": (j.get("org") or "").split(" ", 1)[-1] or None}
+            if j.get("success") is not False and j.get("ip"):
+                return {"ip": j["ip"], "ms": ms, "country": j.get("country_code"), "country_name": j.get("country"),
+                        "city": j.get("city"), "isp": (j.get("connection") or {}).get("isp")}
+        except Exception:
+            continue
+    ip, ms = check_group(group)
+    return {"ip": ip, "ms": ms, "country": None, "country_name": None, "city": None, "isp": None}
+
+
+def parse_proxy(text):
+    """Split a pasted proxy into parts. Accepts:
+    host:port:user:pass · user:pass@host:port · socks5://user:pass@host:port · host:port"""
+    t = (text or "").strip()
+    for p in ("socks5h://", "socks5://", "socks://", "http://", "https://"):
+        if t.lower().startswith(p):
+            t = t[len(p):]
+            break
+    user = pw = None
+    if "@" in t:
+        cred, t = t.rsplit("@", 1)
+        user, _, pw = cred.partition(":")
+    parts = t.split(":")
+    if len(parts) >= 4 and user is None:
+        host, port, user, pw = parts[0], parts[1], parts[2], ":".join(parts[3:])
+    elif len(parts) == 2:
+        host, port = parts
+    else:
+        raise ValueError("Use host:port:username:password")
+    if not port.isdigit() or not (0 < int(port) < 65536) or not host:
+        raise ValueError("The port must be a number")
+    return {"host": host.strip(), "port": int(port), "username": (user or "").strip() or None, "password": pw or None}
 
 
 def check_group(group):

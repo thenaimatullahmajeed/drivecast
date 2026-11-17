@@ -21,6 +21,16 @@ LEASE = 3 * 3600
 BREAKER_AFTER = 3          # consecutive failures before a channel cools down
 BREAKER_COOLDOWN = 3600    # first cool-down; doubles each time, max 12 h
 TMP_DIR = None
+PROGRESS = {}  # channel_id -> live status of the post being made right now
+
+
+def _stage(ch_id, stage, pct=None, title=None):
+    p = PROGRESS.setdefault(ch_id, {"started": time.time()})
+    p.update({"stage": stage, "at": time.time()})
+    if pct is not None:
+        p["pct"] = round(max(0.0, min(1.0, pct)) * 100)
+    if title:
+        p["title"] = title
 
 
 def claim(worker_id, now=None):
@@ -111,6 +121,7 @@ def run(job, adapters=None):
 
     session = make_session(g)
     phase, upload_id, tmp = "prepare", None, None
+    _stage(ch["id"], "Checking proxy IP", 0)
     try:
         # --- never leave from the wrong IP ---
         try:
@@ -149,16 +160,30 @@ def run(job, adapters=None):
             return finish(job, "done", None, "skipped", "No new video in the Drive folder")
 
         # --- stage in Drive, download to a private temp file ---
+        title0 = pmod.title_from_filename(chosen["name"])
+        _stage(ch["id"], "Downloading from Drive", 0, title0)
         processing = dmod.child_folder(session, dbox, ch["folder_id"], "Processing")
         dmod.move(session, dbox, chosen["id"], ch["folder_id"], processing)
         tmp = tempfile.mkdtemp(prefix="dc-", dir=TMP_DIR)
         path = os.path.join(tmp, "video" + (os.path.splitext(chosen["name"])[1] or ".mp4"))
-        dmod.download(session, dbox, chosen["id"], path)
+        size = int(chosen.get("size") or 0)
+        try:
+            dmod.download(session, dbox, chosen["id"], path,
+                          on_progress=(lambda n: _stage(ch["id"], "Downloading from Drive", n / size)) if size else None)
+        except TypeError:  # test doubles without progress support
+            dmod.download(session, dbox, chosen["id"], path)
 
         title = pmod.title_from_filename(chosen["name"])
         db.run("UPDATE uploads SET status='uploading' WHERE id=?", (upload_id,))
         phase = "upload"
-        res = pmod.publish(session, cbox, path, title, title)
+        _stage(ch["id"], "Uploading to YouTube", 0)
+        try:
+            res = pmod.publish(session, cbox, path, title, title,
+                               on_progress=lambda f: _stage(ch["id"], "Uploading to YouTube", f))
+        except TypeError as te:
+            if "on_progress" not in str(te):
+                raise
+            res = pmod.publish(session, cbox, path, title, title)
         phase = "after"
         db.run("UPDATE uploads SET status='published', external_video_id=?, visibility=?, published_at=? WHERE id=?",
                (res["video_id"], res["visibility"], time.time(), upload_id))
@@ -205,6 +230,7 @@ def run(job, adapters=None):
         log.warning("job %s transient failure: %s", job["id"], e)
         return finish(job, "failed", err, "failed", err)
     finally:
+        PROGRESS.pop(ch["id"], None)
         if tmp:
             shutil.rmtree(tmp, ignore_errors=True)
 

@@ -7,7 +7,7 @@ import shutil
 import time
 
 from . import db, drive, store
-from .net import DriveCastError, check_group, session_for
+from .net import DriveCastError, check_group, probe, session_for
 from .platforms import get as platform
 
 
@@ -30,7 +30,11 @@ def refresh_folders(ws_id=None):
 def check_groups():
     for g in db.all("SELECT * FROM ip_groups"):
         try:
-            ip, ms = check_group(g)
+            r = probe(g)
+            ip, ms = r["ip"], r["ms"]
+            if r["country"]:
+                db.run("UPDATE ip_groups SET country=?, country_name=COALESCE(?,country_name), city=?, isp=? WHERE id=?",
+                       (r["country"], r["country_name"], r["city"], r["isp"], g["id"]))
             hist = db.jload(g["latency_json"], [])[-23:] + [ms]
             if g["outgoing_ip"] and ip != g["outgoing_ip"]:
                 db.run("UPDATE ip_groups SET status='down', last_error=?, last_check=?, latency_json=? WHERE id=?",
@@ -50,9 +54,14 @@ def check_groups():
                    (str(getattr(e, "user_message", e))[:200], time.time(), json.dumps(hist), g["id"]))
 
 
+STATS_EVERY = 20 * 60  # per channel; ~2 quota units each time, well inside 10,000/day
+
+
 def sync_stats():
     today = dt.datetime.now(dt.timezone.utc).date().isoformat()
-    for ch in db.all("SELECT * FROM channels WHERE state!='setup' AND token_enc IS NOT NULL"):
+    fresh = time.time() - STATS_EVERY
+    for ch in db.all("SELECT * FROM channels WHERE state!='setup' AND token_enc IS NOT NULL AND (stats_at IS NULL OR stats_at<?)",
+                     (fresh,)):
         g = store.group(ch["group_id"])
         if not g or g["status"] == "down":
             continue  # stats also travel only through the channel's own IP

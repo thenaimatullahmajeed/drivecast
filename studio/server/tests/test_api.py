@@ -94,9 +94,18 @@ class ApiTests(unittest.TestCase):
         st, r = student.call("GET", "/api/admin/users")
         self.assertEqual(st, 403)
 
-        with mock.patch.object(api, "check_group", return_value=("5.6.7.8", 80)):
-            st, r = student.call("POST", "/api/groups", {"host": "p.example", "port": 1080, "username": "u", "password": "pw"})
+        fake = {"ip": "5.6.7.8", "ms": 80, "country": "US", "country_name": "United States", "city": "Dallas", "isp": "Example"}
+        with mock.patch.object(api, "probe", return_value=fake):
+            st, r = student.call("POST", "/api/groups", {"proxy": "p.example:1080:u:pw"})
             self.assertEqual(st, 200, r)
+            self.assertEqual((r["group"]["host"], r["group"]["port"], r["group"]["username"], r["group"]["country"]),
+                             ("p.example", 1080, "u", "US"))
+            gid = r["group"]["id"]
+            st, r = student.call("POST", "/api/groups/test", {"proxy": "bad"})
+            self.assertFalse(r["ok"])
+            # edit: same IP needs no confirmation
+            st, r = student.call("PATCH", f"/api/groups/{gid}", {"proxy": "p2.example:2000:u2:pw2"})
+            self.assertEqual((st, r["group"]["host"], r["group"]["port"]), (200, "p2.example", 2000))
             self.assertEqual(r["group"]["number"], 1)
             self.assertEqual(r["group"]["outgoing_ip"], "5.6.7.8")
             self.assertNotIn("password_enc", r["group"])

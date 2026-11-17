@@ -45,7 +45,7 @@ def start(data_dir, host="127.0.0.1", port=8765, block=False, workers=2):
         ("scheduler", scheduler.tick, 30),
         ("folders", maintenance.refresh_folders, 300),
         ("proxies", maintenance.check_groups, 300),
-        ("stats", maintenance.sync_stats, 3 * 3600),
+        ("stats", maintenance.sync_stats, 5 * 60),
         ("cleanup", lambda: maintenance.cleanup(tmp), 6 * 3600),
     ], workers=workers)
 

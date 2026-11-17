@@ -66,13 +66,17 @@ const tFull = ts => ts ? `${tDay(ts)} · ${tTime(ts)}` : '—';
 function rel(ts) {
   if (!ts) return '—';
   const d = ts - Date.now() / 1000, a = Math.abs(d);
-  const s = a < 60 ? 'less than a minute' : a < 3600 ? `${Math.round(a / 60)} min` : a < 86400 ? `${Math.floor(a / 3600)} h ${Math.round((a % 3600) / 60)} min` : `${Math.round(a / 86400)} days`;
+  const s = a < 60 ? 'less than a minute' : a < 3600 ? `${Math.round(a / 60)} min` : a < 86400 ? `${Math.floor(a / 3600)} h ${Math.round((a % 3600) / 60)} min` : `${Math.floor(a / 86400)} d ${Math.floor((a % 86400) / 3600)} h`;
   return d >= 0 ? `in ${s}` : `${s} ago`;
 }
+const flag = cc => cc && /^[A-Za-z]{2}$/.test(cc) ? String.fromCodePoint(...[...cc.toUpperCase()].map(c => 127397 + c.charCodeAt(0))) : '';
+const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+function where(g) { const parts = [g.city, g.country_name || g.country].filter(Boolean); return parts.length ? `${flag(g.country)} ${parts.join(', ')}` : ''; }
 function countdown(ts) {
   const d = Math.max(0, Math.round(ts - Date.now() / 1000));
-  const h = Math.floor(d / 3600), m = Math.floor((d % 3600) / 60), s = d % 60;
-  return h ? `${h}h ${String(m).padStart(2, '0')}m` : `${m}m ${String(s).padStart(2, '0')}s`;
+  const days = Math.floor(d / 86400), h = Math.floor((d % 86400) / 3600), m = Math.floor((d % 3600) / 60), s = d % 60;
+  if (days) return `${days}d ${h}h ${String(m).padStart(2, '0')}m`;
+  return h ? `${h}h ${String(m).padStart(2, '0')}m ${String(s).padStart(2, '0')}s` : `${m}m ${String(s).padStart(2, '0')}s`;
 }
 const num = n => n == null ? '—' : n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e4 ? (n / 1e3).toFixed(1) + 'K' : n.toLocaleString('en');
 function delta(cur, prev) {
@@ -124,6 +128,13 @@ function barsChart(items, valueKey, planKey, height = 150) {
   }).join('')}</div>`;
 }
 
+function liveBar(p, dark) {
+  if (!p) return '';
+  const pct = p.pct ?? 0;
+  return `<div style="display:flex;flex-direction:column;gap:6px;min-width:0"><div style="display:flex;justify-content:space-between;gap:8px;font-size:12px;${dark ? 'color:#C9CDD6' : ''}"><span class="ell">${esc(p.stage || 'Working')}${p.title ? ' · ' + esc(p.title) : ''}</span><b class="mono">${pct}%</b></div>
+    <div style="height:8px;border-radius:99px;background:${dark ? '#232A35' : '#EDEBE6'};overflow:hidden"><div class="barfill" style="width:${pct}%;height:100%;border-radius:99px;background:#E8492A"></div></div></div>`;
+}
+
 // ------------------------------------------------------------------ router
 const NAV = [
   ['Workspace', [['grid', 'Dashboard', 'dashboard'], ['cal', 'Schedule', 'schedule'], ['tv', 'Channels', 'channels'], ['net', 'IP groups', 'groups'], ['film', 'Videos', 'videos'], ['drive', 'Google Drive', 'drive'], ['gear', 'Settings', 'settings']]],
@@ -137,6 +148,7 @@ function every(ms, fn) { S.timers.push(setInterval(fn, ms)); }
 
 async function render() {
   clearTimers();
+  closeModal();
   S.acts = {};
   const [r0, ...rest] = (location.hash.replace(/^#\/?/, '') || 'dashboard').split('/');
   if (!S.session) {
@@ -248,7 +260,7 @@ async function pageDashboard() {
   const d = await api('GET', '/api/dashboard');
   const hasChannels = d.today.channels.length || d.leaderboard.length;
   const nxt = d.today.next;
-  const sub = hasChannels ? `${d.today.done} of ${d.today.total} posts done today${nxt ? ` · next ${esc(rel(nxt.due_at))}` : ''}` : 'Let’s get your first channel on air';
+  const sub = hasChannels ? `${d.today.done} of ${plural(d.today.total, 'post')} done today${nxt ? ` · next ${esc(rel(nxt.due_at))}` : ''}` : 'Let’s get your first channel on air';
   const content = hasChannels ? [
     safe(() => todayCard(d), 'Today'),
     safe(() => kpis(d), 'Numbers'),
@@ -258,7 +270,8 @@ async function pageDashboard() {
   ].join('') : onboarding(d);
   mount('dashboard', 'On air today', sub, fmt(Date.now() / 1000, { weekday: 'long', day: 'numeric', month: 'long' }), `<button class="btn" data-act="reload">${ic('refresh', 16)}Refresh</button>${addBtn}`, content);
   every(1000, () => document.querySelectorAll('[data-count]').forEach(el => { el.textContent = countdown(+el.dataset.count); }));
-  every(60000, () => { if (!document.getElementById('modal')) render(); });
+  const fast = (d.today.live || []).length > 0;
+  every(fast ? 4000 : 60000, () => { if (!document.getElementById('modal')) render(); });
   S.acts['post-now'] = async x => { await api('POST', `/api/channels/${x.id}/post-now`); toast('Queued — it will post in a moment'); render(); };
   S.acts.dismiss = async x => { await api('POST', `/api/events/${x.id}/dismiss`); render(); };
 }
@@ -279,6 +292,7 @@ function todayCard(d) {
   return `<section class="today"><div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap"><span class="onair"><i></i>ON AIR</span><h2 style="font-size:20px">Today</h2><span class="mono" style="font-size:12px;color:#8E94A0">Times in ${esc(S.tz)}</span></div>
     <div class="cols"><div class="stat"><span>Published</span><strong>${t.done} / ${t.total}</strong></div><div class="stat"><span>Next post</span>${nx}</div>
     <div class="stat"><span>Views today</span><strong>${num(t.views_today)}</strong></div><div class="stat"><span>Held or missed</span><strong style="color:${t.held ? '#F2B54A' : '#fff'}">${t.held}</strong></div></div>
+    ${(t.live || []).length ? `<div style="margin-top:18px;padding-top:16px;border-top:1px solid #232A35;display:flex;flex-direction:column;gap:12px"><span class="kicker" style="color:#FF9B85">Posting right now</span>${t.live.map(p => `<div style="display:grid;grid-template-columns:minmax(120px,200px) 1fr;gap:16px;align-items:center"><b class="ell" style="font-size:14px">${esc(p.channel || '')}</b>${liveBar(p, true)}</div>`).join('')}</div>` : ''}
     ${rows ? `<div class="chrow">${rows}</div>` : ''}</section>`;
 }
 function kpis(d) {
@@ -456,27 +470,50 @@ document.addEventListener('input', e => {
 });
 
 // ------------------------------------------------------------------ IP groups
-function groupForm() {
-  return `<form data-form="newgroup" style="margin-top:14px"><div class="form">
-    <label class="f">Host or IP<input class="i" name="host" required placeholder="proxy.example.com"></label>
-    <label class="f">Port<input class="i" name="port" required inputmode="numeric" placeholder="1080"></label>
-    <label class="f">Username<input class="i" name="username" autocomplete="off"></label>
-    <label class="f">Password<input class="i" name="password" type="password" autocomplete="new-password"></label>
-    <label class="f">Channels on this IP<select class="i" name="max_channels"><option value="1">1 · dedicated</option><option>2</option><option>3</option><option>4</option><option value="5" selected>5 · recommended max</option><option value="8">8 · not recommended</option><option value="10">10 · not recommended</option></select></label>
-    <label class="f">Priority<select class="i" name="priority"><option value="high">High</option><option value="normal" selected>Normal</option><option value="low">Low</option></select></label>
-  </div><div class="actions" style="margin-top:14px"><button class="btn" type="button" data-act="testgroup">${ic('bolt', 16)}Test connection</button><button class="btn primary" type="submit">Save group</button><span id="gtest" class="muted" style="font-size:13px"></span></div></form>`;
+function groupForm(g) {
+  const v = g || {};
+  return `<form data-form="${g ? 'gsave' : 'newgroup'}" style="margin-top:14px">
+    <label class="f">Paste the whole proxy<input class="i mono" name="proxy" id="pxpaste" placeholder="107.181.148.140:6000:username:password" autocomplete="off"><span class="help">We split it for you: host:port:username:password, user:pass@host:port or socks5://… all work.</span></label>
+    <div class="form" style="margin-top:14px">
+    <label class="f">Host or IP<input class="i" name="host" required placeholder="proxy.example.com" value="${esc(v.host || '')}"></label>
+    <label class="f">Port<input class="i" name="port" required inputmode="numeric" placeholder="1080" value="${esc(v.port || '')}"></label>
+    <label class="f">Username<input class="i" name="username" autocomplete="off" value="${esc(v.username || '')}"></label>
+    <label class="f">Password<input class="i" name="password" type="password" autocomplete="new-password" placeholder="${g && v.has_password ? 'Saved — leave empty to keep' : ''}"></label>
+    ${g ? `<label class="f">Channels on this IP<input class="i" name="max_channels" type="number" min="1" value="${v.max_channels}"></label>
+      <label class="f">Priority<select class="i" name="priority">${['high', 'normal', 'low'].map(p => `<option ${p === v.priority ? 'selected' : ''}>${p}</option>`).join('')}</select></label>`
+      : `<label class="f">Channels on this IP<select class="i" name="max_channels"><option value="1">1 · dedicated</option><option>2</option><option>3</option><option>4</option><option value="5" selected>5 · recommended max</option><option value="8">8 · not recommended</option><option value="10">10 · not recommended</option></select></label>
+      <label class="f">Priority<select class="i" name="priority"><option value="high">High</option><option value="normal" selected>Normal</option><option value="low">Low</option></select></label>`}
+  </div><div id="gtest" style="margin-top:14px"></div><div class="actions" style="margin-top:14px"><button class="btn" type="button" data-act="testgroup">${ic('bolt', 16)}Test connection</button>${g ? '<button class="btn" type="button" data-act="close">Cancel</button>' : ''}<button class="btn primary" type="submit">${g ? 'Save changes' : 'Save group'}</button></div></form>`;
 }
+function proxyFromForm(f) {
+  const v = Object.fromEntries(new FormData(f).entries());
+  delete v.proxy;
+  return v;
+}
+document.addEventListener('input', e => {
+  if (e.target.id !== 'pxpaste') return;
+  const raw = e.target.value.trim(), f = e.target.closest('form');
+  let t = raw.replace(/^(socks5h?|socks|https?):\/\//i, ''), user = '', pass = '';
+  if (t.includes('@')) { const i = t.lastIndexOf('@'); const cred = t.slice(0, i); t = t.slice(i + 1); [user, ...pass] = cred.split(':'); pass = pass.join(':'); }
+  const p = t.split(':');
+  let host = '', port = '';
+  if (p.length >= 4 && !user) { [host, port, user] = p; pass = p.slice(3).join(':'); } else if (p.length >= 2) { [host, port] = p; }
+  if (!host || !/^\d+$/.test(port || '')) return;
+  f.host.value = host; f.port.value = port; f.username.value = user || ''; if (pass) f.password.value = pass;
+  e.target.style.borderColor = 'var(--ok)';
+});
 const GROUP_FORM_ACTS = {
-  newgroup: async v => {
-    const r = await api('POST', '/api/groups', v);
+  newgroup: async (v, f) => {
+    const r = await api('POST', '/api/groups', proxyFromForm(f));
     toast(`Group ${r.group.number} saved · ${r.group.outgoing_ip}`);
     if (location.hash.startsWith('#/add')) { W.groups = (await api('GET', '/api/groups')).groups; W.group = W.groups.find(g => g.id === r.group.id); drawWizard(); } else render();
   },
   testgroup: async (d, el) => {
-    const f = el.closest('form'); const v = Object.fromEntries(new FormData(f).entries()); const out = $('#gtest');
-    out.innerHTML = '<span class="spinner"></span> Testing…';
+    const f = el.closest('form'); const v = proxyFromForm(f); const out = f.querySelector('#gtest');
+    if (!v.password && f.dataset.form === 'gsave') v.password = '';
+    out.innerHTML = '<div class="note info"><span class="spinner"></span><span>Testing through the proxy…</span></div>';
     const r = await api('POST', '/api/groups/test', v);
-    out.innerHTML = r.ok ? `<span style="color:var(--ok)">✓ Works · outgoing IP <b class="mono">${esc(r.ip)}</b> · ${r.latency_ms} ms</span>` : `<span style="color:var(--bad)">✗ ${esc(r.error)}</span>`;
+    out.innerHTML = r.ok ? `<div class="note ok">${ic('check', 18)}<span><b>Works.</b> Outgoing IP <b class="mono">${esc(r.ip)}</b> · ${esc(where(r) || 'location unknown')}${r.isp ? ' · ' + esc(r.isp) : ''} · ${r.latency_ms} ms</span></div>` : `<div class="note bad">${ic('alert', 18)}<span>${esc(r.error)}</span></div>`;
   },
 };
 Object.assign(WIZ_ACTS, GROUP_FORM_ACTS);
@@ -493,7 +530,7 @@ async function pageGroups() {
     const chans = g.channels.map((c, i) => `<div style="display:flex;align-items:center;gap:10px;padding:9px 0;border-top:1px solid var(--line)">${avatar(c.title, hashI(c.title), c.thumbnail, 28)}<div style="display:flex;flex-direction:column;min-width:0;flex:1"><span class="ell" style="font-weight:600;font-size:13px">${esc(c.title)}</span>${handle(c.handle)}</div>${chip(c.state, c.state === 'live' ? 'ok' : 'neutral', false)}</div>`).join('');
     const ipChanged = down && (g.last_error || '').includes('changed');
     return `<section class="card"><div style="display:flex;flex-direction:column;gap:14px">
-      <div style="display:flex;align-items:center;gap:16px">${ring(g.channel_count, g.max_channels, color)}<div style="display:flex;flex-direction:column;gap:6px;flex:1;min-width:0"><div style="display:flex;justify-content:space-between;gap:8px;align-items:center"><strong style="font-family:var(--disp);font-size:22px">Group ${g.number}</strong>${down ? chip('Not responding', 'bad') : chip('Healthy', 'ok')}</div><span class="mono" style="font-size:13px;font-weight:500">${esc(g.outgoing_ip || '—')}</span><span class="muted" style="font-size:12px">SOCKS5 · ${esc(g.host)}:${g.port} · ${esc(g.priority)} priority</span></div></div>
+      <div style="display:flex;align-items:center;gap:16px">${ring(g.channel_count, g.max_channels, color)}<div style="display:flex;flex-direction:column;gap:6px;flex:1;min-width:0"><div style="display:flex;justify-content:space-between;gap:8px;align-items:center"><strong style="font-family:var(--disp);font-size:22px">Group ${g.number}</strong>${down ? chip('Not responding', 'bad') : chip('Healthy', 'ok')}</div><span class="mono" style="font-size:13px;font-weight:500">${esc(g.outgoing_ip || '—')}</span>${where(g) ? `<span style="font-size:13px;font-weight:600">${esc(where(g))}${g.isp ? `<span class="muted" style="font-weight:400"> · ${esc(g.isp)}</span>` : ''}</span>` : ''}<span class="muted" style="font-size:12px">SOCKS5 · ${esc(g.host)}:${g.port} · ${esc(g.priority)} priority</span></div></div>
       <div><div style="display:flex;justify-content:space-between;font-size:12px" class="muted"><span>Latency · last checks</span><span class="mono" style="color:var(--ink)">${down ? 'timeout' : (g.latency_ms ?? '—') + ' ms'}</span></div><div style="display:flex;align-items:flex-end;gap:3px;height:34px;margin-top:6px">${lat.map(v => `<span style="flex:1;height:${Math.max(3, Math.round(v / mx * 34))}px;border-radius:2px;background:${v ? '#0E1116' : '#F2B8AD'}"></span>`).join('')}</div></div>
       ${down ? `<div class="note bad">${ic('alert', 16)}<span>${esc(g.last_error || 'Proxy is not responding')}. Uploads for these channels are held — never sent from the server IP.</span></div>` : ''}
       ${over ? `<div class="note warn">${ic('alert', 16)}<span>${g.channel_count} channels on one IP — above the recommended ${g.max_channels}. Allowed, at higher risk.</span></div>` : ''}
@@ -512,11 +549,20 @@ async function pageGroups() {
     gdel: async d => { if (!confirm('Delete this IP group?')) return; await api('DELETE', `/api/groups/${d.id}`); render(); },
     gedit: d => {
       const g = groups.find(x => x.id === +d.id);
-      modal(`<h2>Edit Group ${g.number}</h2><form data-form="gsave" style="display:flex;flex-direction:column;gap:14px"><label class="f">Channels on this IP<input class="i" name="max_channels" type="number" min="1" value="${g.max_channels}"><span class="help">1–5 recommended. Above 5 is allowed but not recommended.</span></label>
-        <label class="f">Priority<select class="i" name="priority">${['high', 'normal', 'low'].map(p => `<option ${p === g.priority ? 'selected' : ''}>${p}</option>`).join('')}</select><span class="help">Used for automatic failover when more phones are added.</span></label>
-        <label class="f">New proxy password (optional)<input class="i" name="password" type="password" autocomplete="new-password"></label>
-        <div class="actions"><button class="btn" type="button" data-act="close">Cancel</button><button class="btn primary" type="submit">Save</button></div></form>`);
-      S.acts.gsave = async v => { if (!v.password) delete v.password; await api('PATCH', `/api/groups/${g.id}`, v); closeModal(); render(); };
+      modal(`<h2>Edit Group ${g.number}</h2><p class="muted" style="margin:0">Change the proxy, its login, or how many channels it holds. A new proxy is tested before it is saved.</p>${groupForm(g)}`);
+      S.acts.gsave = async (v, f) => {
+        const body = proxyFromForm(f);
+        if (!body.password) delete body.password;
+        const changed = body.host !== g.host || +body.port !== g.port || (body.username || null) !== (g.username || null) || body.password;
+        if (!changed) { delete body.host; delete body.port; delete body.username; }
+        try { await api('PATCH', `/api/groups/${g.id}`, body); }
+        catch (e) {
+          if (!/Confirm to continue/.test(e.message)) throw e;
+          if (!confirm(e.message)) return;
+          await api('PATCH', `/api/groups/${g.id}`, { ...body, accept_new_ip: true });
+        }
+        closeModal(); toast(`Group ${g.number} saved`); render();
+      };
     },
   });
 }
@@ -530,14 +576,14 @@ async function pageChannels() {
   const tones = { live: 'ok', paused: 'neutral', held: 'warn', attention: 'bad' };
   const names = { live: 'Live', paused: 'Paused', held: 'Held', attention: 'Needs you' };
   const shown = routed.filter(c => filter === 'all' || c.state === filter);
-  const COLS = 'grid-template-columns:minmax(200px,1.4fr) minmax(260px,1.8fr) 64px 130px 120px 80px 160px;gap:14px';
+  const COLS = 'grid-template-columns:minmax(200px,1.4fr) minmax(260px,1.8fr) 64px 160px 120px 80px 160px;gap:14px';
   const rows = shown.map(c => {
     const gdown = c.group && c.group.status === 'down';
     const routeChips = `<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap"><span class="chip ${gdown ? 'bad' : 'info'}">${ic('net', 14)}Group ${c.group ? c.group.number : '—'}</span><span class="muted">→</span><span class="chip neutral">${ic('yt', 14)}YouTube</span><span class="muted">←</span><span class="chip neutral" style="max-width:170px" title="${esc(c.folder_name)}">${ic('folder', 14)}<span class="ell">${esc(c.folder_name || '—')}</span></span></div>`;
     const t = c.today || {};
     return `<div class="tr" style="${COLS}"><div class="who">${avatar(c.title, hashI(c.title), c.thumbnail, 38)}<div><b class="ell">${esc(c.title)}</b><span class="muted" style="font-size:12px">${handle(c.handle)} · ${c.plan.posts_per_day} / day · ${esc(c.plan.audience)}</span></div></div>
       <div>${routeChips}${c.state_reason ? `<div class="muted" style="font-size:12px;margin-top:6px">${esc(c.state_reason)}</div>` : ''}</div>
-      <span class="mono">${t.done || 0} / ${t.total || 0}</span><span style="font-size:13px">${c.next ? `${esc(tTime(c.next.due_at))}<br><span class="muted" style="font-size:12px">${esc(rel(c.next.due_at))}</span>` : '—'}</span>
+      <span class="mono">${t.done || 0} / ${t.total || 0}</span><span style="font-size:13px">${c.live ? liveBar(c.live) : c.next ? `<b class="mono" data-count="${c.next.due_at}" style="font-size:14px">${countdown(c.next.due_at)}</b><br><span class="muted" style="font-size:12px">${esc(tFull(c.next.due_at))}</span>` : '—'}</span>
       <span>${gdown && c.state === 'live' ? chip('Held · proxy', 'warn') : chip(names[c.state] || c.state, tones[c.state] || 'neutral')}</span>${c.series ? spark(c.series, 80, 26, '#0E1116', false) : '<span class="muted">—</span>'}
       <div class="actions" style="justify-content:flex-end">${c.state === 'live' ? `<button class="btn sm" data-act="cact" data-a="post-now" data-id="${c.id}" ${gdown ? 'disabled' : ''}>Post now</button>` : `<button class="btn sm primary" data-act="cact" data-a="resume" data-id="${c.id}">Resume</button>`}<button class="btn sm" data-act="cmore" data-id="${c.id}" aria-label="More for ${esc(c.title)}">•••</button></div></div>`;
   }).join('');
@@ -548,8 +594,10 @@ async function pageChannels() {
   const unrouted = pending.map(c => `<div style="display:flex;align-items:center;gap:12px;padding:12px 0;border-top:1px solid var(--line)">${avatar(c.title, hashI(c.title), c.thumbnail)}<div style="flex:1"><b>${esc(c.title)}</b><div class="muted" style="font-size:13px">Authorized · needs a Drive folder and plan</div></div><a class="btn sm" href="#/add/${c.id}">Finish setup</a><button class="btn sm danger" data-act="cdel" data-id="${c.id}">Remove</button></div>`).join('') +
     freeFolders.map(f => `<div style="display:flex;align-items:center;gap:12px;padding:12px 0;border-top:1px solid var(--line)">${ic('folder', 20)}<div style="flex:1"><b>${esc(f.name)}</b><div class="muted" style="font-size:13px">Drive folder without a channel</div></div><a class="btn sm" href="#/add">Add channel</a></div>`).join('');
   mount('channels', 'Channels', 'Every channel with its IP group, Drive folder and plan', 'Workspace', addBtn,
-    `<section class="card"><div class="actions" style="margin-bottom:16px">${tabs}</div>${routed.length ? `<div class="tbl"><div style="min-width:1090px"><div class="tr th" style="${COLS}"><span>Channel</span><span>Route · IP group → YouTube ← Drive</span><span>Today</span><span>Next post</span><span>Status</span><span>7 days</span><span></span></div>${rows || '<div class="empty">No channels in this view.</div>'}</div></div>` : `<div class="empty"><h3>No channels yet</h3>Add your first channel — it takes about two minutes.<div style="margin-top:14px">${addBtn}</div></div>`}</section>
+    `<section class="card"><div class="actions" style="margin-bottom:16px">${tabs}</div>${routed.length ? `<div class="tbl"><div style="min-width:1130px"><div class="tr th" style="${COLS}"><span>Channel</span><span>Route · IP group → YouTube ← Drive</span><span>Today</span><span>Next post in</span><span>Status</span><span>7 days</span><span></span></div>${rows || '<div class="empty">No channels in this view.</div>'}</div></div>` : `<div class="empty"><h3>No channels yet</h3>Add your first channel — it takes about two minutes.<div style="margin-top:14px">${addBtn}</div></div>`}</section>
      ${unrouted ? `<section class="card" style="margin-top:16px">${hd('Not routed yet', 'A route needs an IP group, an authorized channel and a Drive folder. Names alone never start uploads.')}${unrouted}</section>` : ''}`);
+  every(1000, () => document.querySelectorAll('[data-count]').forEach(el => { el.textContent = countdown(+el.dataset.count); }));
+  every(channels.some(c => c.live) ? 4000 : 60000, () => { if (!document.getElementById('modal')) render(); });
   S.acts.chf = d => { S.chFilter = d.f; render(); };
   S.acts.cact = async d => { closeModal(); await api('POST', `/api/channels/${d.id}/${d.a}`); toast({ 'post-now': 'Queued — posting now', pause: 'Paused', resume: 'Live again' }[d.a]); render(); };
   S.acts.cdel = async d => { if (!confirm('Remove this channel from DriveCast? Videos on YouTube and files in Drive stay untouched.')) return; await api('POST', `/api/channels/${d.id}/delete`); render(); };
@@ -581,12 +629,64 @@ async function pageChannels() {
 
 // ------------------------------------------------------------------ schedule / videos
 async function pageSchedule() {
-  const { slots } = await api('GET', '/api/schedule?days=3');
-  const tone = { planned: 'neutral', queued: 'info', running: 'info', done: 'ok', missed: 'warn', held: 'warn', skipped: 'neutral', failed: 'bad', uncertain: 'bad' };
-  const byDay = {};
-  slots.forEach(s => { const k = tDay(s.due_at); (byDay[k] = byDay[k] || []).push(s); });
-  const html = Object.entries(byDay).map(([day, list]) => `<section class="card" style="margin-bottom:16px">${hd(day, `${list.length} posts`)}${list.map(s => `<div class="tr" style="grid-template-columns:110px minmax(0,1fr) 120px 140px"><b class="mono">${esc(tTime(s.due_at))}</b><div class="who">${avatar(s.title, hashI(s.title), null, 30)}<div><b class="ell">${esc(s.title)}</b><span class="muted" style="font-size:12px">Group ${esc(s.group_number ?? '—')}${s.note ? ' · ' + esc(s.note) : ''}</span></div></div><span>${chip(s.market + ' audience', s.market === 'UK' ? 'coralc' : 'info', false)}</span><span>${chip(s.status, tone[s.status] || 'neutral')}</span></div>`).join('')}</section>`).join('');
-  mount('schedule', 'Schedule', `Today, tomorrow and the day after — in your time (${esc(S.tz)})`, 'Workspace', '', html || '<div class="empty"><h3>Nothing planned</h3>Add a channel to see its posting times here.</div>');
+  const days = S.schedDays || 3;
+  const { slots, live } = await api('GET', `/api/schedule?days=${days}`);
+  const now = Date.now() / 1000;
+  const ST = {
+    planned: ['Planned', 'neutral', 'cal'], queued: ['Starting', 'info', 'bolt'], running: ['Posting', 'info', 'bolt'],
+    done: ['Published', 'ok', 'check'], missed: ['Missed', 'warn', 'alert'], held: ['Held', 'warn', 'alert'],
+    skipped: ['Skipped', 'neutral', 'alert'], failed: ['Failed', 'bad', 'alert'], uncertain: ['Check Studio', 'bad', 'alert'],
+  };
+  const upcoming = slots.filter(s => ['planned', 'queued', 'running'].includes(s.status) && s.due_at >= now - 300);
+  const next = upcoming[0];
+  const liveRows = Object.entries(live || {});
+  const byDay = new Map();
+  slots.filter(s => s.due_at >= now - 86400 * 0.6 || ['done', 'running'].includes(s.status)).forEach(s => {
+    const k = fmt(s.due_at, { year: 'numeric', month: '2-digit', day: '2-digit' });
+    if (!byDay.has(k)) byDay.set(k, { label: tDay(s.due_at), first: s.due_at, list: [] });
+    byDay.get(k).list.push(s);
+  });
+  const todayKey = fmt(now, { year: 'numeric', month: '2-digit', day: '2-digit' });
+  const tChip = s => s.market === 'UK' ? chip('UK audience', 'coralc', false) : s.market === 'US' ? chip('US audience', 'info', false) : chip(s.market + ' audience', 'neutral', false);
+  const row = s => {
+    const st = ST[s.status] || [s.status, 'neutral', 'cal'];
+    const past = s.due_at < now && !['queued', 'running'].includes(s.status);
+    const lv = live && live[s.channel_id] && ['queued', 'running'].includes(s.status) ? live[s.channel_id] : null;
+    const right = s.status === 'done' && s.external_video_id ? `<a class="btn sm" href="https://youtu.be/${esc(s.external_video_id)}" target="_blank" rel="noopener">${ic('ext', 14)}Watch</a>`
+      : s.status === 'planned' && s.due_at > now ? `<b class="mono" data-count="${s.due_at}" style="font-size:13px">${countdown(s.due_at)}</b>` : '';
+    return `<div class="slot ${past ? 'past' : ''} ${s.status}">
+      <div class="slot-time"><b class="mono">${esc(tTime(s.due_at))}</b>${tChip(s)}</div>
+      <div class="slot-body"><div class="who">${avatar(s.title, hashI(s.title), s.thumbnail, 34)}<div><b class="ell">${esc(s.title)}</b><span class="muted" style="font-size:12px">Group ${esc(s.group_number ?? '—')}${s.group_country ? ' · ' + flag(s.group_country) + ' ' + esc(s.group_country) : ''}${s.video_title ? ' · “' + esc(s.video_title) + '”' : s.note && s.status !== 'planned' ? ' · ' + esc(s.note) : ''}</span></div></div>
+        ${lv ? liveBar(lv) : ''}</div>
+      <div class="slot-side"><span class="chip ${st[1]}">${ic(st[2], 13)}${st[0]}</span>${right}</div></div>`;
+  };
+  const cols = [...byDay.entries()].map(([k, d]) => {
+    const done = d.list.filter(s => s.status === 'done').length, total = d.list.length;
+    const isToday = k === todayKey;
+    let body = '';
+    let nowDrawn = !isToday;
+    d.list.forEach(s => {
+      if (!nowDrawn && s.due_at > now) { body += `<div class="nowline"><span>Now · ${esc(tTime(now))}</span></div>`; nowDrawn = true; }
+      body += row(s);
+    });
+    if (!nowDrawn) body += `<div class="nowline"><span>Now · ${esc(tTime(now))}</span></div>`;
+    return `<section class="card daycol ${isToday ? 'today-col' : ''}"><div class="dayhead"><div><span class="kicker" style="color:var(--muted)">${isToday ? 'Today' : fmt(d.first, { weekday: 'long' })}</span><h2>${esc(d.label)}</h2></div><div style="text-align:right"><b class="mono">${done}/${total}</b><div class="muted" style="font-size:12px">published</div></div></div>
+      <div class="meter" style="margin:12px 0 4px"><span style="width:${total ? Math.round(100 * done / total) : 0}%;background:var(--ok)"></span></div>${body}</section>`;
+  }).join('');
+  const hero = next ? `<section class="today" style="display:flex;flex-wrap:wrap;gap:22px;align-items:center;justify-content:space-between">
+      <div style="display:flex;flex-direction:column;gap:8px"><span class="onair"><i></i>NEXT UP</span><div class="big" style="color:#fff;font-size:44px" data-count="${next.due_at}">${countdown(next.due_at)}</div><span style="color:#A9AFBA">${esc(tFull(next.due_at))} · ${esc(S.tz)}</span></div>
+      <div style="display:flex;align-items:center;gap:14px;flex:1 1 280px">${avatar(next.title, hashI(next.title), next.thumbnail, 52)}<div style="display:flex;flex-direction:column;gap:4px;min-width:0"><b style="font-size:18px" class="ell">${esc(next.title)}</b><span style="color:#A9AFBA;font-size:13px">Group ${esc(next.group_number ?? '—')}${next.group_country ? ' · ' + flag(next.group_country) + ' ' + esc(next.group_country) : ''} · ${esc(next.market)} audience peak</span></div></div>
+      ${next.status === 'planned' ? `<button class="btn coral" data-act="spost" data-id="${next.channel_id}">${ic('bolt', 16)}Post now</button>` : chip('Posting', 'info')}</section>` : '';
+  const liveHtml = liveRows.length ? `<section class="card" style="margin-bottom:16px">${hd('Posting right now', 'Live progress from the phone')}${liveRows.map(([cid, p]) => { const s = slots.find(x => String(x.channel_id) === cid) || {}; return `<div style="display:grid;grid-template-columns:minmax(140px,220px) 1fr;gap:16px;align-items:center;padding:10px 0;border-top:1px solid var(--line)"><b class="ell">${esc(s.title || 'Channel')}</b>${liveBar(p)}</div>`; }).join('')}</section>` : '';
+  const counts = k => slots.filter(s => s.status === k && fmt(s.due_at, { year: 'numeric', month: '2-digit', day: '2-digit' }) === todayKey).length;
+  const pills = `<div class="grid g-auto" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr))">${[['Published today', counts('done'), 'ok'], ['Still to post today', counts('planned') + counts('queued') + counts('running'), 'info'], ['Held', counts('held'), 'warn'], ['Missed or failed', counts('missed') + counts('failed') + counts('uncertain'), 'bad']].map(([l, n, t]) => `<section class="card" style="padding:16px 18px;display:flex;align-items:center;justify-content:space-between"><span class="muted" style="font-size:13px">${l}</span><span class="chip ${t}" style="font-size:15px;height:30px;padding:0 12px">${n}</span></section>`).join('')}</div>`;
+  mount('schedule', 'Schedule', `Natural times inside each audience’s peak hours — shown in your time (${esc(S.tz)})`, 'Workspace',
+    `<div class="seg">${[3, 7].map(n => `<button class="${n === days ? 'on' : ''}" data-act="sdays" data-n="${n}">${n} days</button>`).join('')}</div>`,
+    slots.length ? `${hero}${liveHtml}${pills}<div class="daygrid">${cols}</div>` : '<div class="empty"><h3>Nothing planned</h3>Add a channel to see its posting times here.<div style="margin-top:14px">' + addBtn + '</div></div>');
+  every(1000, () => document.querySelectorAll('[data-count]').forEach(el => { el.textContent = countdown(+el.dataset.count); }));
+  every(liveRows.length ? 4000 : 60000, () => { if (!document.getElementById('modal')) render(); });
+  S.acts.sdays = d => { S.schedDays = +d.n; render(); };
+  S.acts.spost = async d => { await api('POST', `/api/channels/${d.id}/post-now`); toast('Posting now'); render(); };
 }
 async function pageVideos() {
   const { videos } = await api('GET', '/api/videos?limit=200');
