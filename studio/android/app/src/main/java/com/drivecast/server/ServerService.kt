@@ -103,6 +103,7 @@ class ServerService : Service() {
             Phone.ffmpeg(this)?.let { env?.callAttr("__setitem__", "DC_FFMPEG", it) }
             Phone.mediaDir(this)?.let { env?.callAttr("__setitem__", "DC_MEDIA_DIR", it) }
             env?.callAttr("__setitem__", "DC_SHELL_API", SHELL_API.toString())
+            try { env?.callAttr("__setitem__", "DC_APP_VERSION", packageManager.getPackageInfo(packageName, 0).versionName ?: "") } catch (e: Exception) { }
             val data = File(filesDir, "data").absolutePath
             // dcboot picks the newest verified server code (hot update) or the one inside this APK
             Python.getInstance().getModule("dcboot").callAttr("start", data, "127.0.0.1", Local.PORT)

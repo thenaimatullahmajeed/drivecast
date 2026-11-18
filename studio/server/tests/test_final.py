@@ -159,3 +159,23 @@ class AccountsAndPick(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BootPicksNewest(unittest.TestCase):
+    def test_newer_apk_wins_over_an_older_update(self):
+        import tempfile
+        import dcboot
+        d = tempfile.mkdtemp()
+        hot = os.path.join(d, "hot")
+
+        def mk(v):
+            os.makedirs(os.path.join(hot, v, "drivecast"), exist_ok=True)
+            open(os.path.join(hot, v, "drivecast", "__init__.py"), "w").write(f'VERSION = "{v}"\n')
+            json.dump({"version": v, "shell_api": 2}, open(os.path.join(hot, "current.json"), "w"))
+        with mock.patch.dict(os.environ, {"DC_SHELL_API": "2", "DC_APP_VERSION": "2.0.29"}):
+            mk("2.0.26")
+            self.assertIsNone(dcboot._pick(d))  # the APK (2.0.29) runs
+            self.assertFalse(os.path.exists(os.path.join(hot, "current.json")))
+            mk("2.0.31")
+            self.assertTrue(dcboot._pick(d))  # a newer update still wins
+        shutil.rmtree(d, ignore_errors=True)

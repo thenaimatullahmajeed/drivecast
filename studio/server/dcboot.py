@@ -9,6 +9,37 @@ import os
 import sys
 
 
+def _vt(v):
+    out = []
+    for p in str(v or "0").split("."):
+        try:
+            out.append(int(p))
+        except ValueError:
+            out.append(0)
+    return tuple(out)
+
+
+def _apk_version():
+    """VERSION of the code inside the APK, read without importing it."""
+    if os.environ.get("DC_APP_VERSION"):
+        return os.environ["DC_APP_VERSION"]  # the app tells us (set by the Android service)
+    import importlib.util
+    import re
+    try:
+        spec = importlib.util.find_spec("drivecast")
+        loader = spec.loader
+        src = None
+        if spec.origin and os.path.isfile(spec.origin):
+            with open(spec.origin, encoding="utf-8") as f:
+                src = f.read()
+        elif hasattr(loader, "get_source"):
+            src = loader.get_source("drivecast")
+        m = re.search(r'VERSION\s*=\s*"([^"]+)"', src or "")
+        return m.group(1) if m else "0"
+    except Exception:
+        return "0"
+
+
 def _pick(data_dir):
     hot = os.path.join(data_dir, "hot")
     try:
@@ -22,6 +53,13 @@ def _pick(data_dir):
         return None
     if int(os.environ.get("DC_SHELL_API", "0") or 0) < int(cur.get("shell_api", 0)):
         return None  # this update needs a newer APK
+    if _vt(ver) <= _vt(_apk_version()):
+        # a newer APK was installed after this update: the APK's own code wins, the old copy is retired
+        try:
+            os.replace(os.path.join(hot, "current.json"), os.path.join(hot, f"old-{ver}.json"))
+        except OSError:
+            pass
+        return None
     trying = os.path.join(hot, "trying")
     if os.path.exists(trying):
         with open(trying) as f:
