@@ -232,9 +232,22 @@ def run(job, adapters=None):
                 path = cleaned
 
         title, desc = _title_and_description(ch, chosen, m, encore)
-        db.run("UPDATE uploads SET status='uploading', title=? WHERE id=?", (title, upload_id))
+        pack = None
+        if not encore:  # an Encore keeps the text it went out with the first time
+            from . import ai
+            _stage(ch["id"], "Writing the captions", None)
+            try:
+                pack = ai.prepare(ch, chosen, m, title, desc, [d["kind"] for d in targets], video=path, tmp=tmp,
+                                  file_key=key, photo=is_photo)
+            except CodedError:
+                raise  # the AI check held this post
+            except Exception as e:  # AI never stops a post
+                log.warning("AI captions skipped: %s", e)
+        from .ai import text_for
+        ptitle, pdesc = text_for(pack, primary["kind"], title, desc)
+        db.run("UPDATE uploads SET status='uploading', title=? WHERE id=?", (ptitle, upload_id))
         phase = "upload"
-        res = send(primary, ch, session, a, path, photos, title, desc)
+        res = send(primary, ch, session, a, path, photos, ptitle, pdesc)
         phase = "after"
         db.run("UPDATE uploads SET status='published', external_video_id=?, post_id=?, visibility=?, published_at=? WHERE id=?",
                (res.get("video_id"), res.get("post_id"), res.get("visibility") or "public", time.time(), upload_id))
@@ -242,12 +255,15 @@ def run(job, adapters=None):
         db.run("UPDATE channels SET consecutive_failures=0, paused_until=NULL, state='live', state_reason=NULL, stats_at=? WHERE id=?",
                (time.time() - 15 * 60, ch["id"]))
         _dest_ok(primary)
+        if pack and primary["kind"] == "youtube":
+            from . import ai
+            ai.after_youtube(pack, ch, session, res.get("video_id"))
         if m:
             db.run("UPDATE media SET state='published', published_at=?, updated_at=? WHERE id=? AND state!='published'",
                    (time.time(), time.time(), m["id"]))
         # --- the other destinations: each one isolated, a problem there never undoes this post ---
         for d in targets[1:]:
-            extra(d, ch, ws, key, chosen, m, session, a, path, photos, title, desc, ip)
+            extra(d, ch, ws, key, chosen, m, session, a, path, photos, title, desc, ip, pack=pack)
         if processing:
             try:
                 done = dmod.child_folder(session, dbox, ch["folder_id"], "Done")
@@ -255,7 +271,7 @@ def run(job, adapters=None):
             except Exception as e:  # the post is live; a failed tidy-up must not undo that
                 db.event("warn", "drive", f"Published, but could not move the file to Done: {e}", ws["id"], ch["id"])
         if res.get("visibility") not in (None, "public"):
-            db.event("warn", "visibility", f"“{title}” was accepted but {primary['label']} shows it as {res['visibility']}.",
+            db.event("warn", "visibility", f"“{ptitle}” was accepted but {primary['label']} shows it as {res['visibility']}.",
                      ws["id"], ch["id"])
         return finish(job, "done", None, "done", res.get("video_id") or res.get("post_id"), upload_id)
 
@@ -484,8 +500,10 @@ def _dest_problem(d, e):
                (e.code, e.detail, time.time(), d["dest"]["id"]))
 
 
-def extra(d, ch, ws, key, chosen, m, session, a, path, photos, title, desc, ip):
+def extra(d, ch, ws, key, chosen, m, session, a, path, photos, title, desc, ip, pack=None):
     """One more destination for the same item. Isolated: its problems stay its own."""
+    from .ai import text_for
+    title, desc = text_for(pack, d["kind"], title, desc)
     now = time.time()
     try:
         with db.tx() as c:

@@ -75,6 +75,9 @@ CATALOG = {
     "QUOTA_NEAR": ("library", "YouTube daily limit almost used", "{used} of {cap} uploads used today. The rest wait until midnight Pacific.", None),
     "BACKUP_TEST_FAILED": ("server", "Backup test failed", "The latest backup in Drive could not be opened: {why}. Make a new backup now (Server page).", None),
     "FB_GRAPH_OLD": ("library", "Meta API version retired", "Meta no longer accepts API version {ver}. Open Settings → Meta app and set a newer version (e.g. the one Meta's changelog lists as current).", "fb_app"),
+    # --- AI (Groq) ---
+    "AI_HOLD": ("post", "Held by the AI check", "The AI check stopped this post: {why}. It is in Failed — move it back into the client's folder to post it anyway.", None),
+    "AI_KEY_BAD": ("library", "AI key not accepted", "Groq refused the AI key. Posts go out with their normal text until you paste a new key (Settings or IP group → Apps).", "ai_key"),
     # --- YouTube ---
     "YT_AUTH_REVOKED": ("channel", "YouTube access ended", "Reconnect this channel — Google access was removed.", "reconnect_channel"),
     "YT_QUOTA": ("channel", "YouTube daily limit reached", "Posting resumes after midnight Pacific.", None),

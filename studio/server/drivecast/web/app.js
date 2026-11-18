@@ -20,11 +20,16 @@ async function api(method, path, body) {
 }
 
 function toast(msg, bad) {
+  let box = document.getElementById('toasts');
+  if (!box) { box = document.createElement('div'); box.id = 'toasts'; box.className = 'toasts'; box.setAttribute('aria-live', 'polite'); document.body.appendChild(box); }
   const t = document.createElement('div');
+  const ms = bad ? 6000 : 3500;
   t.className = 'toast' + (bad ? ' bad' : '');
-  t.textContent = msg;
-  document.body.appendChild(t);
-  setTimeout(() => t.remove(), bad ? 6000 : 3500);
+  t.innerHTML = `<span class="ti">${ic(bad ? 'alert' : 'check', 15)}</span><span class="tm"></span><i class="tp" style="animation-duration:${ms}ms"></i>`;
+  t.querySelector('.tm').textContent = msg;
+  box.appendChild(t);
+  while (box.children.length > 4) box.firstChild.remove();
+  setTimeout(() => { t.classList.add('out'); setTimeout(() => t.remove(), 260); }, ms);
 }
 
 // ------------------------------------------------------------------ icons & bits
@@ -53,6 +58,17 @@ const ICON = {
   tt: '<path d="M14 3v11.5a3.5 3.5 0 1 1-3.5-3.5"/><path d="M14 3c.4 2.6 2.2 4.4 5 4.6"/>',
   link: '<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/>',
   play: '<path d="M8 5v14l11-7z"/>',
+  spark: '<path d="M12 3l1.8 4.9L19 9.7l-5.2 1.8L12 16.4l-1.8-4.9L5 9.7l5.2-1.8z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/>',
+  sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',
+  moon: '<path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/>',
+  auto: '<circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 1 0 18z" fill="currentColor"/>',
+  bell: '<path d="M6 8a6 6 0 1 1 12 0c0 7 3 8 3 8H3s3-1 3-8"/><path d="M10 20a2 2 0 0 0 4 0"/>',
+  chev: '<path d="m9 6 6 6-6 6"/>',
+  side: '<rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M9 4v16"/>',
+  cmd: '<path d="M9 6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3z"/>',
+  mic: '<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/>',
+  cc: '<rect x="2" y="5" width="20" height="14" rx="3"/><path d="M10 10.5a2.5 2.5 0 1 0 0 3M17 10.5a2.5 2.5 0 1 0 0 3"/>',
+  lang: '<path d="M4 5h9M8.5 3v2M6 5c0 4 3 7 6 8M11 5c0 4-3 7-7 9"/><path d="m13 21 4-10 4 10M14.5 17.5h5"/>',
   edit: '<path d="M4 20h4l10.5-10.5a2.8 2.8 0 0 0-4-4L4 16v4z"/><path d="M13.5 6.5l4 4"/>',
   more: '<circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/>',
   batt: '<rect x="2" y="7" width="17" height="10" rx="2"/><path d="M22 11v2"/>', flame: '<path d="M12 22c4 0 7-3 7-7 0-5-5-7-5-12-3 2-5 5-5 8-1-1-2-2-2-4-2 2-2 5-2 8 0 4 3 7 7 7z"/>',
@@ -152,7 +168,7 @@ function liveBar(p, dark) {
 
 // ------------------------------------------------------------------ router
 const NAV = [
-  ['Workspace', [['grid', 'Dashboard', 'dashboard'], ['cal', 'Schedule', 'schedule'], ['tv', 'Clients', 'channels'], ['net', 'IP groups', 'groups'], ['film', 'Videos', 'videos'], ['drive', 'Google Drive', 'drive'], ['gear', 'Settings', 'settings']]],
+  ['Workspace', [['grid', 'Dashboard', 'dashboard'], ['cal', 'Schedule', 'schedule'], ['tv', 'Clients', 'channels'], ['net', 'IP groups', 'groups'], ['film', 'Videos', 'videos'], ['spark', 'AI captions', 'ai'], ['drive', 'Google Drive', 'drive'], ['gear', 'Settings', 'settings']]],
   ['Admin', [['users', 'Users', 'users'], ['batt', 'Devices', 'devices'], ['phone', 'Server', 'server']]],
 ];
 function go(r) { if (location.hash !== '#/' + r) location.hash = '#/' + r; else render(); }
@@ -174,6 +190,9 @@ async function render() {
     if (S.user) S.tz = S.user.timezone || S.tz;
   }
   if (!S.user) return authPage(r0 === 'register' ? 'register' : (S.session.needs_setup ? 'setup' : 'login'));
+  const navd = S.lastHash !== location.hash; S.lastHash = location.hash; S.anim = navd;
+  const cont = document.getElementById('content');
+  if (navd && cont) { cont.className = ''; cont.innerHTML = SKELETON; window.scrollTo({ top: 0 }); }
   const page = PAGES[r0] || PAGES.dashboard;
   if (['users', 'server', 'devices'].includes(r0) && S.user.role !== 'owner') return go('dashboard');
   try { await page(...rest); } catch (e) { mount(r0, 'Something went wrong', '', '', '', `<div class="card err-card"><h2>Could not load this page</h2><p class="muted">${esc(e.message)}</p><button class="btn" data-act="reload">Try again</button></div>`); }
@@ -183,21 +202,28 @@ function fatal(e) { document.getElementById('app').innerHTML = `<div style="padd
 const MTABS = [['grid', 'Home', 'dashboard'], ['cal', 'Schedule', 'schedule'], ['tv', 'Clients', 'channels'], ['film', 'Videos', 'videos']];
 function mount(active, title, sub, kick, actions, content) {
   const groups = NAV.filter(([g]) => g !== 'Admin' || S.user.role === 'owner');
-  const nav = groups.map(([g, items]) => `<div class="nav"><span class="kicker">${g}</span>${items.map(([i, l, r]) => `<a href="#/${r}" class="${r === active ? 'on' : ''}">${ic(i)}${l}</a>`).join('')}</div>`).join('');
+  const nav = groups.map(([g, items]) => `<div class="nav"><span class="kicker">${g}</span>${items.map(([i, l, r]) => `<a href="#/${r}" class="${r === active ? 'on' : ''}" data-tip="${l}">${ic(i)}<span class="nl">${l}</span>${r === 'ai' ? '<em class="nbadge">New</em>' : ''}</a>`).join('')}</div>`).join('');
   const inTabs = MTABS.some(t => t[2] === active);
   const sheet = groups.flatMap(([, items]) => items).filter(([, , r]) => !MTABS.some(t => t[2] === r)).map(([i, l, r]) => `<a href="#/${r}" class="${r === active ? 'on' : ''}">${ic(i, 20)}${l}</a>`).join('');
-  document.getElementById('app').innerHTML = `<div class="app">
+  const mac = /Mac|iPhone|iPad/.test(navigator.platform || '');
+  const th = themePref();
+  const tbar = `<div class="tbar"><nav class="crumbs" aria-label="Breadcrumb"><a href="#/dashboard">Studio</a>${ic('chev', 12)}<span>${esc(kick || title)}</span></nav>
+    <div class="tbar-r"><button class="cmdk" data-act="palette" aria-label="Search">${ic('search', 15)}<span>Search or jump to…</span><kbd>${mac ? '⌘' : 'Ctrl'} K</kbd></button>
+    <button class="tb-btn" data-act="theme" title="Theme: ${th}" aria-label="Change theme">${ic(th === 'dark' ? 'moon' : th === 'light' ? 'sun' : 'auto', 17)}</button>
+    <a class="tb-btn" href="#/dashboard" title="Needs you" aria-label="Needs you">${ic('bell', 17)}<i class="tb-n hidden" id="tbn"></i></a></div></div>`;
+  document.getElementById('app').innerHTML = `<div class="app ${railMini() ? 'mini' : ''}">
     <header class="mtop"><a class="brand" href="#/dashboard" aria-label="DriveCast home" style="text-decoration:none;padding:0">${BRAND()}</a><span class="pill" id="mdev"><span class="beat" id="mbeat"></span><span id="mlive">Live</span></span></header>
     <nav class="rail" aria-label="Main">
-      <a class="brand" href="#/dashboard" aria-label="DriveCast home" style="text-decoration:none">${BRAND()}</a>
+      <div class="rail-hd"><a class="brand" href="#/dashboard" aria-label="DriveCast home" style="text-decoration:none">${BRAND()}</a><button class="rail-tg" data-act="railmini" title="Collapse sidebar" aria-label="Collapse sidebar">${ic('side', 16)}</button></div>
       ${nav}
       <div style="flex-grow:1"></div>
       <a class="srv" href="${S.user.role === 'owner' ? '#/devices' : '#/dashboard'}" style="text-decoration:none" title="Devices"><span class="kicker" style="display:flex;justify-content:space-between"><span>Live session</span><span id="srvup" class="mono"></span></span><div style="display:flex;align-items:center;gap:8px"><span class="beat" id="srvdot"></span><span class="mono ell" style="font-size:12px;color:#fff">${esc(location.host)}</span></div><div id="livenow" class="livenow"></div><div class="dev" id="devline"><span>Online</span></div></a>
       <div class="me"><span class="av" style="width:32px;height:32px">${esc(S.user.name.charAt(0).toUpperCase())}</span><div style="display:flex;flex-direction:column;flex-grow:1;min-width:0"><span class="ell" style="font-size:13px;color:#fff;font-weight:600">${esc(S.user.name)}</span><span style="font-size:11.5px;color:#8E94A0">${S.user.role === 'owner' ? 'Owner' : 'Member'}</span></div><button data-act="logout" aria-label="Sign out" title="Sign out">${ic('logout')}</button></div>
     </nav>
     <main class="main"><div class="wrap">
+      ${tbar}
       <header class="top"><div><div class="kick">${esc(kick)}</div><h1>${esc(title)}</h1><div class="sub">${sub}</div></div><div class="actions">${actions}</div></header>
-      <div id="content">${content}</div>
+      <div id="content" class="${S.anim ? 'enter' : ''}">${content}</div>
     </div></main>
     <nav class="mnav" aria-label="Main">${MTABS.map(([i, l, r]) => `<a href="#/${r}" class="${r === active ? 'on' : ''}">${ic(i, 20)}${l}</a>`).join('')}<button data-act="msheet" class="${inTabs ? '' : 'on'}">${ic('more', 20)}More</button></nav>
     <div class="sheet" id="sheet"><div><span class="kicker" style="color:var(--muted);padding:6px 10px">More</span>${sheet}<button data-act="logout">${ic('logout', 20)}Sign out · ${esc(S.user.name)}</button></div></div></div>`;
@@ -205,6 +231,7 @@ function mount(active, title, sub, kick, actions, content) {
   showPause();
   liveStart();
   paintLive();
+  if (S.anim) requestAnimationFrame(() => countUp(document.getElementById('content')));
 }
 
 // ------------------------------------------------------------------ live session: heartbeat + auto refresh
@@ -232,6 +259,7 @@ function paintLive() {
   const state = off ? 'off' : !l ? '' : l.replaced ? 'warn' : l.paused ? 'paused' : l.running.length ? 'busy' : l.healthy ? '' : 'warn';
   ['srvdot', 'mbeat'].forEach(id => { const d = document.getElementById(id); if (d) d.className = 'beat ' + state; });
   const up = document.getElementById('srvup'); if (up && l) up.textContent = off ? 'offline' : 'up ' + upTxt(l.up);
+  const tn = document.getElementById('tbn'); if (tn && l) { tn.textContent = l.attention > 9 ? '9+' : l.attention; tn.classList.toggle('hidden', !l.attention); }
   const ml = document.getElementById('mlive'); if (ml) ml.textContent = off ? 'Reconnecting' : l && l.running.length ? 'Posting' : 'Live';
   const box = document.getElementById('livenow');
   if (box) box.innerHTML = off ? '<span style="color:#FF9B85">Phone not answering — retrying…</span>'
@@ -290,6 +318,9 @@ const GLOBAL_ACTS = {
   copy: async d => { await copyText(d.text); toast('Copied'); },
   close: () => closeModal(),
   msheet: () => document.getElementById('sheet').classList.add('open'),
+  palette: () => openPalette(),
+  theme: () => { const order = ['auto', 'light', 'dark']; const n = order[(order.indexOf(themePref()) + 1) % 3]; store_('dc_theme', n); applyTheme(); toast(`Theme: ${n === 'auto' ? 'follows your device' : n}`); const b = document.querySelector('[data-act=theme]'); if (b) { b.innerHTML = ic(n === 'dark' ? 'moon' : n === 'light' ? 'sun' : 'auto', 17); b.title = 'Theme: ' + n; } },
+  railmini: () => { const m = !railMini(); store_('dc_rail', m ? 'mini' : ''); document.querySelector('.app').classList.toggle('mini', m); },
 };
 async function copyText(t) {
   try { await navigator.clipboard.writeText(t); } catch (e) {
@@ -1074,7 +1105,7 @@ function appsCard(g) {
   return `<div class="igbox" style="flex-direction:column;align-items:stretch;gap:10px"><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><span style="width:34px;height:34px;border-radius:10px;background:#EEF0FF;color:#4338CA;display:inline-flex;align-items:center;justify-content:center">${ic('key', 18)}</span>
     <div style="flex:1;min-width:150px"><b style="font-size:13px">Client’s own apps</b><div class="muted" style="font-size:12px">${a.google || a.meta ? 'This group signs in with the client’s own Google / Meta apps.' : 'Uses your apps from Settings. Add the client’s own for their own quota and no app review.'}</div></div>
     <button class="btn sm" data-act="gapps" data-id="${g.id}">${ic('edit', 14)}Apps</button></div>
-    <div style="display:flex;gap:6px;flex-wrap:wrap">${pill(a.google, 'Google')}${pill(a.meta, 'Meta')}${pill(a.instagram, 'Instagram login')}</div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap">${pill(a.google, 'Google')}${pill(a.meta, 'Meta')}${pill(a.instagram, 'Instagram login')}${pill(a.groq, 'Groq AI')}</div>
     <div><div style="display:flex;justify-content:space-between;font-size:12px"><b>Ready for a client</b><span class="mono">${r.score}/${r.of}</span></div><div class="meter" style="margin-top:6px"><span style="width:${Math.round(100 * r.score / Math.max(1, r.of))}%;background:${r.score === r.of ? '#1F9D55' : '#0E1116'}"></span></div>
     <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">${r.steps.map(x => pill(x.ok, x.name)).join('')}</div></div></div>`;
 }
@@ -1095,9 +1126,14 @@ async function groupAppsModal(gid) {
         <div class="form"><label class="f">App ID<input class="i" name="fb_app_id" value="${esc(a.fb_app_id || '')}" autocomplete="off"></label><label class="f">App secret<input class="i" name="fb_app_secret" type="password" placeholder="${a.meta ? 'Saved — leave empty to keep' : ''}" autocomplete="off"></label></div>
         <details><summary style="cursor:pointer;font-size:13px;font-weight:600">Instagram login (only for Instagram not linked to a page)</summary>${red(st.ig_redirect_uri, 'Instagram redirect URI')}
         <div class="form"><label class="f">Instagram app ID<input class="i" name="ig_app_id" value="${esc(a.ig_app_id || '')}" autocomplete="off"></label><label class="f">Instagram app secret<input class="i" name="ig_app_secret" type="password" placeholder="${a.instagram ? 'Saved — leave empty to keep' : ''}" autocomplete="off"></label></div></details></div>
+      <div style="border:1px solid var(--line);border-radius:12px;padding:14px;display:flex;flex-direction:column;gap:10px"><b style="display:flex;align-items:center;gap:8px">${ic('spark', 16)}Groq (AI captions)</b>
+        <span class="muted" style="font-size:12.5px">The client makes a free key at ${deep('https://console.groq.com/keys', 'console.groq.com/keys')}. Their own key = their own daily limit (about 130 posts a day). Empty = yours from the AI page.</span>
+        <div class="form"><label class="f">Groq API key<input class="i" name="groq_key" type="password" placeholder="${a.groq ? 'Saved — leave empty to keep' : 'gsk_…'}" autocomplete="off"></label>
+        ${a.groq ? '<label class="f" style="flex-direction:row;align-items:center;gap:8px;align-self:end;font-weight:500"><input type="checkbox" name="groq_key_clear" value="1">Remove this key</label>' : ''}</div></div>
       <div class="actions" style="justify-content:flex-end"><button type="button" class="btn" data-act="close">Cancel</button><button class="btn primary" type="submit">Save apps</button></div></form>`);
   S.acts.gappsave = async v => {
-    ['google_client_secret', 'fb_app_secret', 'ig_app_secret'].forEach(k => { if (!v[k]) delete v[k]; });
+    ['google_client_secret', 'fb_app_secret', 'ig_app_secret', 'groq_key'].forEach(k => { if (!v[k]) delete v[k]; });
+    if (v.groq_key_clear) v.groq_key_clear = true;
     try { await api('PUT', `/api/groups/${gid}/apps`, v); closeModal(); toast('Apps saved for this group'); render(); } catch (e) { toast(e.message, true); }
   };
 }
@@ -1344,10 +1380,11 @@ async function pageChannel(id) {
     `${acc && acc.error ? `<div class="note bad" style="margin-bottom:12px">${ic('alert', 16)}<span><b>${esc(acc.error.title)}.</b> ${esc(acc.error.message)} <button class="btn sm" data-act="cookies" data-id="${c.group.id}">Replace cookies</button></span></div>` : ''}${warn}
      ${routeMap(c, d)}${pipe}
      <div class="dgrid"><div class="s7">${queue}</div><div class="s5" style="display:flex;flex-direction:column;gap:12px">${encCard}${skCard}</div></div>
-     <div class="dgrid"><div class="s5">${titlesCard}</div><div class="s7">${evCard}</div></div>`);
+     <div class="dgrid"><div class="s7">${safe(() => aiCard(c, d.ai), 'AI captions')}</div><div class="s5">${titlesCard}</div></div>
+     ${evCard}`);
   document.querySelector('.top h1').innerHTML = head;
   every(c.live ? 6000 : 30000, () => { if (!document.getElementById('modal')) render(); });
-  Object.assign(S.acts, srcActs({}, () => { }, () => c.group), {
+  Object.assign(S.acts, srcActs({}, () => { }, () => c.group), d.ai ? aiActs(c, d.ai) : {}, {
     srccheckall: async () => { await api('POST', `/api/channels/${c.id}/source/check`); toast('Checking every source within a minute'); render(); },
     encset: async () => { await api('PUT', `/api/channels/${c.id}/settings`, { encore: !d.encore_on }); render(); },
     mretry: async x => { await api('POST', `/api/media/${x.id}/retry`); toast('Will try again'); render(); },
@@ -1392,14 +1429,7 @@ async function routeEditModal(c, d) {
       if (v.group_id && +v.group_id !== (c.group && c.group.id)) body.group_id = +v.group_id;
       try { await api('PATCH', `/api/channels/${c.id}`, body); closeModal(); toast('Route saved'); render(); } catch (e) { toast(e.message, true); }
     },
-    reauthyt: async () => {
-      let l; try { l = await api('POST', '/api/connect', { purpose: 'youtube', group_id: c.group.id }); } catch (e) { return toast(e.message, true); }
-      modal(`<h2>Reconnect YouTube · ${esc(c.title)}</h2><p class="muted" style="margin:0">The channel owner opens this link and presses Allow. The same channel is updated — nothing is posted twice.</p>
-        <div class="linkbox"><span class="kicker">One-time link</span><div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><span class="mono" style="flex:1 1 260px;word-break:break-all">${esc(l.url)}</span><button class="btn coral" data-act="copy" data-text="${esc(l.url)}">${ic('copy', 16)}Copy</button><a class="btn" href="${esc(l.url)}" target="_blank" rel="noopener">Open here</a></div></div>
-        <div class="actions" style="justify-content:flex-end"><button class="btn" data-act="close">Close</button></div>`);
-      const t = setInterval(async () => { if (!document.getElementById('modal')) return clearInterval(t); try { const st = await api('GET', `/api/connect/${l.code}`); if (st.status === 'done') { clearInterval(t); closeModal(); toast('YouTube reconnected'); render(); } } catch (e) { } }, 3000);
-      S.timers.push(t);
-    },
+    reauthyt: () => ytLinkModal(c, !!(d.ai && d.ai.settings.subtitles)),
     chstate: async () => { try { await api('POST', `/api/channels/${c.id}/${live ? 'pause' : 'resume'}`); closeModal(); render(); } catch (e) { toast(e.message, true); } },
     chdel: async () => { if (!confirm(`Delete ${c.title}? Its Drive files stay in Drive; the history on this phone is removed.`)) return; try { await api('POST', `/api/channels/${c.id}/delete`); closeModal(); go('channels'); } catch (e) { toast(e.message, true); } },
   });
@@ -1869,5 +1899,212 @@ async function pageDevices() {
     ${d.fleet && d.fleet.length ? `<section class="card" style="margin-top:12px">${hd('All phones', `${d.totals.online}/${d.totals.phones} online · ${d.totals.live}/${d.totals.channels} clients live · ${d.totals.posts_24h} posts in 24 h`)}${fleetRows}</section>` : ''}`);
   every(15000, () => { if (!document.getElementById('modal')) render(); });
 }
-const PAGES = { devices: pageDevices, channel: pageChannel, dashboard: pageDashboard, add: pageAdd, channels: pageChannels, groups: pageGroups, schedule: pageSchedule, videos: pageVideos, drive: pageDrive, settings: pageSettings, users: pageUsers, server: pageServer, login: () => authPage('login'), register: () => authPage('register') };
+// ------------------------------------------------------------------ v3 shell: theme, sidebar, motion, command palette, shortcuts
+function load_(k, d) { try { return localStorage.getItem(k) ?? d; } catch (e) { return d; } }
+function store_(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* private mode */ } }
+function themePref() { const t = load_('dc_theme', 'auto'); return ['auto', 'light', 'dark'].includes(t) ? t : 'auto'; }
+function applyTheme() {
+  const t = themePref();
+  const dark = t === 'dark' || (t === 'auto' && window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches);
+  document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+}
+applyTheme();
+try { matchMedia('(prefers-color-scheme: dark)').addEventListener('change', applyTheme); } catch (e) { /* old browser */ }
+const railMini = () => load_('dc_rail', '') === 'mini';
+const SKELETON = `<div class="skel"><div class="sk-row">${'<i class="sk sk-kpi"></i>'.repeat(4)}</div><div class="sk-row"><i class="sk sk-big"></i><i class="sk sk-side"></i></div><div class="sk-row"><i class="sk sk-line"></i></div></div>`;
+
+// numbers count up when a page opens (not on live refreshes)
+function countUp(root) {
+  if (!root || (window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches)) return;
+  root.querySelectorAll('.kpi .v, .strip strong, .stg strong, .big, .ai-n').forEach(el => {
+    if (el.children.length) return;
+    const m = el.textContent.match(/^(\D*?)(\d[\d,]*\.?\d*)(.*)$/);
+    if (!m) return;
+    const raw = m[2], dec = (raw.split('.')[1] || '').length, target = parseFloat(raw.replace(/,/g, '')), comma = raw.includes(',');
+    if (!isFinite(target) || target === 0) return;
+    const t0 = performance.now(), D = 650;
+    const f = t => {
+      const k = Math.min(1, (t - t0) / D), e = 1 - Math.pow(1 - k, 3), v = target * e;
+      let out = dec ? v.toFixed(dec) : String(Math.round(v));
+      if (comma) out = Number(out).toLocaleString('en', { minimumFractionDigits: dec, maximumFractionDigits: dec });
+      el.textContent = m[1] + out + m[3];
+      if (k < 1) requestAnimationFrame(f);
+    };
+    requestAnimationFrame(f);
+  });
+}
+
+// ⌘K / Ctrl K — jump anywhere, run anything
+async function paletteItems() {
+  const own = S.user.role === 'owner';
+  const items = NAV.filter(([g]) => g !== 'Admin' || own).flatMap(([g, list]) => list.map(([i, l, r]) => ({ icon: i, label: l, hint: g === 'Admin' ? 'Admin' : 'Page', run: () => go(r), kw: r })));
+  items.push(
+    { icon: 'plus', label: 'Add a client', hint: 'Action', run: () => go('add'), kw: 'new route wizard' },
+    { icon: 'pause', label: 'Pause or resume everything', hint: 'Action', run: () => { go('dashboard'); setTimeout(() => pauseModal(), 400); }, kw: 'vacation hold stop' },
+    { icon: 'moon', label: 'Change theme (light / dark / auto)', hint: 'Action', run: () => GLOBAL_ACTS.theme(), kw: 'dark mode' },
+    { icon: 'side', label: 'Collapse / expand sidebar', hint: 'Action', run: () => GLOBAL_ACTS.railmini(), kw: 'menu' },
+    { icon: 'logout', label: 'Sign out', hint: 'Action', run: () => GLOBAL_ACTS.logout(), kw: 'logout' });
+  if (!S.pal || Date.now() - S.pal.at > 60000) {
+    const [ch, gr] = await Promise.all([api('GET', '/api/channels').catch(() => ({ channels: [] })), api('GET', '/api/groups').catch(() => ({ groups: [] }))]);
+    S.pal = { at: Date.now(), ch: ch.channels || [], gr: gr.groups || [] };
+  }
+  S.pal.ch.forEach(c => items.push({ icon: 'tv', label: c.title, hint: 'Client', run: () => go('channel/' + c.id), kw: (c.handle || '') + ' client route', img: c.thumbnail }));
+  S.pal.gr.forEach(g => items.push({ icon: 'net', label: `Group ${g.number}${g.label ? ' · ' + g.label : ''}`, hint: 'IP group', run: () => go('groups'), kw: `${g.outgoing_ip || ''} ${g.host || ''} proxy` }));
+  return items;
+}
+function fuzzy(q, t) {
+  q = q.toLowerCase(); t = t.toLowerCase();
+  if (!q) return 1;
+  const i = t.indexOf(q);
+  if (i >= 0) return 100 - i;
+  let j = 0, score = 0;
+  for (const ch of t) { if (ch === q[j]) { j++; score++; } if (j === q.length) return score; }
+  return 0;
+}
+async function openPalette() {
+  if (document.getElementById('pal')) return;
+  const bg = document.createElement('div');
+  bg.className = 'pal-bg'; bg.id = 'pal';
+  bg.innerHTML = `<div class="pal" role="dialog" aria-label="Search"><div class="pal-in">${ic('search', 17)}<input id="palq" placeholder="Search clients, groups, pages or actions…" autocomplete="off" spellcheck="false"><kbd>Esc</kbd></div><div class="pal-list" id="pall"><div class="pal-empty"><span class="spinner"></span></div></div>
+    <div class="pal-ft"><span><kbd>↑</kbd><kbd>↓</kbd> move</span><span><kbd>↵</kbd> open</span><span><kbd>G</kbd> then <kbd>D</kbd> <kbd>C</kbd> <kbd>I</kbd> <kbd>S</kbd> <kbd>A</kbd> jump</span></div></div>`;
+  bg.addEventListener('click', e => { if (e.target === bg) closePalette(); });
+  document.body.appendChild(bg);
+  const q = bg.querySelector('#palq'); q.focus();
+  let items = [], shown = [], sel = 0;
+  const draw = () => {
+    const v = q.value.trim();
+    shown = items.map(it => [fuzzy(v, it.label + ' ' + (it.kw || '') + ' ' + it.hint), it]).filter(x => x[0] > 0).sort((a, b) => b[0] - a[0]).slice(0, 12).map(x => x[1]);
+    sel = Math.min(sel, Math.max(0, shown.length - 1));
+    const list = bg.querySelector('#pall');
+    list.innerHTML = shown.length ? shown.map((it, i) => `<button class="pal-it ${i === sel ? 'on' : ''}" data-i="${i}">${it.img ? `<img src="${esc(it.img)}" alt="">` : `<span class="pal-ic">${ic(it.icon, 15)}</span>`}<span class="ell">${esc(it.label)}</span><em>${esc(it.hint)}</em></button>`).join('')
+      : `<div class="pal-empty">Nothing matches “${esc(v)}”.</div>`;
+    const on = list.querySelector('.on'); if (on) on.scrollIntoView({ block: 'nearest' });
+  };
+  const pick = i => { const it = shown[i]; if (!it) return; closePalette(); it.run(); };
+  bg.querySelector('#pall').addEventListener('click', e => { const b = e.target.closest('.pal-it'); if (b) pick(+b.dataset.i); });
+  bg.querySelector('#pall').addEventListener('mousemove', e => { const b = e.target.closest('.pal-it'); if (b && +b.dataset.i !== sel) { sel = +b.dataset.i; draw(); } });
+  q.addEventListener('input', () => { sel = 0; draw(); });
+  q.addEventListener('keydown', e => {
+    if (e.key === 'ArrowDown') { e.preventDefault(); sel = Math.min(shown.length - 1, sel + 1); draw(); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); sel = Math.max(0, sel - 1); draw(); }
+    else if (e.key === 'Enter') { e.preventDefault(); pick(sel); }
+    else if (e.key === 'Escape') closePalette();
+  });
+  try { items = await paletteItems(); } catch (e) { items = []; }
+  draw();
+}
+function closePalette() { const p = document.getElementById('pal'); if (p) p.remove(); }
+document.addEventListener('keydown', e => {
+  if (!S.user) return;
+  const typing = document.activeElement && (['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName) || document.activeElement.isContentEditable);
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); document.getElementById('pal') ? closePalette() : openPalette(); return; }
+  if (e.key === 'Escape') { if (document.getElementById('pal')) closePalette(); else closeModal(); return; }
+  if (typing || e.ctrlKey || e.metaKey || e.altKey) return;
+  if (e.key === '/') { e.preventDefault(); openPalette(); return; }
+  if (S.gKey && Date.now() - S.gKey < 1200) {
+    const to = { d: 'dashboard', s: 'schedule', c: 'channels', i: 'groups', v: 'videos', a: 'ai', e: 'settings', r: 'server', p: 'devices' }[e.key.toLowerCase()];
+    S.gKey = 0;
+    if (to && (S.user.role === 'owner' || !['server', 'devices'].includes(to))) go(to);
+    return;
+  }
+  if (e.key.toLowerCase() === 'g') S.gKey = Date.now();
+});
+
+// ------------------------------------------------------------------ AI captions (Groq)
+const AI_LANGS_DEFAULT = ['auto', 'English', 'Urdu', 'Hindi', 'Arabic', 'Spanish'];
+function aiMeter(used, limit, label, unit = '') {
+  const pct = Math.min(100, Math.round((used || 0) / (limit || 1) * 100));
+  const col = pct > 90 ? 'var(--bad)' : pct > 70 ? 'var(--warn)' : 'var(--accent)';
+  return `<div class="ai-m"><div><span>${label}</span><b class="mono">${num(used || 0)}${unit} / ${num(limit)}${unit}</b></div><div class="meter"><span style="width:${pct}%;background:${col}"></span></div></div>`;
+}
+function aiSwitch(k, on, title, help, icon) {
+  return `<button type="button" class="tgl ai-t ${on ? 'on' : ''}" data-act="aitog" data-k="${k}" aria-pressed="${on}"><span class="ai-ic">${ic(icon, 16)}</span><span style="display:flex;flex-direction:column;gap:2px;text-align:left;flex:1;min-width:0"><b style="font-size:13px">${title}</b><span class="muted" style="font-size:12px">${help}</span></span><span class="sw"><i></i></span></button>`;
+}
+function aiCard(c, a) {
+  if (!a) return '';
+  const s = a.settings, u = a.usage, on = s.captions || s.subtitles || s.check;
+  const langs = a.languages || AI_LANGS_DEFAULT;
+  const needPerm = s.subtitles && !a.subtitles_allowed && c.platform === 'youtube';
+  const status = !a.key ? `<div class="note warn">${ic('key', 16)}<span><b>No Groq key yet.</b> Add yours on the <a href="#/ai">AI page</a>, or the client’s own on the IP group (Apps). Posts go out with their normal text until then.</span></div>`
+    : `<div class="ai-key"><span class="chip ${u && u.key_refused ? 'bad' : u && u.resting_until ? 'warn' : 'ok'}"><i></i>${u && u.key_refused ? 'Key refused' : u && u.resting_until ? 'Resting' : 'Ready'}</span><span class="mini">Key from <b>${esc(a.key)}</b></span></div>
+       ${u ? `<div class="ai-ms">${aiMeter(u.text, u.text_limit, 'Captions today')}${aiMeter(Math.round(u.audio_s / 60), Math.round(u.audio_limit / 60), 'Listening today', ' min')}</div>` : ''}`;
+  return `<section class="card ai-card ${on ? 'is-on' : ''}">${hd('AI captions', 'Groq writes each platform’s text from what the video says. Never stops a post.', `<button class="btn sm" data-act="aitry" ${a.key ? '' : 'disabled'}>${ic('spark', 14)}Try it</button>`)}
+    ${status}
+    <div class="ai-sw">${aiSwitch('captions', s.captions, 'Captions per platform', 'YouTube title + description, Facebook caption, Instagram caption + hashtags', 'spark')}
+      ${aiSwitch('subtitles', s.subtitles, 'YouTube subtitles', 'Listens to the video and adds subtitles (uses some YouTube quota)', 'cc')}
+      ${aiSwitch('check', s.check, 'Check before posting', 'Holds a post with abuse, false claims or another brand’s name', 'shield')}</div>
+    ${needPerm ? `<div class="note info">${ic('cc', 16)}<span><b>Subtitles need one more Allow.</b> The channel owner opens a new YouTube link once. <button class="btn sm" data-act="aisubsauth">Get the link</button></span></div>` : ''}
+    <form data-form="aisave" class="ai-f"><label class="f">Language<select class="i" name="language">${langs.map(l => `<option value="${esc(l)}" ${l === s.language ? 'selected' : ''}>${l === 'auto' ? 'Same as the post' : esc(l)}</option>`).join('')}</select></label>
+      <label class="f">Brand voice<input class="i" name="voice" value="${esc(s.voice)}" maxlength="300" placeholder="e.g. warm, a little funny, never salesy"></label>
+      <div class="actions" style="align-self:end"><button class="btn sm primary" type="submit">Save</button></div></form>
+    ${a.report ? `<div class="ai-rep"><div style="display:flex;justify-content:space-between;gap:8px;align-items:center"><b style="font-size:12.5px">Weekly summary · ${esc(a.report.week)}</b><button class="linkbtn" data-act="aireport">Write again</button></div><p>${esc(a.report.text)}</p></div>`
+      : on && a.key ? `<div class="mini" style="display:flex;justify-content:space-between;gap:8px;align-items:center"><span>A short weekly summary appears here every week.</span><button class="btn sm" data-act="aireport">Write it now</button></div>` : ''}</section>`;
+}
+function aiActs(c, a) {
+  return {
+    aitog: async x => { const k = x.k; await api('PATCH', `/api/channels/${c.id}`, { ai: { [k]: !a.settings[k] } }); toast(`${{ captions: 'AI captions', subtitles: 'Subtitles', check: 'AI check' }[k]} ${a.settings[k] ? 'off' : 'on'}`); render(); },
+    aisave: async v => { await api('PATCH', `/api/channels/${c.id}`, { ai: { language: v.language, voice: v.voice } }); toast('AI settings saved'); render(); },
+    aireport: async () => { toast('Writing the summary…'); await api('POST', `/api/channels/${c.id}/ai/report`); render(); },
+    aisubsauth: () => ytLinkModal(c, true),
+    aitry: () => {
+      modal(`<h2>${ic('spark', 18)} Try AI captions · ${esc(c.title)}</h2><p class="muted" style="margin:0">Paste a caption like one of this client’s posts. Nothing is posted.</p>
+        <form data-form="aitryrun" style="display:flex;flex-direction:column;gap:12px"><label class="f">Title<input class="i" name="title" placeholder="${esc(c.title)}"></label>
+        <label class="f">Caption<textarea class="i" name="caption" rows="4" style="height:auto;padding:10px" placeholder="What the original post says…"></textarea></label>
+        <div class="actions" style="justify-content:flex-end"><button type="button" class="btn" data-act="close">Close</button><button class="btn primary" type="submit">${ic('spark', 15)}Write</button></div></form><div id="aiout"></div>`);
+      S.acts.aitryrun = async v => {
+        const out = document.getElementById('aiout'); out.innerHTML = '<div class="sk sk-line" style="height:120px"></div>';
+        try {
+          const r = await api('POST', '/api/ai/preview', { channel_id: c.id, title: v.title, caption: v.caption });
+          if (r.held) { out.innerHTML = `<div class="note bad">${ic('shield', 16)}<span><b>The check would hold this post:</b> ${esc(r.held)}</span></div>`; return; }
+          const box = (k, t, body) => `<div class="ai-pv"><span class="ai-pk">${dstIcon(k, 14)}${t}</span><div>${body}</div></div>`;
+          out.innerHTML = `<div class="ai-pvs">${box('youtube', 'YouTube', `<b>${esc(r.youtube.title)}</b><p>${esc(r.youtube.description)}</p>`)}${box('facebook', 'Facebook', `<p>${esc(r.facebook)}</p>`)}${box('instagram', 'Instagram', `<p>${esc(r.instagram)}</p>`)}</div>`;
+        } catch (e) { out.innerHTML = `<div class="note bad">${ic('alert', 16)}<span>${esc(e.message)}</span></div>`; }
+      };
+    },
+  };
+}
+async function ytLinkModal(c, subtitles) {
+  let l; try { l = await api('POST', '/api/connect', { purpose: 'youtube', group_id: c.group.id, subtitles: !!subtitles }); } catch (e) { return toast(e.message, true); }
+  modal(`<h2>${subtitles ? 'Allow subtitles' : 'Reconnect YouTube'} · ${esc(c.title)}</h2><p class="muted" style="margin:0">The channel owner opens this link and presses Allow.${subtitles ? ' Google adds one line: “manage your YouTube videos” — that is what lets DriveCast add subtitles.' : ''} The same channel is updated — nothing is posted twice.</p>
+    <div class="linkbox"><span class="kicker">One-time link</span><div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><span class="mono" style="flex:1 1 260px;word-break:break-all">${esc(l.url)}</span><button class="btn coral" data-act="copy" data-text="${esc(l.url)}">${ic('copy', 16)}Copy</button><a class="btn" href="${esc(l.url)}" target="_blank" rel="noopener">Open here</a></div></div>
+    <div class="actions" style="justify-content:flex-end"><button class="btn" data-act="close">Close</button></div>`);
+  const t = setInterval(async () => { if (!document.getElementById('modal')) return clearInterval(t); try { const st = await api('GET', `/api/connect/${l.code}`); if (st.status === 'done') { clearInterval(t); closeModal(); toast(subtitles ? 'Subtitles allowed' : 'YouTube reconnected'); render(); } } catch (e) { } }, 3000);
+  S.timers.push(t);
+}
+async function pageAI() {
+  const [d, st] = await Promise.all([api('GET', '/api/ai'), api('GET', '/api/settings')]);
+  const w = d.week || {};
+  const keys = d.keys.map(k => `<div class="ai-krow"><div class="who"><span class="ai-ic">${ic('key', 15)}</span><div><b>${esc(k.where)}</b><span class="mini">${k.usage.key_refused ? '<span style="color:var(--bad)">Groq refused this key — paste a new one</span>' : k.usage.resting_until ? `resting until ${esc(tTime(k.usage.resting_until))}` : 'working'}</span></div></div>
+    ${aiMeter(k.usage.text, k.usage.text_limit, 'Captions today')}${aiMeter(Math.round(k.usage.audio_s / 60), Math.round(k.usage.audio_limit / 60), 'Listening', ' min')}</div>`).join('');
+  const owner = `<section class="card">${hd('Your Groq key', 'Used for every client whose IP group has no key of its own.', st.has_groq ? chip('Saved', 'ok') : chip('Not set', 'neutral'))}
+    <form data-form="aikey" class="form" style="grid-template-columns:minmax(0,2fr) minmax(0,1fr) auto;align-items:start">
+      <label class="f">API key<input class="i" name="groq_key" type="password" autocomplete="off" placeholder="${st.has_groq ? 'Saved — paste a new one to replace' : 'gsk_…'}"><span class="help">Free at ${deep('https://console.groq.com/keys', 'console.groq.com/keys')} — no card needed. Tested before saving.</span></label>
+      <label class="f">Model<select class="i" name="ai_model">${(d.models || []).map(m => `<option ${m === d.model ? 'selected' : ''}>${esc(m)}</option>`).join('')}</select><span class="help">The first one writes best.</span></label>
+      <div class="actions"><button class="btn primary" type="submit">Save</button>${st.has_groq ? '<button type="button" class="btn danger" data-act="aikeydel">Remove</button>' : ''}</div></form></section>`;
+  const stat = (n, l, i) => `<div class="kpi"><span class="l">${ic(i, 13)}${l}</span><span class="v ai-n">${num(n || 0)}</span><span class="f"><span>last 7 days</span></span></div>`;
+  const kp = `<div class="kp" style="grid-template-columns:repeat(4,minmax(0,1fr))">${stat(w.captions, 'Captions written', 'spark')}${stat(w.subs, 'Subtitles added', 'cc')}${stat(w.held, 'Posts held by the check', 'shield')}${stat(Math.round((w.audio || 0) / 60), 'Minutes listened', 'mic')}</div>`;
+  const rows = d.channels.map(c => {
+    const s = c.settings;
+    const mini = (k, label) => `<button class="ai-pill ${s[k] ? 'on' : ''}" data-act="aiq" data-id="${c.id}" data-k="${k}" data-v="${s[k] ? 0 : 1}">${label}</button>`;
+    return `<div class="tr" style="grid-template-columns:minmax(200px,1.4fr) minmax(130px,1fr) minmax(250px,1.6fr) 120px 30px"><a class="who" href="#/channel/${c.id}" style="text-decoration:none;color:inherit">${avatar(c.title, hashI(c.title), c.thumbnail, 30)}<div><b class="ell">${esc(c.title)}</b></div></a>
+      <span class="mini">${c.key ? 'key · ' + esc(c.key) : '<span style="color:var(--warn)">no key</span>'}</span>
+      <span style="display:flex;gap:6px;flex-wrap:wrap">${mini('captions', 'Captions')}${mini('subtitles', 'Subtitles')}${mini('check', 'Check')}${s.subtitles && !c.subtitles_allowed ? '<span class="mini" title="Needs one more Allow on the client page" style="color:var(--warn)">needs Allow</span>' : ''}</span>
+      <span class="mini">${s.language === 'auto' ? 'same as post' : esc(s.language)}</span><a href="#/channel/${c.id}" class="muted" aria-label="Open">${ic('chev', 16)}</a></div>`;
+  }).join('');
+  const how = `<section class="card">${hd('How it stays safe')}<div class="ai-how">
+    <div>${ic('check', 16)}<span><b>Never stops a post.</b> No key, a refused key, the daily limit or a Groq problem → the post goes out with its normal text.</span></div>
+    <div>${ic('users', 16)}<span><b>Each client’s own key.</b> Put the client’s key on its IP group: their own free daily limit, separate from everyone else.</span></div>
+    <div>${ic('mic', 16)}<span><b>Only the sound leaves the phone</b> — a small audio file, never the video.</span></div>
+    <div>${ic('shield', 16)}<span><b>The check only holds when it is sure.</b> A held post waits in Failed; move it back to the folder and it posts without asking again.</span></div></div></section>`;
+  mount('ai', 'AI captions', `Groq · ${d.keys.length ? plural(d.keys.length, 'key') + ' active' : 'no key yet'} · ${d.channels.filter(c => c.settings.captions || c.settings.subtitles || c.settings.check).length} of ${d.channels.length} clients on`, 'Studio intelligence', '',
+    `${kp}<div class="dgrid"><div class="s7" style="display:flex;flex-direction:column;gap:12px">${owner}<section class="card">${hd('Keys and today’s free limit', 'Groq’s free plan resets every day at midnight UTC.')}${keys || '<div class="empty" style="padding:14px">No key yet — add yours above, or a client’s on its IP group (Apps).</div>'}</section></div><div class="s5">${how}</div></div>
+     <section class="card">${hd('Clients', 'Tap to switch. Language, brand voice and subtitles permission are on each client page.')}<div class="tbl"><div style="min-width:760px">${rows || '<div class="empty">No clients yet.</div>'}</div></div></section>`);
+  Object.assign(S.acts, {
+    aikey: async v => { const b = { ai_model: v.ai_model }; if (v.groq_key) b.groq_key = v.groq_key; await api('POST', '/api/settings', b); toast(v.groq_key ? 'Key tested and saved' : 'Saved'); render(); },
+    aikeydel: async () => { if (!confirm('Remove your Groq key? Clients without their own key go back to normal text.')) return; await api('POST', '/api/settings', { groq_key_clear: true }); render(); },
+    aiq: async x => { await api('PATCH', `/api/channels/${x.id}`, { ai: { [x.k]: x.v === '1' } }); render(); },
+  });
+}
+
+const PAGES = { ai: pageAI, devices: pageDevices, channel: pageChannel, dashboard: pageDashboard, add: pageAdd, channels: pageChannels, groups: pageGroups, schedule: pageSchedule, videos: pageVideos, drive: pageDrive, settings: pageSettings, users: pageUsers, server: pageServer, login: () => authPage('login'), register: () => authPage('register') };
 render();

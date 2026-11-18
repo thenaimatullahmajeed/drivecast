@@ -6,7 +6,7 @@ import logging.handlers
 import os
 import threading
 
-from . import alerts, backup, config, db, fleet, hotupdate, igsync, lease, maintenance, scheduler, security, supervisor, vidsync, web, worker
+from . import ai, alerts, backup, config, db, fleet, hotupdate, igsync, lease, maintenance, scheduler, security, supervisor, vidsync, web, worker
 
 _httpd = None
 
@@ -65,6 +65,7 @@ def start(data_dir, host="127.0.0.1", port=8765, block=False, workers=2):
         ("guard", lease.tick, 300),
         ("alerts", alerts.tick, 300),
         ("queues", worker.refresh_queues, 600),
+        ("ai-reports", ai.service, 6 * 3600),
         ("inbox", igsync.inbox_pass, 120),
         ("backup", backup.service, 3600),
     ], workers=workers)

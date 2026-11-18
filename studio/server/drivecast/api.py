@@ -171,7 +171,7 @@ def register(req):
 @route("GET", "/api/settings")
 def get_settings(req):
     ws = store.workspace(req.ws)
-    from . import facebook as _fb
+    from . import facebook as _fb, ai as _ai
     return {"timezone": req.user["timezone"], "google_client_id": ws["google_client_id"],
             "has_secret": bool(ws["google_client_secret_enc"]), "redirect_uri": public_base(req) + "/oauth/callback",
             "public_url": public_base(req), "audiences": list(AUDIENCES),
@@ -180,7 +180,8 @@ def get_settings(req):
             "ig_app_id": ws.get("ig_app_id"), "has_ig_secret": bool(ws.get("ig_app_secret_enc")),
             "ig_redirect_uri": public_base(req) + "/oauth/ig/callback",
             "drive_client_id": ws.get("drive_client_id"), "has_drive_secret": bool(ws.get("drive_client_secret_enc")),
-            "drive_uses_own_app": bool(ws.get("drive_token_client") and ws.get("drive_token_client") == ws.get("drive_client_id"))}
+            "drive_uses_own_app": bool(ws.get("drive_token_client") and ws.get("drive_token_client") == ws.get("drive_client_id")),
+            "has_groq": bool(ws.get("groq_key_enc")), "ai_model": ws.get("ai_model") or _ai.DEFAULT_MODEL, "ai_models": _ai.MODELS}
 
 
 @route("POST", "/api/settings")
@@ -208,6 +209,21 @@ def save_settings(req):
         db.run("UPDATE workspaces SET ig_app_id=? WHERE id=?", ((b["ig_app_id"] or "").strip() or None, req.ws))
     if b.get("ig_app_secret"):
         db.run("UPDATE workspaces SET ig_app_secret_enc=? WHERE id=?", (security.seal(b["ig_app_secret"].strip()), req.ws))
+    if b.get("groq_key"):
+        from . import ai as _ai
+        k = b["groq_key"].strip()
+        try:
+            _ai.test_key(k, store.workspace(req.ws))
+        except _ai.AiError as e:
+            raise HttpError(400, str(e))
+        db.run("UPDATE workspaces SET groq_key_enc=? WHERE id=?", (security.seal(k), req.ws))
+        db.meta_set(f"ai_bad:ws{req.ws}", "0")
+    if b.get("groq_key_clear"):
+        db.run("UPDATE workspaces SET groq_key_enc=NULL WHERE id=?", (req.ws,))
+    if b.get("ai_model"):
+        from . import ai as _ai
+        if b["ai_model"] in _ai.MODELS:
+            db.run("UPDATE workspaces SET ai_model=? WHERE id=?", (b["ai_model"], req.ws))
     if b.get("fb_graph_version"):
         v = b["fb_graph_version"].strip()
         if re.match(r"^v\d+\.\d+$", v):
@@ -284,7 +300,8 @@ def _group_out(g):
                 "apps": {"google": bool(g.get("google_client_id") and g.get("google_client_secret_enc")),
                          "google_client_id": g.get("google_client_id"),
                          "meta": bool(g.get("fb_app_id") and g.get("fb_app_secret_enc")), "fb_app_id": g.get("fb_app_id"),
-                         "instagram": bool(g.get("ig_app_id") and g.get("ig_app_secret_enc")), "ig_app_id": g.get("ig_app_id")}})
+                         "instagram": bool(g.get("ig_app_id") and g.get("ig_app_secret_enc")), "ig_app_id": g.get("ig_app_id"),
+                         "groq": bool(g.get("groq_key_enc"))}})
     # how ready this group is for a new client (prepared in advance)
     fb = db.one("SELECT status FROM fb_accounts WHERE group_id=?", (g["id"],))
     igd = db.one("SELECT COUNT(*) n FROM ig_dest WHERE group_id=? AND status='ok'", (g["id"],))["n"]
@@ -525,6 +542,8 @@ def new_link(req):
         raise HttpError(400, "Unknown link type")
     code = security.token(18)
     exp = time.time() + LINK_MINUTES * 60
+    if purpose == "youtube" and b.get("subtitles"):
+        purpose = "youtube_subs"  # also asks for permission to add subtitles
     db.run("INSERT INTO connect_links(code,workspace_id,purpose,group_id,created_at,expires_at) VALUES(?,?,?,?,?,?)",
            (code, req.ws, purpose, gid, time.time(), exp))
     return {"code": code, "url": f"{public_base(req)}/connect/{code}", "expires_at": exp}
@@ -570,9 +589,11 @@ def open_link(req, code):
         from . import igpost
         return 302, {"Location": igpost.consent_url(store.ig_app_for(ws, store.group(l["group_id"]))[0],
                                                     public_base(req) + "/oauth/ig/callback", code)}
-    if l["purpose"] == "youtube":
+    if l["purpose"] in ("youtube", "youtube_subs"):
+        from .ai import FORCE_SSL
+        scopes = list(platform("youtube").SCOPES) + ([FORCE_SSL] if l["purpose"] == "youtube_subs" else [])
         url = consent_url(store.google_app_for(ws, store.group(l["group_id"]))[0], public_base(req) + "/oauth/callback",
-                          platform("youtube").SCOPES, code)
+                          scopes, code)
     else:
         url = consent_url(store.drive_app(ws)[0], public_base(req) + "/oauth/callback", DRIVE_SCOPES, code)
     return 302, {"Location": url}
@@ -613,14 +634,15 @@ def oauth_callback(req):
         if existing:
             db.run("""UPDATE channels SET token_enc=?, token_client=?, title=?, handle=?, thumbnail=?, subscribers=?, total_views=?,
                       state=CASE WHEN state='attention' THEN 'live' ELSE state END, state_reason=NULL,
-                      consecutive_failures=0, paused_until=NULL WHERE id=?""",
-                   (sealed, cid, me["title"], me["handle"], me["thumbnail"], me["subscribers"], me["total_views"], existing["id"]))
+                      consecutive_failures=0, paused_until=NULL, yt_scope=? WHERE id=?""",
+                   (sealed, cid, me["title"], me["handle"], me["thumbnail"], me["subscribers"], me["total_views"],
+                    tok.get("scope"), existing["id"]))
             chid = existing["id"]
         else:
             chid = db.run("""INSERT INTO channels(workspace_id,platform,external_id,title,handle,thumbnail,token_enc,group_id,
-                             subscribers,total_views,state,created_at,token_client) VALUES(?,?,?,?,?,?,?,?,?,?,'setup',?,?)""",
+                             subscribers,total_views,state,created_at,token_client,yt_scope) VALUES(?,?,?,?,?,?,?,?,?,?,'setup',?,?,?)""",
                           (ws["id"], "youtube", me["external_id"], me["title"], me["handle"], me["thumbnail"], sealed, g["id"],
-                           me["subscribers"], me["total_views"], time.time(), cid))
+                           me["subscribers"], me["total_views"], time.time(), cid, tok.get("scope")))
         db.run("UPDATE connect_links SET used_at=?, result_json=? WHERE code=?", (time.time(), json.dumps({"channel_id": chid}), code))
         return 200, _page("Channel connected", f"<b>{html.escape(me['title'])}</b> is connected. You can close this tab.")
     except DriveCastError as e:
@@ -768,6 +790,9 @@ def edit_channel(req, cid):
         if db.one("SELECT 1 FROM channels WHERE folder_id=? AND id!=?", (b["folder_id"], c["id"])):
             raise HttpError(409, "Another client already uses this folder")
         db.run("UPDATE channels SET folder_id=?, folder_name=?, queue_json=NULL WHERE id=?", (f["id"], f["name"], c["id"]))
+    if isinstance(b.get("ai"), dict):
+        from . import ai as _ai
+        db.run("UPDATE channels SET ai_json=? WHERE id=?", (json.dumps(_ai.normalize(b["ai"], _ai.settings(c))), c["id"]))
     if b.get("group_id") and int(b["group_id"]) != c["group_id"]:
         if c["state"] == "live":
             raise HttpError(409, "Pause the client before moving it to another IP group")
@@ -1456,7 +1481,7 @@ def channel_detail(req, cid):
                          "ready": counts.get("in_drive", 0), "published": counts.get("published", 0),
                          "skipped": counts.get("skipped", 0) + counts.get("failed", 0), "photos": counts.get("waiting_facebook", 0),
                          "lanes": lanes},
-            "queue": ready, "upnext": db.jload(c.get("queue_json"), None), "upnext_at": c.get("queue_at"), "slots": slots, "encore": enc, "skipped": skipped, "events": events,
+            "queue": ready, "ai": _ai_channel(c), "upnext": db.jload(c.get("queue_json"), None), "upnext_at": c.get("queue_at"), "slots": slots, "encore": enc, "skipped": skipped, "events": events,
             "has_inbox": bool(c.get("inbox_id")), "ready_target": igsync._ready_target(c)}
 
 
@@ -1891,6 +1916,8 @@ def live(req):
             "services": services, "healthy": not stale, "stale": stale,
             "paused": bool((ws.get("paused_until") or 0) > now),
             "replaced": bool(db.meta_get("superseded_by")),
+            "attention": db.one("""SELECT COUNT(*) n FROM events WHERE workspace_id=? AND resolved=0 AND level='error' AND at>?""",
+                                (ws["id"], now - 86400))["n"],
             "mark": f"{last or 0}.{pub or 0}.{len(running)}",
             "device": db.jload(db.meta_get("device_info"), None)}
 
@@ -2138,6 +2165,17 @@ def group_apps(req, gid):
                 sets.append((col_sec, None))
         if b.get(seck):
             sets.append((col_sec, security.seal(b[seck].strip())))
+    if b.get("groq_key"):
+        from . import ai as _ai
+        k = b["groq_key"].strip()
+        try:
+            _ai.test_key(k, store.workspace(req.ws))
+        except _ai.AiError as e:
+            raise HttpError(400, str(e))
+        sets.append(("groq_key_enc", security.seal(k)))
+        db.meta_set(f"ai_bad:g{g['id']}", "0")
+    if b.get("groq_key_clear"):
+        sets.append(("groq_key_enc", None))
     if "label" in b:
         sets.append(("label", (b["label"] or "").strip()[:60] or None))
     for col, val in sets:
@@ -2246,3 +2284,77 @@ def devices_page(req):
           "stats": fleet._stats(), "role": fleet.role()}
     return {"this": me, "fleet": fleet.devices() if fleet.role() == "hub" else [],
             "totals": fleet.totals(fleet.devices()) if fleet.role() == "hub" else None}
+
+
+# ---------------------------------------------------------------- AI captions (Groq)
+def _ai_channel(c):
+    from . import ai as _ai
+    k = _ai.key_for(c)
+    rep = _ai.latest_report(c["id"])
+    return {"settings": _ai.settings(c), "key": k[2] if k else None, "usage": _ai.usage(k[1]) if k else None,
+            "subtitles_allowed": _ai.can_subtitle(c), "report": rep, "languages": _ai.LANGUAGES}
+
+
+@route("GET", "/api/ai")
+def ai_overview(req):
+    """Every AI key in this workspace, how much of today's free limit it used, and each client's switches."""
+    from . import ai as _ai
+    ws = store.workspace(req.ws)
+    keys = []
+    if ws.get("groq_key_enc"):
+        keys.append({"scope": f"ws{ws['id']}", "where": "Yours (Settings)", "usage": _ai.usage(f"ws{ws['id']}")})
+    for g in db.all("SELECT * FROM ip_groups WHERE workspace_id=? AND groq_key_enc IS NOT NULL ORDER BY number", (req.ws,)):
+        keys.append({"scope": f"g{g['id']}", "where": f"Group {g['number']}" + (f" · {g['label']}" if g.get("label") else ""),
+                     "group_id": g["id"], "usage": _ai.usage(f"g{g['id']}")})
+    chans = []
+    for c in db.all("SELECT * FROM channels WHERE workspace_id=? ORDER BY title", (req.ws,)):
+        k = _ai.key_for(c)
+        chans.append({"id": c["id"], "title": c["title"], "thumbnail": c["thumbnail"], "settings": _ai.settings(c),
+                      "key": k[2] if k else None, "subtitles_allowed": _ai.can_subtitle(c)})
+    since = time.time() - 7 * 86400
+    week = db.one("""SELECT COUNT(*) n, COALESCE(SUM(CASE WHEN kind='text' AND ok=1 THEN 1 ELSE 0 END),0) captions,
+                     COALESCE(SUM(CASE WHEN kind='subs' AND ok=1 THEN 1 ELSE 0 END),0) subs,
+                     COALESCE(SUM(CASE WHEN kind='flag' THEN 1 ELSE 0 END),0) held,
+                     COALESCE(SUM(audio_s),0) audio FROM ai_log WHERE workspace_id=? AND at>=?""", (req.ws, since))
+    return {"has_owner_key": bool(ws.get("groq_key_enc")), "model": _ai.model(ws), "models": _ai.MODELS, "keys": keys,
+            "channels": chans, "week": week, "limits": {"text": _ai.TEXT_PER_DAY, "audio": _ai.AUDIO_PER_DAY},
+            "languages": _ai.LANGUAGES}
+
+
+@route("GET", "/api/channels/(\\d+)/ai")
+def ai_channel(req, cid):
+    return _ai_channel(_own_channel(req, cid))
+
+
+@route("POST", "/api/channels/(\\d+)/ai/report")
+def ai_report_now(req, cid):
+    from . import ai as _ai
+    c = _own_channel(req, cid)
+    if not _ai.key_for(c):
+        raise HttpError(400, "Add a Groq key first — in Settings, or on this client's IP group")
+    _ai.weekly(force_channel=c["id"])
+    return _ai_channel(store.channel(c["id"]))
+
+
+@route("POST", "/api/ai/preview")
+def ai_preview(req):
+    """Try the captions on a sample text, without posting anything."""
+    from . import ai as _ai
+    b = req.json
+    c = _own_channel(req, int(b.get("channel_id") or 0))
+    k = _ai.key_for(c)
+    if not k:
+        raise HttpError(400, "Add a Groq key first — in Settings, or on this client's IP group")
+    cfg = _ai.normalize(b.get("ai") or {}, _ai.settings(c))
+    tmp = dict(c, ai_json=json.dumps({**cfg, "captions": True, "subtitles": False}))
+    title = (b.get("title") or "").strip() or c["title"]
+    try:
+        pack = _ai.prepare(tmp, {"id": "preview"}, {"caption": (b.get("caption") or "").strip()}, title, title,
+                           ["youtube", "facebook", "instagram"], file_key=None)
+    except CodedError as e:
+        return {"held": e.ctx.get("why") or e.detail}
+    if not pack or not pack["texts"]:
+        raise HttpError(502, "Groq did not answer — the key may be resting. Try again in a minute.")
+    t = pack["texts"]
+    return {"youtube": {"title": t["youtube"][0], "description": t["youtube"][1]},
+            "facebook": t["facebook"][1], "instagram": t["instagram"][1]}

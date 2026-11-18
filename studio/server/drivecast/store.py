@@ -113,7 +113,7 @@ def set_channel_state(cid, state, reason=None):
 
 def public(row, drop=("token_enc", "password_enc", "google_client_secret_enc", "drive_token_enc", "pw_hash",
                       "drive_client_secret_enc", "fb_app_secret_enc", "ig_app_secret_enc", "cookies_enc",
-                      "google_client_secret_enc", "queue_json")):
+                      "google_client_secret_enc", "queue_json", "groq_key_enc")):
     if row is None:
         return None
     return {k: v for k, v in row.items() if k not in drop}

@@ -290,6 +290,24 @@ SCHEMA = [
         group_id INTEGER REFERENCES ip_groups(id) ON DELETE SET NULL, created_at REAL NOT NULL
     );
     """,
+    # version 11: AI captions with Groq (owner key + each group's own key), subtitles scope, usage log, weekly reports
+    """
+    ALTER TABLE workspaces ADD COLUMN groq_key_enc TEXT;
+    ALTER TABLE workspaces ADD COLUMN ai_model TEXT;
+    ALTER TABLE ip_groups ADD COLUMN groq_key_enc TEXT;
+    ALTER TABLE channels ADD COLUMN ai_json TEXT;
+    ALTER TABLE channels ADD COLUMN yt_scope TEXT;
+    CREATE TABLE IF NOT EXISTS ai_log (
+        id INTEGER PRIMARY KEY, at REAL NOT NULL, day TEXT NOT NULL, scope TEXT NOT NULL, workspace_id INTEGER,
+        channel_id INTEGER, kind TEXT NOT NULL, tokens INTEGER NOT NULL DEFAULT 0, audio_s REAL NOT NULL DEFAULT 0,
+        ok INTEGER NOT NULL DEFAULT 1, file_key TEXT, note TEXT
+    );
+    CREATE INDEX IF NOT EXISTS ix_ai_log_day ON ai_log(scope, day);
+    CREATE TABLE IF NOT EXISTS ai_reports (
+        id INTEGER PRIMARY KEY, channel_id INTEGER NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+        week TEXT NOT NULL, text TEXT NOT NULL, created_at REAL NOT NULL, UNIQUE (channel_id, week)
+    );
+    """,
 ]
 
 
