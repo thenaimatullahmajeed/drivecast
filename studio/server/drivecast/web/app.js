@@ -52,6 +52,8 @@ const ICON = {
   cookie: '<circle cx="12" cy="12" r="9"/><circle cx="9" cy="9" r="1"/><circle cx="15" cy="13" r="1"/><circle cx="10" cy="15" r="1"/>', pause: '<rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/>',
   tt: '<path d="M14 3v11.5a3.5 3.5 0 1 1-3.5-3.5"/><path d="M14 3c.4 2.6 2.2 4.4 5 4.6"/>',
   link: '<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/>',
+  play: '<path d="M8 5v14l11-7z"/>',
+  edit: '<path d="M4 20h4l10.5-10.5a2.8 2.8 0 0 0-4-4L4 16v4z"/><path d="M13.5 6.5l4 4"/>',
   more: '<circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/>',
   batt: '<rect x="2" y="7" width="17" height="10" rx="2"/><path d="M22 11v2"/>', flame: '<path d="M12 22c4 0 7-3 7-7 0-5-5-7-5-12-3 2-5 5-5 8-1-1-2-2-2-4-2 2-2 5-2 8 0 4 3 7 7 7z"/>',
   eye: '<path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>', clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
@@ -151,7 +153,7 @@ function liveBar(p, dark) {
 // ------------------------------------------------------------------ router
 const NAV = [
   ['Workspace', [['grid', 'Dashboard', 'dashboard'], ['cal', 'Schedule', 'schedule'], ['tv', 'Clients', 'channels'], ['net', 'IP groups', 'groups'], ['film', 'Videos', 'videos'], ['drive', 'Google Drive', 'drive'], ['gear', 'Settings', 'settings']]],
-  ['Admin', [['users', 'Users', 'users'], ['phone', 'Server', 'server']]],
+  ['Admin', [['users', 'Users', 'users'], ['batt', 'Devices', 'devices'], ['phone', 'Server', 'server']]],
 ];
 function go(r) { if (location.hash !== '#/' + r) location.hash = '#/' + r; else render(); }
 window.addEventListener('hashchange', () => render());
@@ -173,7 +175,7 @@ async function render() {
   }
   if (!S.user) return authPage(r0 === 'register' ? 'register' : (S.session.needs_setup ? 'setup' : 'login'));
   const page = PAGES[r0] || PAGES.dashboard;
-  if (['users', 'server'].includes(r0) && S.user.role !== 'owner') return go('dashboard');
+  if (['users', 'server', 'devices'].includes(r0) && S.user.role !== 'owner') return go('dashboard');
   try { await page(...rest); } catch (e) { mount(r0, 'Something went wrong', '', '', '', `<div class="card err-card"><h2>Could not load this page</h2><p class="muted">${esc(e.message)}</p><button class="btn" data-act="reload">Try again</button></div>`); }
 }
 function fatal(e) { document.getElementById('app').innerHTML = `<div style="padding:40px"><h1>DriveCast</h1><p>${esc(e.message)}</p><button class="btn" data-act="reload">Retry</button></div>`; }
@@ -188,9 +190,9 @@ function mount(active, title, sub, kick, actions, content) {
     <header class="mtop"><a class="brand" href="#/dashboard" aria-label="DriveCast home" style="text-decoration:none;padding:0">${BRAND()}</a><span class="pill" id="mdev"><span class="beat" id="mbeat"></span><span id="mlive">Live</span></span></header>
     <nav class="rail" aria-label="Main">
       <a class="brand" href="#/dashboard" aria-label="DriveCast home" style="text-decoration:none">${BRAND()}</a>
-      <div class="srv"><span class="kicker" style="display:flex;justify-content:space-between"><span>Live session</span><span id="srvup" class="mono"></span></span><div style="display:flex;align-items:center;gap:8px"><span class="beat" id="srvdot"></span><span class="mono ell" style="font-size:12px;color:#fff">${esc(location.host)}</span></div><div id="livenow" class="livenow"></div><div class="dev" id="devline"><span>Online</span></div></div>
       ${nav}
       <div style="flex-grow:1"></div>
+      <a class="srv" href="${S.user.role === 'owner' ? '#/devices' : '#/dashboard'}" style="text-decoration:none" title="Devices"><span class="kicker" style="display:flex;justify-content:space-between"><span>Live session</span><span id="srvup" class="mono"></span></span><div style="display:flex;align-items:center;gap:8px"><span class="beat" id="srvdot"></span><span class="mono ell" style="font-size:12px;color:#fff">${esc(location.host)}</span></div><div id="livenow" class="livenow"></div><div class="dev" id="devline"><span>Online</span></div></a>
       <div class="me"><span class="av" style="width:32px;height:32px">${esc(S.user.name.charAt(0).toUpperCase())}</span><div style="display:flex;flex-direction:column;flex-grow:1;min-width:0"><span class="ell" style="font-size:13px;color:#fff;font-weight:600">${esc(S.user.name)}</span><span style="font-size:11.5px;color:#8E94A0">${S.user.role === 'owner' ? 'Owner' : 'Member'}</span></div><button data-act="logout" aria-label="Sign out" title="Sign out">${ic('logout')}</button></div>
     </nav>
     <main class="main"><div class="wrap">
@@ -501,7 +503,7 @@ function dotsHtml(states) {
 function todayCard(d) {
   const t = d.today, k = d.kpis;
   const vy = k.views_yesterday ? delta(k.views_today, k.views_yesterday) : '';
-  const nx = t.next ? `<strong data-count="${t.next.due_at}">${countdown(t.next.due_at)}</strong><em class="ell">${esc(tTime(t.next.due_at))} · ${esc(t.next.title)}</em>` : '<strong>—</strong><em>Nothing planned</em>';
+  const nx = t.next ? `<strong data-count="${t.next.due_at}">${countdown(t.next.due_at)}</strong><em class="ell">${esc(tTime(t.next.due_at))} · ${esc(t.next.title)}</em>${t.next.item ? `<em class="ell" style="color:#C9CDD6">${originChip(t.next.item.origin, true)} ${esc(t.next.item.name)}</em>` : ''}` : '<strong>—</strong><em>Nothing planned</em>';
   const live = (t.live || []);
   const rows = t.channels.map(c => `<div><span class="ell" style="color:#fff">${esc(c.title)}</span><span style="display:flex;align-items:center;gap:10px">${dotsHtml(c.states)}<span class="mono" style="font-size:11px;color:#8E94A0;min-width:52px;text-align:right">${c.next ? esc(tTime(c.next)) : 'done'}</span></span></div>`).join('');
   return `<section class="today"><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><span class="onair"><i></i>${live.length ? 'POSTING' : 'ON AIR'}</span><h2 style="font-size:17px">Today</h2><span class="mono" style="font-size:11px;color:#8E94A0">Times in ${esc(S.tz)}</span>${S.tz !== browserTz() ? `<a href="#/settings" style="font-size:11px;color:#FF9B85;margin-left:auto">Your device is in ${esc(browserTz())} — change?</a>` : ''}</div>
@@ -598,7 +600,7 @@ function feedCard(d) {
   return `<section class="card" style="height:100%">${hd('Activity', 'What the server did, newest first')}<div class="feed">${rows || '<div class="empty">Nothing yet.</div>'}</div></section>`;
 }
 function attentionCard(d) {
-  const FIX = { replace_proxy: 'Replace proxy', confirm_ip: 'Review IP', replace_cookies: 'Replace cookies', add_cookies: 'Add cookies', edit_source: 'Fix source', check_source: 'Open', open_channel: 'Open', reconnect_channel: 'Reconnect', connect_drive: 'Connect Drive', connect_facebook: 'Connect', reconnect_facebook: 'Reconnect', fb_app: 'Settings', resolve_upload: 'Check', update_app: 'Update', update_downloader: 'Update', connect_ig_dest: 'Reconnect', ig_app: 'Settings', source_cookies: 'Open' };
+  const FIX = { replace_proxy: 'Replace proxy', confirm_ip: 'Review IP', replace_cookies: 'Replace cookies', add_cookies: 'Add cookies', edit_source: 'Fix source', check_source: 'Open', open_channel: 'Open', reconnect_channel: 'Reconnect', connect_drive: 'Connect Drive', connect_facebook: 'Connect', reconnect_facebook: 'Reconnect', fb_app: 'Settings', resolve_upload: 'Check', update_app: 'Update', test_group: 'Test proxy', update_downloader: 'Update', connect_ig_dest: 'Reconnect', ig_app: 'Settings', source_cookies: 'Open' };
   const rows = d.attention.map((a, i) => `<div style="display:flex;gap:10px;padding:9px 0;border-top:1px solid var(--line)"><span class="chip ${a.level === 'error' ? 'bad' : 'warn'}" style="width:28px;height:28px;padding:0;justify-content:center;border-radius:8px;flex-shrink:0">${ic('alert', 14)}</span>
     <div style="display:flex;flex-direction:column;gap:2px;flex:1;min-width:0"><strong style="font-size:13px">${esc(a.title)}</strong>${a.detail ? `<span class="mini">${esc(a.detail)}</span>` : ''}${a.at ? `<span class="mini mono">${esc(rel(a.at))}${a.has_detail ? ` · <button class="linkbtn" data-act="evdetail" data-id="${a.ref}">details</button>` : ''}</span>` : ''}</div>
     <span class="actions" style="flex-shrink:0">${a.fix ? `<button class="btn sm primary" data-act="fixit" data-i="${i}">${FIX[a.fix] || 'Fix'}</button>` : ''}${a.action === 'event' ? `<button class="btn sm" data-act="dismiss" data-id="${a.ref}">Dismiss</button>` : ''}</span></div>`).join('');
@@ -618,6 +620,7 @@ function runFix(a) {
     case 'fb_app': return go('settings');
     case 'resolve_upload': return go('videos');
     case 'update_app': case 'update_downloader': return go('server');
+    case 'test_group': return go('groups');
     case 'connect_ig_dest': return go('groups');
     case 'ig_app': return go('settings');
     case 'source_cookies': return go(a.channel_id || ref ? `channel/${a.channel_id || ref}` : 'channels');
@@ -635,6 +638,12 @@ const CT = { videos: ['Videos only', 'Reels and video posts'], mix: ['Videos + p
 const SRC = { drive: ['folder', 'Drive folder', 'Your own edits + client Inbox', '#EFEDE7', '#3F434B'], instagram: ['ig', 'Instagram', 'Client’s posts · test-account cookies', '#FDEBE6', '#B83A1F'], youtube: ['yt', 'YouTube', 'Client’s channel link · no sign-in', '#FDE7E7', '#B42318'], tiktok: ['tt', 'TikTok', 'Client’s profile link · no sign-in', '#E3F4F3', '#0F766E'] };
 const DST = { youtube: ['yt', 'YouTube', '#FDE7E7', '#B42318'], facebook: ['fb', 'Facebook', '#E7EEFB', '#1D4FA8'], instagram: ['ig', 'Instagram', '#FDEBE6', '#B83A1F'] };
 const ORIGIN = { instagram: 'Instagram', youtube: 'YouTube', tiktok: 'TikTok', inbox: 'Client Inbox', drive: 'Your Drive' };
+const ORIGIN_IC = { instagram: ['ig', '#FDEBE6', '#B83A1F'], youtube: ['yt', '#FDE7E7', '#B42318'], tiktok: ['tt', '#E3F4F3', '#0F766E'], inbox: ['inbox', '#EEF0FF', '#4338CA'], drive: ['folder', '#EFEDE7', '#3F434B'] };
+// where a post comes from: downloaded from Instagram/YouTube/TikTok, uploaded by the client (Inbox), or your own Drive file
+function originChip(o, dark) {
+  const m = ORIGIN_IC[o] || ORIGIN_IC.drive;
+  return `<span style="display:inline-flex;align-items:center;gap:5px;padding:2px 8px 2px 4px;border-radius:99px;font-size:11.5px;font-weight:600;background:${dark ? '#1C222C' : m[1]};color:${dark ? '#fff' : m[2]};white-space:nowrap"><span style="display:inline-flex;width:16px;height:16px;border-radius:5px;align-items:center;justify-content:center;background:${m[1]};color:${m[2]}">${ic(m[0], 11)}</span>${ORIGIN[o] || 'Your Drive'}</span>`;
+}
 function srcIcon(k, s = 16) { const m = SRC[k]; return `<span class="ri" style="background:${m[3]};color:${m[4]}">${ic(m[0], s)}</span>`; }
 function dstIcon(k, s = 16) { const m = DST[k]; return `<span class="ri" style="background:${m[2]};color:${m[3]}">${ic(m[0], s)}</span>`; }
 function newSrc(prev) { return Object.assign({ drive: true, ig: false, yt: false, tt: false, handle: '', profile: null, ctype: 'videos', include_old: true, cap: 6, ytLink: '', ttLink: '', encore: true, inbox: true, checking: false, err: null }, prev || {}); }
@@ -708,12 +717,25 @@ function cookiesModal(gid, done) {
   modal(`<h2>Instagram account for this group</h2>
     <p class="muted" style="margin:0">Each IP group reads Instagram with its own test account, through its own IP. Paste that account’s cookies — we check they work before saving, and the old ones stay until the new ones pass.</p>
     <ol class="muted" style="font-size:13px;line-height:1.6;margin:4px 0 0;padding-left:18px"><li>In Chrome, sign in to instagram.com with the group’s test account — ideally through the same proxy or country. <b>Do this in the same browser you use for this panel</b>: DriveCast then keeps using that browser’s identity for this account, so Instagram always sees one consistent device.</li><li>Install the extension <b>“Get cookies.txt LOCALLY”</b>, open instagram.com, click it, then <b>Export</b> or <b>Copy</b>.</li><li>Paste below, or choose the downloaded file.</li></ol>
+    <div id="vpick"></div>
     <form data-form="savecookies" style="display:flex;flex-direction:column;gap:12px">
       <label class="f">Cookies<textarea class="i mono" name="cookies" id="cktext" rows="7" placeholder="# Netscape HTTP Cookie File&#10;.instagram.com  TRUE  /  TRUE  …  sessionid  …" style="height:auto;padding:10px;font-size:12px"></textarea><span class="help">cookies.txt, a JSON export, or “sessionid=…; ds_user_id=…; csrftoken=…” all work.</span></label>
       <label class="btn" style="width:fit-content;cursor:pointer">${ic('up', 16)}Choose cookies file<input type="file" id="ckfile" accept=".txt,.json" style="display:none"></label>
       <div style="display:flex;flex-direction:column;gap:6px"><b style="font-size:13px">Read Instagram through</b><span class="actions"><label class="btn sm" style="cursor:pointer"><input type="radio" name="proxy_mode" value="group" checked> Group IP</label><label class="btn sm" style="cursor:pointer"><input type="radio" name="proxy_mode" value="phone"> Phone’s own internet</label></span><span class="help">Use the phone’s internet if the cookies come from a phone or home Wi-Fi and the group proxy is a datacenter IP. Reading only — posting always uses the group IP.</span></div>
       <div id="ckres"></div>
       <div class="actions" style="justify-content:flex-end"><button class="btn" type="button" data-act="close">Cancel</button><button class="btn primary" type="submit">Test and save</button></div></form>`);
+  api('GET', '/api/ig/vault').then(r => {
+    const free = r.vault.filter(v => (!v.group_id || v.group_id === gid) && v.status !== 'bad');
+    const box = $('#vpick'); if (!box || !free.length) return;
+    box.innerHTML = `<div style="border:1px solid var(--line);border-radius:12px;padding:12px;display:flex;flex-direction:column;gap:8px"><b style="font-size:13px">Pick a prepared test account</b>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">${free.map(v => `<button type="button" class="btn sm" data-act="vuse" data-id="${v.id}">${ic('ig', 14)}${v.username ? '@' + esc(v.username) : esc(v.label || 'Account ' + v.id)}</button>`).join('')}</div><span class="help">Or paste new cookies below.</span></div>`;
+  }).catch(() => { });
+  S.acts.vuse = async d => {
+    const out = $('#ckres'); out.innerHTML = '<div class="note info"><span class="spinner"></span><span>Connecting the prepared account…</span></div>';
+    const pm = (document.querySelector('[name=proxy_mode]:checked') || {}).value || 'group';
+    try { const r = await api('POST', `/api/groups/${gid}/instagram/from-vault`, { vault_id: +d.id, proxy_mode: pm }); closeModal(); toast(r.verified ? `Instagram connected · @${r.username}` : 'Account saved — checked again on first use', !r.verified); if (done) done(); }
+    catch (e) { out.innerHTML = `<div class="note bad">${ic('alert', 16)}<span>${esc(e.message)}</span></div>`; }
+  };
   S.acts.savecookies = async v => {
     const out = $('#ckres'); out.innerHTML = '<div class="note info"><span class="spinner"></span><span>Signing in to Instagram through the group’s proxy…</span></div>';
     try {
@@ -782,7 +804,7 @@ function wGroup() {
     const note = g.status === 'down' ? ['Not responding', 'var(--bad)'] : g.channel_count >= g.max_channels ? [`Full — above ${g.max_channels} is not recommended`, 'var(--warn)'] : [`Healthy · ${g.latency_ms ?? '—'} ms`, 'var(--ok)'];
     return `<button class="pick ${W.group && W.group.id === g.id ? 'sel' : ''}" data-act="wgroup" data-id="${g.id}" ${g.status === 'down' ? 'disabled' : ''}>
       <span style="display:flex;justify-content:space-between;width:100%"><strong style="font-family:var(--disp);font-size:17px">Group ${g.number}</strong><span class="mono" style="font-size:12px">${g.channel_count}/${g.max_channels}</span></span>
-      <span class="mono muted" style="font-size:12px">${esc(g.outgoing_ip || g.host)}</span><span class="meter" style="width:100%"><span style="width:${pct}%;background:${g.channel_count > g.max_channels ? '#C27A12' : '#0E1116'}"></span></span>
+      ${g.label ? `<span style="font-size:12.5px;font-weight:600">${esc(g.label)}</span>` : ''}<span class="mono muted" style="font-size:12px">${esc(g.outgoing_ip || g.host)}${g.readiness ? ` · ready ${g.readiness.score}/${g.readiness.of}` : ''}${g.apps && g.apps.google ? ' · own Google app' : ''}</span><span class="meter" style="width:100%"><span style="width:${pct}%;background:${g.channel_count > g.max_channels ? '#C27A12' : '#0E1116'}"></span></span>
       <span style="font-size:12px;font-weight:600;color:${note[1]}">${esc(note[0])}</span></button>`;
   }).join('');
   return wHead(1, 'Choose an IP group', 'Every post for this client leaves from this group’s static IP — never from the phone.') +
@@ -1045,6 +1067,51 @@ function fbCard(g) {
     <button class="btn sm ${!a || a.status === 'needs_reconnect' ? 'primary' : ''}" data-act="fbconnect" data-id="${g.id}">${ic('fb', 14)}${a ? 'Reconnect' : 'Connect Facebook'}</button>${a ? `<button class="btn sm" data-act="fbrefresh" data-id="${g.id}">${ic('refresh', 14)}</button>` : ''}</div>
     ${a && fb.pages.length ? `<div>${pages}</div>` : ''}</div>`;
 }
+// The client's own apps for this group + how ready the group is for a new client
+function appsCard(g) {
+  const a = g.apps || {}, r = g.readiness || { steps: [], score: 0, of: 0 };
+  const pill = (ok, t) => `<span style="display:inline-flex;align-items:center;gap:5px;font-size:11.5px;font-weight:600;padding:3px 8px;border-radius:99px;background:${ok ? '#E6F6EE' : '#F4F3EF'};color:${ok ? '#0B6B3A' : '#6B7080'}">${ok ? '✓' : '○'} ${t}</span>`;
+  return `<div class="igbox" style="flex-direction:column;align-items:stretch;gap:10px"><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><span style="width:34px;height:34px;border-radius:10px;background:#EEF0FF;color:#4338CA;display:inline-flex;align-items:center;justify-content:center">${ic('key', 18)}</span>
+    <div style="flex:1;min-width:150px"><b style="font-size:13px">Client’s own apps</b><div class="muted" style="font-size:12px">${a.google || a.meta ? 'This group signs in with the client’s own Google / Meta apps.' : 'Uses your apps from Settings. Add the client’s own for their own quota and no app review.'}</div></div>
+    <button class="btn sm" data-act="gapps" data-id="${g.id}">${ic('edit', 14)}Apps</button></div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap">${pill(a.google, 'Google')}${pill(a.meta, 'Meta')}${pill(a.instagram, 'Instagram login')}</div>
+    <div><div style="display:flex;justify-content:space-between;font-size:12px"><b>Ready for a client</b><span class="mono">${r.score}/${r.of}</span></div><div class="meter" style="margin-top:6px"><span style="width:${Math.round(100 * r.score / Math.max(1, r.of))}%;background:${r.score === r.of ? '#1F9D55' : '#0E1116'}"></span></div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">${r.steps.map(x => pill(x.ok, x.name)).join('')}</div></div></div>`;
+}
+async function groupAppsModal(gid) {
+  const [{ groups }, st] = await Promise.all([api('GET', '/api/groups'), api('GET', '/api/settings')]);
+  const g = groups.find(x => x.id === +gid); const a = g.apps || {};
+  const red = (u, t) => `<div class="linkbox" style="padding:10px"><span class="kicker">${t}</span><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><span class="mono" style="flex:1 1 220px;word-break:break-all;font-size:12px">${esc(u)}</span><button type="button" class="btn coral sm" data-act="copy" data-text="${esc(u)}">${ic('copy', 14)}Copy</button></div></div>`;
+  modal(`<h2>Group ${g.number} · client’s own apps</h2><p class="muted" style="margin:0">The client makes these in their own accounts (10–15 minutes). Leave empty to use yours. Sign-ins already made keep working with the app that made them.</p>
+    <form data-form="gappsave" style="display:flex;flex-direction:column;gap:14px">
+      <label class="f">Client / label for this group<input class="i" name="label" value="${esc(g.label || '')}" placeholder="e.g. Jess Bacon"></label>
+      <div style="border:1px solid var(--line);border-radius:12px;padding:14px;display:flex;flex-direction:column;gap:10px"><b>Google (YouTube)</b>
+        <ol class="muted" style="font-size:12.5px;line-height:1.7;margin:0;padding-left:18px"><li>${deep('https://console.cloud.google.com/projectcreate', 'Create a project')} in the client’s Google account.</li><li>Enable ${deep('https://console.cloud.google.com/apis/library/youtube.googleapis.com', 'YouTube Data API v3')}.</li><li>${deep('https://console.cloud.google.com/apis/credentials/consent', 'Consent screen')} → External → <b>In production</b> (never “Testing”: sign-ins expire in 7 days). It stays unverified; the client presses “Continue” once.</li><li>${deep('https://console.cloud.google.com/apis/credentials/oauthclient', 'Create OAuth client')} → Web application → add this redirect URI:</li></ol>
+        ${red(st.redirect_uri, 'Google redirect URI')}
+        <div class="form"><label class="f">Client ID<input class="i" name="google_client_id" value="${esc(a.google_client_id || '')}" autocomplete="off"></label><label class="f">Client secret<input class="i" name="google_client_secret" type="password" placeholder="${a.google ? 'Saved — leave empty to keep' : ''}" autocomplete="off"></label></div></div>
+      <div style="border:1px solid var(--line);border-radius:12px;padding:14px;display:flex;flex-direction:column;gap:10px"><b>Meta (Facebook + Instagram)</b>
+        <ol class="muted" style="font-size:12.5px;line-height:1.7;margin:0;padding-left:18px"><li>${deep('https://developers.facebook.com/apps/creation/', 'Create a Meta app')} in the client’s Facebook account (type Business). The client is the app’s admin, so his own pages need no app review.</li><li>Facebook Login for Business → add this redirect URI:</li></ol>
+        ${red(st.fb_redirect_uri, 'Facebook redirect URI')}
+        <div class="form"><label class="f">App ID<input class="i" name="fb_app_id" value="${esc(a.fb_app_id || '')}" autocomplete="off"></label><label class="f">App secret<input class="i" name="fb_app_secret" type="password" placeholder="${a.meta ? 'Saved — leave empty to keep' : ''}" autocomplete="off"></label></div>
+        <details><summary style="cursor:pointer;font-size:13px;font-weight:600">Instagram login (only for Instagram not linked to a page)</summary>${red(st.ig_redirect_uri, 'Instagram redirect URI')}
+        <div class="form"><label class="f">Instagram app ID<input class="i" name="ig_app_id" value="${esc(a.ig_app_id || '')}" autocomplete="off"></label><label class="f">Instagram app secret<input class="i" name="ig_app_secret" type="password" placeholder="${a.instagram ? 'Saved — leave empty to keep' : ''}" autocomplete="off"></label></div></details></div>
+      <div class="actions" style="justify-content:flex-end"><button type="button" class="btn" data-act="close">Cancel</button><button class="btn primary" type="submit">Save apps</button></div></form>`);
+  S.acts.gappsave = async v => {
+    ['google_client_secret', 'fb_app_secret', 'ig_app_secret'].forEach(k => { if (!v[k]) delete v[k]; });
+    try { await api('PUT', `/api/groups/${gid}/apps`, v); closeModal(); toast('Apps saved for this group'); render(); } catch (e) { toast(e.message, true); }
+  };
+}
+// Instagram test accounts loaded in advance; any group takes one with a tap
+function vaultCard(vault) {
+  const tone = { ready: ['Ready', 'ok'], used: ['In use', 'neutral'], bad: ['Signed out', 'bad'], unchecked: ['Not checked', 'warn'] };
+  const rows = vault.map(v => `<div style="display:flex;align-items:center;gap:10px;padding:9px 0;border-top:1px solid var(--line)">${avatar(v.username || v.label || '?', hashI(v.username || v.label || '?'), null, 28)}
+    <div style="flex:1;min-width:0;display:flex;flex-direction:column"><b class="ell" style="font-size:13px">${v.username ? '@' + esc(v.username) : esc(v.label || 'Test account')}${v.label && v.username ? `<span class="muted" style="font-weight:400"> · ${esc(v.label)}</span>` : ''}</b><span class="mini">${v.group_number ? 'Group ' + v.group_number : 'free'}${v.error ? ' · ' + esc(v.error) : ''}${v.checked_at ? ' · checked ' + esc(rel(v.checked_at)) : ''}</span></div>
+    ${chip(...(tone[v.status] || tone.unchecked), false)}<button class="btn sm" data-act="vcheck" data-id="${v.id}" title="Check">${ic('refresh', 14)}</button><button class="btn sm" data-act="vdel" data-id="${v.id}" title="Remove">${ic('trash', 14)}</button></div>`).join('');
+  const free = vault.filter(v => !v.group_id && v.status !== 'bad').length;
+  return `<section class="card" style="margin-bottom:16px">${hd('Instagram test accounts · vault', 'Load test-account cookies in advance. When you make a group or a client, pick one — it is already there.', chip(`${free} free`, free ? 'ok' : 'warn'))}
+    <form data-form="vadd" style="display:flex;flex-direction:column;gap:8px"><div style="display:flex;gap:8px;flex-wrap:wrap"><input class="i" name="label" placeholder="Label (optional)" style="flex:0 1 200px"><textarea class="i mono" name="cookies" rows="2" style="flex:1 1 320px;height:auto;padding:8px;font-size:12px" placeholder="Paste cookies (cookies.txt, JSON or sessionid=…; ds_user_id=…)"></textarea><button class="btn primary" type="submit">${ic('plus', 16)}Add</button></div></form>
+    ${rows ? `<div style="margin-top:8px">${rows}</div>` : ''}</section>`;
+}
 function igDestCard(g) {
   const list = (S.igd || []).filter(d => d.group_id === g.id);
   const fbA = ((S.fb && S.fb.groups) || []).find(x => x.group_id === g.id);
@@ -1059,6 +1126,7 @@ function igDestCard(g) {
 async function pageGroups() {
   const [{ groups }, fb, chs, igd] = await Promise.all([api('GET', '/api/groups'), api('GET', '/api/facebook').catch(() => ({ groups: [], app_ready: false })), api('GET', '/api/channels').catch(() => ({ channels: [] })), api('GET', '/api/instagram/destinations').catch(() => ({ destinations: [] }))]);
   S.fb = fb; S.allChannels = chs.channels; S.igd = igd.destinations;
+  const vault = (await api('GET', '/api/ig/vault').catch(() => ({ vault: [] }))).vault; S.vault = vault;
   const cards = groups.map(g => {
     const over = g.channel_count > g.max_channels, down = g.status === 'down' && !g.moved_to;
     const color = down ? '#B42318' : over ? '#C27A12' : '#0E1116';
@@ -1066,19 +1134,20 @@ async function pageGroups() {
     const chans = g.channels.map((c, i) => `<div style="display:flex;align-items:center;gap:10px;padding:9px 0;border-top:1px solid var(--line)">${avatar(c.title, hashI(c.title), c.thumbnail, 28)}<div style="display:flex;flex-direction:column;min-width:0;flex:1"><span class="ell" style="font-weight:600;font-size:13px">${esc(c.title)}</span>${handle(c.handle)}</div>${chip(c.state, c.state === 'live' ? 'ok' : 'neutral', false)}</div>`).join('');
     const ipChanged = down && (g.last_error || '').includes('changed');
     return `<section class="card"><div style="display:flex;flex-direction:column;gap:14px">
-      <div style="display:flex;align-items:center;gap:16px">${ring(g.channel_count, g.max_channels, color)}<div style="display:flex;flex-direction:column;gap:6px;flex:1;min-width:0"><div style="display:flex;justify-content:space-between;gap:8px;align-items:center"><strong style="font-family:var(--disp);font-size:22px">Group ${g.number}</strong>${g.moved_to ? chip('Moved to ' + g.moved_to, 'neutral') : down ? chip('Not responding', 'bad') : chip('Healthy', 'ok')}</div><span class="mono" style="font-size:13px;font-weight:500">${esc(g.outgoing_ip || '—')}</span>${where(g) ? `<span style="font-size:13px;font-weight:600">${esc(where(g))}${g.isp ? `<span class="muted" style="font-weight:400"> · ${esc(g.isp)}</span>` : ''}</span>` : ''}<span class="muted" style="font-size:12px">SOCKS5 · ${esc(g.host)}:${g.port} · ${esc(g.priority)} priority</span></div></div>
+      <div style="display:flex;align-items:center;gap:16px">${ring(g.channel_count, g.max_channels, color)}<div style="display:flex;flex-direction:column;gap:6px;flex:1;min-width:0"><div style="display:flex;justify-content:space-between;gap:8px;align-items:center"><strong style="font-family:var(--disp);font-size:22px">Group ${g.number}${g.label ? `<span class="muted" style="font:600 14px var(--font)"> · ${esc(g.label)}</span>` : ''}</strong>${g.moved_to ? chip('Moved to ' + g.moved_to, 'neutral') : down ? chip('Not responding', 'bad') : chip('Healthy', 'ok')}</div><span class="mono" style="font-size:13px;font-weight:500">${esc(g.outgoing_ip || '—')}</span>${where(g) ? `<span style="font-size:13px;font-weight:600">${esc(where(g))}${g.isp ? `<span class="muted" style="font-weight:400"> · ${esc(g.isp)}</span>` : ''}</span>` : ''}<span class="muted" style="font-size:12px">SOCKS5 · ${esc(g.host)}:${g.port} · ${esc(g.priority)} priority</span></div></div>
       <div><div style="display:flex;justify-content:space-between;font-size:12px" class="muted"><span>Latency · last checks</span><span class="mono" style="color:var(--ink)">${down ? 'timeout' : (g.latency_ms ?? '—') + ' ms'}</span></div><div style="display:flex;align-items:flex-end;gap:3px;height:34px;margin-top:6px">${lat.map(v => `<span style="flex:1;height:${Math.max(3, Math.round(v / mx * 34))}px;border-radius:2px;background:${v ? '#0E1116' : '#F2B8AD'}"></span>`).join('')}</div></div>
       ${down ? `<div class="note bad">${ic('alert', 16)}<span>${esc(g.last_error || 'Proxy is not responding')}. Uploads for these channels are held — never sent from the server IP.</span></div>` : ''}
       ${over ? `<div class="note warn">${ic('alert', 16)}<span>${g.channel_count} channels on one IP — above the recommended ${g.max_channels}. Allowed, at higher risk.</span></div>` : ''}
       ${igCard(g)}
       ${fbCard(g)}
       ${igDestCard(g)}
+      ${appsCard(g)}
       <div>${chans || '<span class="muted" style="font-size:13px">No channels yet.</span>'}</div>
       <div class="actions">${ipChanged ? `<button class="btn primary" data-act="acceptip" data-id="${g.id}">Accept new IP</button>` : ''}<button class="btn" data-act="gtest" data-id="${g.id}">${ic('bolt', 16)}Test now</button><a class="btn" href="#/add">${ic('plus', 16)}Add client</a><button class="btn" data-act="gedit" data-id="${g.id}">Edit</button>${g.channel_count ? '' : `<button class="btn danger" data-act="gdel" data-id="${g.id}">Delete</button>`}</div></div></section>`;
   }).join('');
   const nextN = groups.reduce((m, g) => Math.max(m, g.number), 0) + 1;
   mount('groups', 'IP groups', 'One static SOCKS5 IP per group · 1–5 channels recommended', 'Workspace', `<button class="btn" data-act="testall">${ic('bolt', 16)}Test all</button>`,
-    `${groups.length ? `<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(340px,1fr));align-items:start">${cards}</div>` : ''}
+    `${vaultCard(vault)}${groups.length ? `<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(340px,1fr));align-items:start">${cards}</div>` : ''}
      <div class="row"><div class="f3"><section class="card">${hd('New IP group', `Next number: Group ${nextN}`)}${groupForm()}</section></div>
      <div class="f1"><section class="card">${hd('Rules every group follows')}${[['No fallback', 'A failed proxy holds uploads. Traffic never leaves from the server IP.'], ['One channel, one IP', 'A channel never switches IP mid-route. Pause it before moving groups.'], ['IP check before upload', 'Upload starts only when the outgoing IP matches the group.'], ['DNS through proxy', 'Lookups use socks5h, so the real IP never leaks.']].map(([a, b]) => `<div style="display:flex;gap:12px;padding:12px 0;border-top:1px solid var(--line)"><span style="color:var(--ok)">${ic('check')}</span><div><b>${a}</b><div class="muted" style="font-size:13px">${b}</div></div></div>`).join('')}</section></div></div>`);
   if (S.openCookies) { const gid = S.openCookies; S.openCookies = null; setTimeout(() => cookiesModal(gid, render), 50); }
@@ -1086,6 +1155,10 @@ async function pageGroups() {
   if (S.openGroup) { const gid = S.openGroup; S.openGroup = null; setTimeout(() => S.acts.gedit({ id: gid }), 50); }
   Object.assign(S.acts, GROUP_FORM_ACTS, {
     cookies: d => cookiesModal(+d.id, render),
+    gapps: d => groupAppsModal(+d.id),
+    vadd: async v => { try { await api('POST', '/api/ig/vault', { cookies: v.cookies, label: v.label, user_agent: navigator.userAgent }); toast('Added to the vault'); } catch (e) { toast(e.message, true); } render(); },
+    vcheck: async d => { await api('POST', `/api/ig/vault/${d.id}/check`); render(); },
+    vdel: async d => { if (confirm('Remove this account from the vault? A group that uses it keeps working.')) { await api('DELETE', `/api/ig/vault/${d.id}`); render(); } },
     gtest: async d => { const r = await api('POST', `/api/groups/${d.id}/test`); toast(r.group.status === 'ok' ? `Group ${r.group.number} is healthy` : `Group ${r.group.number}: ${r.group.last_error}`, r.group.status !== 'ok'); render(); },
     testall: async () => { for (const g of groups) { await api('POST', `/api/groups/${g.id}/test`).catch(() => { }); } render(); },
     acceptip: async d => { await api('POST', `/api/groups/${d.id}/accept-ip`); toast('New IP accepted'); render(); },
@@ -1246,8 +1319,17 @@ async function pageChannel(id) {
       <span style="min-width:0;display:flex;flex-direction:column;gap:2px"><b class="ell" style="font-size:13px">${esc(m.title || (m.caption || '').split('\n')[0] || 'Title comes from the caption')}</b><span class="mini">${esc(ORIGIN[m.origin] || 'Your Drive')}${m.taken_at && m.origin !== 'drive' ? ' · ' + esc(tDay(m.taken_at)) : ''}${m.width ? ` · ${m.width}×${m.height}` : ''}${m.ref ? ` · ${esc(m.ref)}` : ''}</span></span>
       <span style="font-size:12px;font-weight:600;color:${st[1]};display:flex;align-items:center;gap:6px"><span style="width:7px;height:7px;border-radius:9px;background:${st[1]}"></span>${st[0]}</span></div>`;
   }).join('');
-  const queue = `<section class="card" style="height:100%">${hd('Up next', `Fresh → your Drive files → older posts → Encore · ${pp} posts/day`, `<span class="mini">${c.queue_count != null ? `${c.queue_count} file(s) in the Drive folder` : ''}</span>`)}
-    ${qrows || `<div class="empty">${d.sources.length ? 'Nothing downloaded yet — the first check runs within a minute.' : 'Add files to the Drive folder or add a source.'}</div>`}</section>`;
+  const real = (d.upnext || []).map((it, i) => {
+    const sl = slots[i]; const ln = LANE[it.lane] || LANE.drive;
+    return `<div class="qrow"><span style="display:flex;flex-direction:column"><b class="mono" style="font-size:13px">${sl ? esc(tTime(sl.due_at)) : '—'}</b><span class="mini">${sl ? esc(tDay(sl.due_at)) : 'later'}</span></span>
+      <span>${chip(ln[0], ln[1], false)}</span>
+      <span style="min-width:0;display:flex;flex-direction:column;gap:3px"><b class="ell" style="font-size:13px">${esc(it.name || 'Untitled')}${it.photo ? ' · photos' : ''}</b><span class="mini" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">${originChip(it.origin)}<span>${it.origin === 'drive' ? 'your file in the Drive folder' : it.origin === 'inbox' ? 'uploaded by the client, cleaned' : 'downloaded and cleaned, waiting in Drive'}${it.taken && it.origin !== 'drive' ? ' · posted there ' + esc(tDay(it.taken)) : ''}${it.size ? ' · ' + esc(it.size) : ''}</span></span></span>
+      <span style="font-size:12px;font-weight:600;color:var(--ok);display:flex;align-items:center;gap:6px"><span style="width:7px;height:7px;border-radius:9px;background:var(--ok)"></span>Ready</span></div>`;
+  }).join('');
+  const prep = d.queue.filter(m => m.state !== 'in_drive').slice(0, 6).map(m => `<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:7px 0;border-top:1px solid var(--line);font-size:12.5px"><span class="ell" style="min-width:0">${esc(m.title || (m.caption || '').split('\n')[0] || 'New post')}</span><span style="display:flex;gap:8px;align-items:center">${originChip(m.origin)}<span class="mini">${m.state === 'downloading' ? 'downloading now' : 'waiting to download'}</span></span></div>`).join('');
+  const queue = `<section class="card" style="height:100%">${hd('Up next · real posting order', `${d.upnext_at ? 'checked ' + esc(rel(d.upnext_at)) + ' · ' : ''}Fresh → your Drive files → older posts → Encore · ${pp} posts/day`, `<span class="mini">${c.queue_count != null ? `${c.queue_count} file(s) ready in Drive` : ''}</span>`)}
+    ${real || qrows || `<div class="empty">${d.sources.length ? 'Nothing ready yet — the first check runs within a minute.' : 'Add files to the Drive folder or add a source.'}</div>`}
+    ${prep ? `<div style="margin-top:12px"><b style="font-size:12.5px">Being prepared</b>${prep}</div>` : ''}</section>`;
   const enc = d.encore.map((e, i) => `<div class="erow"><b class="mono" style="color:var(--muted)">${i + 1}</b><span style="min-width:0;display:flex;flex-direction:column;gap:2px"><b class="ell" style="font-size:13px">${esc(e.title)}</b><span class="mini">posted ${e.reposts + 1}× · last ${esc(rel(e.last_at))}</span></span><span style="text-align:right;display:flex;flex-direction:column;gap:2px"><b class="mono">${num(e.views)}</b><span class="mini" style="color:${e.status === 'eligible' ? 'var(--ok)' : e.status === 'cooldown' ? 'var(--warn)' : 'var(--muted)'}">${e.status === 'cooldown' ? 'ready ' + esc(tDay(e.eligible_at)) : e.status}</span></span></div>`).join('');
   const encCard = `<section class="card">${hd('Encore ranking', 'Used only when nothing new is left', toggle('encset', d.encore_on, d.encore_on ? 'On' : 'Off', ''))}${enc || '<div class="empty" style="padding:14px">Appears after the first posts get views.</div>'}</section>`;
   const sk = d.skipped.map(m => `<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:8px 0;border-top:1px solid var(--line);font-size:12.5px"><span class="ell" style="min-width:0">${esc(m.title || (m.caption || '').split('\n')[0] || (m.kind === 'video' ? 'Video' : 'Photo post') + (m.taken_at ? ' · ' + tDay(m.taken_at) : ''))}</span><span style="display:flex;align-items:center;gap:8px;white-space:nowrap"><span class="muted">${esc(m.skip_reason || m.error_code || '')}</span><button class="btn sm" data-act="mretry" data-id="${m.id}" title="Try again">Retry</button></span></div>`).join('');
@@ -1255,7 +1337,7 @@ async function pageChannel(id) {
   const titlesCard = `<section class="card">${hd('Title ideas', 'Used only when a post has no caption or a camera file name. One per line, never repeated.')}<form data-form="savetitles" style="display:flex;flex-direction:column;gap:10px"><textarea class="i" name="titles" rows="5" style="height:auto;padding:10px" placeholder="Fine line magic&#10;Behind the ink">${esc(d.titles.join('\n'))}</textarea><div class="actions" style="justify-content:flex-end"><button class="btn sm primary" type="submit">Save titles</button></div></form></section>`;
   const ev = d.events.map(e => `<div><span class="fdot" style="background:${{ error: '#B42318', warn: '#C27A12', info: '#4F46E5' }[e.level] || '#1F9D55'}"></span><span>${esc(e.message)}</span><span class="mini mono" style="white-space:nowrap">${esc(rel(e.at))}</span></div>`).join('');
   const evCard = `<section class="card">${hd('Activity')}<div class="feed">${ev || '<div class="empty" style="padding:14px">Nothing yet.</div>'}</div></section>`;
-  const actions = `${d.sources.length ? `<button class="btn" data-act="srccheckall">${ic('refresh', 16)}Check sources now</button>` : ''}<button class="btn primary" data-act="srcadd">${ic('plus', 16)}Add source</button>`;
+  const actions = `${d.sources.length ? `<button class="btn" data-act="srccheckall">${ic('refresh', 16)}Check sources now</button>` : ''}<button class="btn" data-act="routeedit">${ic('edit', 16)}Edit route</button><button class="btn primary" data-act="srcadd">${ic('plus', 16)}Add source</button>`;
   const head = `<div style="display:flex;align-items:center;gap:12px">${avatar(c.title, hashI(c.title), c.thumbnail, 44)}<span>${esc(c.title)}</span></div>`;
   const warn = d.sources.filter(s => s.error && s.error.fix).map(s => `<div class="note warn" style="margin-bottom:12px">${ic('alert', 16)}<span><b>${esc(SRC[s.kind][1])}: ${esc(s.error.title)}.</b> ${esc(s.error.message)} <button class="btn sm" data-act="srcopen" data-id="${s.id}">Open</button></span></div>`).join('');
   mount('channels', c.title, `${d.sources.map(s => SRC[s.kind][1]).concat(c.folder_id ? ['Drive'] : []).join(' + ') || 'No source yet'} → ${d.destinations.map(x => DST[x][1]).join(' + ') || 'no destination yet'} · Group ${c.group ? c.group.number : '—'} · ${pp}/day`, 'Client', actions,
@@ -1271,6 +1353,7 @@ async function pageChannel(id) {
     mretry: async x => { await api('POST', `/api/media/${x.id}/retry`); toast('Will try again'); render(); },
     savetitles: async v => { await api('PUT', `/api/channels/${c.id}/settings`, { titles: v.titles }); toast('Titles saved'); },
     srcadd: () => addSourceModal(c, d),
+    routeedit: () => routeEditModal(c, d),
     srcopen: x => { const sx = d.sources.find(s => s.id === +x.id); if (!sx) return; if (sx.kind === 'instagram') editSourceModal(c, sx, d); else videoSourceModal(c, sx, sx.kind, d); },
     fblink: () => fbLinkModal(c, d),
     iglink: () => igDestModal(c, d),
@@ -1279,6 +1362,46 @@ async function pageChannel(id) {
       if (!confirm(c.youtube_on ? 'Stop posting to YouTube for this client? Facebook / Instagram keep going.' : 'Post to YouTube again for this client?')) return;
       await api('PUT', `/api/channels/${c.id}/settings`, { youtube_on: !c.youtube_on }); render();
     },
+  });
+}
+// Everything about a client's route, editable in one place
+async function routeEditModal(c, d) {
+  const [{ groups }, dr] = await Promise.all([api('GET', '/api/groups'), api('GET', '/api/drive').catch(() => ({ folders: [] }))]);
+  const p = Object.assign({ posts_per_day: 2, audience: 'US+UK', min_gap_min: 240, jitter_min: 30 }, c.plan || {});
+  const sel = (name, opts, val) => `<select class="i" name="${name}">${opts.map(([v, t]) => `<option value="${esc(v)}" ${String(v) === String(val) ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select>`;
+  const live = c.state === 'live';
+  modal(`<h2>Edit route · ${esc(c.title)}</h2><p class="muted" style="margin:0">Sources and destinations are edited on the route map (tap any box). Here: name, plan, folder, IP group and sign-ins.</p>
+    <form data-form="routesave" style="display:flex;flex-direction:column;gap:14px">
+      <label class="f">Client name<input class="i" name="title" value="${esc(c.title)}"></label>
+      <div class="form" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px">
+        <label class="f">Posts per day${sel('ppd', [1, 2, 3, 4, 5, 6].map(n => [n, n]), p.posts_per_day)}</label>
+        <label class="f">Audience${sel('audience', [['US+UK', 'USA + UK'], ['US', 'USA'], ['UK', 'United Kingdom'], ['CA', 'Canada'], ['AU', 'Australia']], p.audience)}</label>
+        <label class="f">Minimum gap${sel('gap', [[120, '2 hours'], [180, '3 hours'], [240, '4 hours'], [360, '6 hours']], p.min_gap_min)}</label>
+        <label class="f">Natural timing${sel('jitter', [[0, 'exact'], [15, '±15 min'], [30, '±30 min'], [45, '±45 min'], [60, '±60 min']], p.jitter_min)}</label></div>
+      <label class="f">Drive folder${sel('folder_id', [['', c.folder_name || '—']].concat((dr.folders || []).filter(f => !f.used || f.id === c.folder_id).map(f => [f.id, f.path])), c.folder_id || '')}</label>
+      <label class="f">IP group${sel('group_id', groups.filter(g => !g.moved_to).map(g => [g.id, `Group ${g.number}${g.label ? ' · ' + g.label : ''} · ${g.outgoing_ip || g.host}`]), c.group ? c.group.id : '')}<span class="help">${live ? 'Pause the client first to move it. ' : ''}Moving unlinks its Facebook page and Instagram account — they belong to the old group’s identity.</span></label>
+      <div class="actions" style="justify-content:flex-end"><button type="button" class="btn" data-act="close">Cancel</button><button class="btn primary" type="submit">Save</button></div></form>
+    <div style="border-top:1px solid var(--line);padding-top:12px;display:flex;flex-direction:column;gap:8px"><b style="font-size:13px">Sign-ins</b>
+      <div class="actions">${c.platform === 'youtube' ? `<button class="btn sm" data-act="reauthyt">${ic('key', 14)}Reconnect YouTube</button>` : ''}<button class="btn sm" data-act="fblink">${ic('fb', 14)}Facebook page</button><button class="btn sm" data-act="iglink">${ic('ig', 14)}Instagram posting</button></div>
+      <b style="font-size:13px;margin-top:6px">Client</b>
+      <div class="actions"><button class="btn sm" data-act="chstate">${ic(live ? 'pause' : 'play', 14)}${live ? 'Pause client' : 'Resume client'}</button><button class="btn sm danger" data-act="chdel">${ic('trash', 14)}Delete client</button></div></div>`);
+  Object.assign(S.acts, {
+    routesave: async v => {
+      const body = { title: v.title, plan: { posts_per_day: +v.ppd, audience: v.audience, min_gap_min: +v.gap, jitter_min: +v.jitter } };
+      if (v.folder_id && v.folder_id !== c.folder_id) body.folder_id = v.folder_id;
+      if (v.group_id && +v.group_id !== (c.group && c.group.id)) body.group_id = +v.group_id;
+      try { await api('PATCH', `/api/channels/${c.id}`, body); closeModal(); toast('Route saved'); render(); } catch (e) { toast(e.message, true); }
+    },
+    reauthyt: async () => {
+      let l; try { l = await api('POST', '/api/connect', { purpose: 'youtube', group_id: c.group.id }); } catch (e) { return toast(e.message, true); }
+      modal(`<h2>Reconnect YouTube · ${esc(c.title)}</h2><p class="muted" style="margin:0">The channel owner opens this link and presses Allow. The same channel is updated — nothing is posted twice.</p>
+        <div class="linkbox"><span class="kicker">One-time link</span><div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><span class="mono" style="flex:1 1 260px;word-break:break-all">${esc(l.url)}</span><button class="btn coral" data-act="copy" data-text="${esc(l.url)}">${ic('copy', 16)}Copy</button><a class="btn" href="${esc(l.url)}" target="_blank" rel="noopener">Open here</a></div></div>
+        <div class="actions" style="justify-content:flex-end"><button class="btn" data-act="close">Close</button></div>`);
+      const t = setInterval(async () => { if (!document.getElementById('modal')) return clearInterval(t); try { const st = await api('GET', `/api/connect/${l.code}`); if (st.status === 'done') { clearInterval(t); closeModal(); toast('YouTube reconnected'); render(); } } catch (e) { } }, 3000);
+      S.timers.push(t);
+    },
+    chstate: async () => { try { await api('POST', `/api/channels/${c.id}/${live ? 'pause' : 'resume'}`); closeModal(); render(); } catch (e) { toast(e.message, true); } },
+    chdel: async () => { if (!confirm(`Delete ${c.title}? Its Drive files stay in Drive; the history on this phone is removed.`)) return; try { await api('POST', `/api/channels/${c.id}/delete`); closeModal(); go('channels'); } catch (e) { toast(e.message, true); } },
   });
 }
 function addSourceModal(c, d) {
@@ -1715,5 +1838,36 @@ async function pageServer() {
   every(60000, () => { if (!document.getElementById('modal')) render(); });
 }
 
-const PAGES = { channel: pageChannel, dashboard: pageDashboard, add: pageAdd, channels: pageChannels, groups: pageGroups, schedule: pageSchedule, videos: pageVideos, drive: pageDrive, settings: pageSettings, users: pageUsers, server: pageServer, login: () => authPage('login'), register: () => authPage('register') };
+// ------------------------------------------------------------------ Devices (admin): what every phone needs to stay on air
+function gb(n) { return n == null ? '—' : n >= 1e12 ? (n / 1e12).toFixed(1) + ' TB' : (n / 1e9).toFixed(1) + ' GB'; }
+async function pageDevices() {
+  const d = await api('GET', '/api/devices');
+  const t = d.this, dv = t.device || {}, st = t.stats || {};
+  const tile = (k, v, h, tone) => `<div style="padding:14px;border:1px solid var(--line);border-radius:14px;background:var(--card)"><span class="mini">${k}</span><div style="font:700 22px var(--disp);color:${tone || 'inherit'}">${v}</div><span class="mini">${h || ''}</span></div>`;
+  const bat = dv.battery == null ? '—' : dv.battery + '%';
+  const batTone = dv.battery != null && dv.battery <= 20 && !dv.charging ? 'var(--bad)' : null;
+  const hot = (dv.temp || 0) >= 43;
+  const freePct = t.disk_total ? Math.round(100 * t.disk_free / t.disk_total) : null;
+  const svc = t.services.map(x => `<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-top:1px solid var(--line);font-size:13px"><span class="beat ${x.ok ? '' : 'warn'}" style="animation:none"></span><b style="flex:1">${esc(x.name)}</b><span class="mini">every ${x.every >= 3600 ? Math.round(x.every / 3600) + ' h' : Math.round(x.every / 60) + ' min'} · last ${esc(upTxt(x.age))} ago${x.errors ? ` · <span style="color:var(--bad)">${x.errors} error(s)</span>` : ''}</span></div>`).join('');
+  const al = t.alerts.map(a => `<div class="note ${a.level === 'error' ? 'bad' : 'warn'}">${ic('alert', 16)}<span><b>${esc(a.title)}.</b> ${esc(a.message)}</span></div>`).join('');
+  const check = (ok, txt) => `<div style="display:flex;gap:10px;align-items:center;padding:7px 0;border-top:1px solid var(--line);font-size:13px"><span style="color:${ok ? 'var(--ok)' : 'var(--warn)'}">${ok ? ic('check', 16) : ic('alert', 16)}</span>${txt}</div>`;
+  const fleetRows = (d.fleet || []).map(f => { const s2 = f.stats || {}; return `<div style="display:grid;grid-template-columns:14px minmax(150px,1.3fr) repeat(5,minmax(80px,1fr));gap:10px;align-items:center;padding:10px 0;border-top:1px solid var(--line);font-size:12.5px"><span class="beat ${f.online ? (s2.replaced ? 'warn' : '') : 'off'}"></span><span><b class="mono">${esc(f.host)}</b><br><span class="mini">${f.online ? 'online' : 'offline'} · ${f.last_seen ? esc(rel(f.last_seen)) : ''} · ${esc(f.version || '')}</span></span><span><b>${s2.battery ?? '—'}%</b>${s2.charging ? ' ⚡' : ''}<br><span class="mini">battery</span></span><span><b>${s2.temp ? s2.temp + '°C' : '—'}</b><br><span class="mini">temperature</span></span><span><b>${f.users}</b>/${f.max_users}<br><span class="mini">accounts</span></span><span><b>${s2.live ?? '—'}</b>/${s2.channels ?? '—'}<br><span class="mini">clients live</span></span><span><b>${s2.posts_24h ?? '—'}</b>${s2.failed_24h ? ` · <span style="color:var(--bad)">${s2.failed_24h}✕</span>` : ''}<br><span class="mini">posts 24h</span></span></div>`; }).join('');
+  mount('devices', 'Devices', 'Every phone that runs DriveCast — what it needs to stay on air', 'Admin', `<a class="btn" href="#/server">${ic('phone', 16)}Server settings</a>`,
+    `${al}
+    <section class="card" style="margin-bottom:12px"><div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:12px"><span class="beat ${t.replaced ? 'warn' : ''}"></span><b style="font:700 20px var(--disp)">${esc(t.host)}</b><span class="muted">${esc(dv.model || 'Phone')} · Android ${esc(dv.android || '?')} · this phone</span><span style="margin-left:auto" class="mono mini">v${esc(t.version)} · ${t.running_from === 'update' ? 'updated copy' : 'app copy'} · id ${esc(t.instance)}</span></div>
+      <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px">
+        ${tile('Battery', bat, dv.charging ? 'charging ⚡' : 'on battery', batTone)}${tile('Temperature', dv.temp ? dv.temp + '°C' : '—', hot ? 'too hot — cool it down' : 'normal', hot ? 'var(--bad)' : null)}
+        ${tile('Free storage', gb(t.disk_free), freePct != null ? freePct + '% of ' + gb(t.disk_total) : '', freePct != null && freePct < 10 ? 'var(--bad)' : null)}${tile('Up for', upTxt(t.uptime), 'since the last restart')}
+        ${tile('Posting now', t.jobs.running || 0, (t.jobs.queued || 0) + ' waiting')}${tile('Posts · 24h', st.posts_24h ?? 0, st.failed_24h ? st.failed_24h + ' failed or unclear' : 'all fine', st.failed_24h ? 'var(--warn)' : null)}</div></section>
+    <div class="dgrid"><div class="s6"><section class="card">${hd('Checklist', 'What a server phone needs')}
+      ${check(!!dv.charging, 'Plugged in to a charger')}${check(!hot, 'Temperature under 43°C')}${check(freePct == null || freePct >= 10, 'At least 10% storage free')}
+      ${check(!!dv.dedicated, 'Dedicated mode (nothing else can stop the app)')}${check(!!dv.storage, 'Storage permission for the phone folder')}${check(!!dv.ffmpeg, 'Video tools inside the app')}
+      ${check(!!t.own_domain, 'Own domain on' + (t.own_domain ? ' · ' + esc(t.own_domain.replace('https://', '')) : ''))}${check(!!t.tailscale, 'Tailscale backup link' + (t.tailscale ? ' · ' + esc(t.tailscale.replace('https://', '')) : ''))}
+      ${check(!!t.backup_at, 'Nightly backup in Drive' + (t.backup_at ? ' · ' + esc(rel(t.backup_at)) : ''))}${check(!!t.backup_test_at, 'Backup test-opened' + (t.backup_test_at ? ' · ' + esc(rel(t.backup_test_at)) : ''))}
+      ${check(!t.replaced, t.replaced ? 'This phone was replaced — posting stopped' : 'Runs its own address (no other phone took over)')}</section></div>
+      <div class="s6"><section class="card">${hd('Background services', 'Each one is judged by its own schedule')}${svc || '<div class="empty">Starting…</div>'}</section></div></div>
+    ${d.fleet && d.fleet.length ? `<section class="card" style="margin-top:12px">${hd('All phones', `${d.totals.online}/${d.totals.phones} online · ${d.totals.live}/${d.totals.channels} clients live · ${d.totals.posts_24h} posts in 24 h`)}${fleetRows}</section>` : ''}`);
+  every(15000, () => { if (!document.getElementById('modal')) render(); });
+}
+const PAGES = { devices: pageDevices, channel: pageChannel, dashboard: pageDashboard, add: pageAdd, channels: pageChannels, groups: pageGroups, schedule: pageSchedule, videos: pageVideos, drive: pageDrive, settings: pageSettings, users: pageUsers, server: pageServer, login: () => authPage('login'), register: () => authPage('register') };
 render();

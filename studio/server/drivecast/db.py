@@ -270,6 +270,26 @@ SCHEMA = [
     ALTER TABLE fleet_devices ADD COLUMN stats_json TEXT;
     ALTER TABLE ip_groups ADD COLUMN moved_to TEXT;
     """,
+    # version 10: each IP group can carry the client's own Google / Meta / Instagram apps; cookie vault; queue snapshot
+    """
+    ALTER TABLE ip_groups ADD COLUMN label TEXT;
+    ALTER TABLE ip_groups ADD COLUMN google_client_id TEXT;
+    ALTER TABLE ip_groups ADD COLUMN google_client_secret_enc TEXT;
+    ALTER TABLE ip_groups ADD COLUMN fb_app_id TEXT;
+    ALTER TABLE ip_groups ADD COLUMN fb_app_secret_enc TEXT;
+    ALTER TABLE ip_groups ADD COLUMN ig_app_id TEXT;
+    ALTER TABLE ip_groups ADD COLUMN ig_app_secret_enc TEXT;
+    ALTER TABLE channels ADD COLUMN token_client TEXT;
+    ALTER TABLE channels ADD COLUMN queue_json TEXT;
+    ALTER TABLE channels ADD COLUMN queue_at REAL;
+    ALTER TABLE fb_accounts ADD COLUMN app_id TEXT;
+    CREATE TABLE IF NOT EXISTS ig_vault (
+        id INTEGER PRIMARY KEY, workspace_id INTEGER NOT NULL, label TEXT, username TEXT, ig_user_id TEXT,
+        cookies_enc TEXT NOT NULL, user_agent TEXT, language TEXT,
+        status TEXT NOT NULL DEFAULT 'unchecked', error TEXT, checked_at REAL,
+        group_id INTEGER REFERENCES ip_groups(id) ON DELETE SET NULL, created_at REAL NOT NULL
+    );
+    """,
 ]
 
 

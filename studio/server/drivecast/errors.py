@@ -83,6 +83,12 @@ CATALOG = {
 }
 
 
+def is_timeout(e):
+    t = str(e)
+    return any(k in t for k in ("ConnectTimeout", "timed out", "Read timed out", "SOCKSHTTPSConnectionPool", "Max retries exceeded",
+                                "ProxyError", "Connection reset", "RemoteDisconnected"))
+
+
 def info(code, **ctx):
     scope, title, msg, fix = CATALOG.get(code, ("post", "Problem", code, None))
     safe = {k: ("" if v is None else v) for k, v in ctx.items()}

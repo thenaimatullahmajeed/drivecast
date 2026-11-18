@@ -94,8 +94,13 @@ def sync_stats(ws_id=None, force=False):
                 db.run("INSERT OR REPLACE INTO stat_points(upload_id,day,views) VALUES(?,?,?)", (u["id"], today, v["views"]))
                 db.run("INSERT INTO upload_ticks(upload_id,at,views) VALUES(?,?,?)", (u["id"], now, v["views"]))
         except Exception as e:
-            msg = getattr(e, "user_message", str(e))
-            db.event("warn", "stats", f"{ch['title']}: stats not updated ({msg})", ch["workspace_id"], ch["id"])
+            from .errors import is_timeout
+            if is_timeout(e):
+                db.event("warn", "stats", f"{ch['title']}: stats wait for the next round — the group's proxy was too slow.",
+                         ch["workspace_id"], ch["id"], "PROXY_SLOW", str(e)[:500])
+            else:
+                msg = getattr(e, "user_message", str(e))
+                db.event("warn", "stats", f"{ch['title']}: stats not updated ({msg[:120]})", ch["workspace_id"], ch["id"], None, str(e)[:500])
 
 
 def cleanup(tmp_dir):

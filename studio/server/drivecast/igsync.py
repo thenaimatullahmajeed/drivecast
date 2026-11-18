@@ -442,8 +442,13 @@ def inbox_pass():
             _inbox_channel(ch, g)
         except Exception as e:
             log.warning("inbox %s: %s", ch["id"], e)
+            from .errors import is_timeout
+            if is_timeout(e):  # the group's proxy did not answer in time — not a Drive problem
+                db.event("warn", "inbox", f"{ch['title']}: Inbox check waited too long for Group {g['number']}'s proxy — will retry.",
+                         ch["workspace_id"], ch["id"], "PROXY_SLOW", str(e))
+                continue
             code = getattr(e, "code", None) or "DRIVE_QUOTA"
-            db.event("warn", "inbox", f"{ch['title']}: could not process the Inbox — will retry. {getattr(e, 'user_message', e)}",
+            db.event("warn", "inbox", f"{ch['title']}: could not process the Inbox — will retry.",
                      ch["workspace_id"], ch["id"], code, str(e))
 
 

@@ -36,9 +36,41 @@ def drive_box(ws):
     return TokenBox(ws.get("drive_token_enc"), cid, sec, save)
 
 
+def group_google_app(g):
+    if g and g.get("google_client_id") and g.get("google_client_secret_enc"):
+        return g["google_client_id"], security.unseal(g["google_client_secret_enc"])
+    return None, None
+
+
+def google_app_for(ws, g):
+    """The Google app for a client: its IP group's own app (the client's Cloud project) when set, else yours."""
+    cid, sec = group_google_app(g)
+    return (cid, sec) if cid else google_app(ws)
+
+
+def meta_app_for(ws, g):
+    if g and g.get("fb_app_id") and g.get("fb_app_secret_enc"):
+        return g["fb_app_id"], security.unseal(g["fb_app_secret_enc"])
+    return ws.get("fb_app_id"), (security.unseal(ws["fb_app_secret_enc"]) if ws.get("fb_app_secret_enc") else None)
+
+
+def ig_app_for(ws, g):
+    if g and g.get("ig_app_id") and g.get("ig_app_secret_enc"):
+        return g["ig_app_id"], security.unseal(g["ig_app_secret_enc"])
+    return ws.get("ig_app_id"), (security.unseal(ws["ig_app_secret_enc"]) if ws.get("ig_app_secret_enc") else None)
+
+
 def channel_box(ch):
     ws = workspace(ch["workspace_id"])
-    cid, sec = google_app(ws)
+    g = group(ch.get("group_id"))
+    gcid, gsec = group_google_app(g)
+    # refresh with the app that issued this channel's token
+    if ch.get("token_client") and gcid and ch["token_client"] == gcid:
+        cid, sec = gcid, gsec
+    elif ch.get("token_client") and ch["token_client"] == ws.get("google_client_id"):
+        cid, sec = google_app(ws)
+    else:
+        cid, sec = google_app_for(ws, g)
 
     def save(sealed):
         db.run("UPDATE channels SET token_enc=? WHERE id=?", (sealed, ch["id"]))
@@ -80,7 +112,8 @@ def set_channel_state(cid, state, reason=None):
 
 
 def public(row, drop=("token_enc", "password_enc", "google_client_secret_enc", "drive_token_enc", "pw_hash",
-                      "drive_client_secret_enc", "fb_app_secret_enc", "ig_app_secret_enc", "cookies_enc")):
+                      "drive_client_secret_enc", "fb_app_secret_enc", "ig_app_secret_enc", "cookies_enc",
+                      "google_client_secret_enc", "queue_json")):
     if row is None:
         return None
     return {k: v for k, v in row.items() if k not in drop}

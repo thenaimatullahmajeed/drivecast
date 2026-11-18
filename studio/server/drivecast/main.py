@@ -64,6 +64,7 @@ def start(data_dir, host="127.0.0.1", port=8765, block=False, workers=2):
         ("updates", hotupdate.service, 1800),
         ("guard", lease.tick, 300),
         ("alerts", alerts.tick, 300),
+        ("queues", worker.refresh_queues, 600),
         ("inbox", igsync.inbox_pass, 120),
         ("backup", backup.service, 3600),
     ], workers=workers)

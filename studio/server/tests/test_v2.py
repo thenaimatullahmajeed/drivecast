@@ -230,3 +230,85 @@ class FleetMove(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class GroupAppsAndVault(unittest.TestCase):
+    def setUp(self):
+        self.dir = fresh_db()
+        self.ws, self.g, self.ch = make_world()
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def R(self, body=None):
+        return type("R", (), {"ws": self.ws, "user": {"id": 1, "role": "owner"}, "json": body or {}, "query": {}, "headers": {}})()
+
+    def test_group_app_is_used_for_new_signins_and_old_tokens_keep_their_app(self):
+        api.group_apps(self.R({"google_client_id": "client.apps.googleusercontent.com", "google_client_secret": "cs",
+                               "fb_app_id": "123", "fb_app_secret": "fs", "label": "Jess"}), str(self.g))
+        g = store.group(self.g)
+        ws = store.workspace(self.ws)
+        self.assertEqual(store.google_app_for(ws, g), ("client.apps.googleusercontent.com", "cs"))
+        self.assertEqual(store.meta_app_for(ws, g), ("123", "fs"))
+        out = api._group_out(g)
+        self.assertTrue(out["apps"]["google"] and out["apps"]["meta"])
+        self.assertEqual(out["label"], "Jess")
+        self.assertIn("score", out["readiness"])
+        with mock.patch.object(store, "TokenBox", lambda tok, cid, sec, save: cid):
+            db.run("UPDATE channels SET token_client='x.apps.googleusercontent.com' WHERE id=?", (self.ch,))
+            self.assertEqual(store.channel_box(store.channel(self.ch)), "x.apps.googleusercontent.com")  # old token, old app
+            db.run("UPDATE channels SET token_client='client.apps.googleusercontent.com' WHERE id=?", (self.ch,))
+            self.assertEqual(store.channel_box(store.channel(self.ch)), "client.apps.googleusercontent.com")
+        with self.assertRaises(api.HttpError):
+            api.group_apps(self.R({"google_client_id": "nope"}), str(self.g))
+        self.assertNotIn("google_client_secret_enc", store.public(store.group(self.g)))
+
+    def test_vault_add_and_assign_to_group(self):
+        from drivecast import instagram
+
+        class S:
+            def __init__(s):
+                import requests
+                s.headers, s.cookies = {}, requests.cookies.RequestsCookieJar()
+
+            def get(s, *a, **k):
+                return type("R", (), {"status_code": 200, "headers": {}, "text": '{"viewerId":"77","username":"tester.v"}'})()
+        with mock.patch.object(api, "session_for", lambda g: S()):
+            out = api.vault_add(self.R({"cookies": "sessionid=abc; ds_user_id=77; csrftoken=c", "label": "T1"}))
+            v = out["vault"][0]
+            self.assertEqual((v["username"], v["status"]), ("tester.v", "ready"))
+            with self.assertRaises(api.HttpError):  # same account twice
+                api.vault_add(self.R({"cookies": "sessionid=abc; ds_user_id=77; csrftoken=c"}))
+            api.group_from_vault(self.R({"vault_id": v["id"]}), str(self.g))
+        self.assertEqual(db.one("SELECT username FROM ig_accounts WHERE group_id=?", (self.g,))["username"], "tester.v")
+        self.assertEqual(db.one("SELECT status, group_id FROM ig_vault")["group_id"], self.g)
+
+    def test_up_next_snapshot_names_the_source(self):
+        from drivecast import worker
+        mid = db.run("""INSERT INTO media(workspace_id,channel_id,origin,ext_id,lane,state,ref,title,created_at)
+                        VALUES(?,?,?,?,?,?,?,?,?)""", (self.ws, self.ch, "tiktok", "T1", "fresh", "in_drive", "DC-TTTTTT", "Dance", time.time()))
+        files = [{"id": "a", "name": "My edit.mp4", "createdTime": "2026-01-01T00:00:00"},
+                 {"id": "b", "name": "x.mp4", "appProperties": {"dc_ref": "DC-TTTTTT", "dc_media": str(mid), "dc_lane": "fresh", "dc_src": "tiktok"}}]
+        items = worker.snapshot(store.channel(self.ch), worker.order_queue(files))
+        self.assertEqual([(i["origin"], i["name"]) for i in items], [("tiktok", "Dance"), ("drive", "My edit")])
+        d = api.channel_detail(self.R(), str(self.ch))
+        self.assertEqual(d["upnext"][0]["origin"], "tiktok")
+
+    def test_route_edit_moves_group_and_unlinks_identity(self):
+        g2 = db.run("INSERT INTO ip_groups(workspace_id,number,host,port,status,created_at) VALUES(?,2,'h2',1080,'ok',?)", (self.ws, time.time()))
+        with self.assertRaises(api.HttpError):  # live clients must be paused first
+            api.edit_channel(self.R({"group_id": g2}), str(self.ch))
+        db.run("UPDATE channels SET state='paused', fb_page_id='P' WHERE id=?", (self.ch,))
+        api.edit_channel(self.R({"group_id": g2, "title": "Renamed"}), str(self.ch))
+        c = store.channel(self.ch)
+        self.assertEqual((c["group_id"], c["fb_page_id"], c["title"]), (g2, None, "Renamed"))
+
+    def test_slow_proxy_is_not_called_a_drive_problem(self):
+        from drivecast import errors
+        self.assertTrue(errors.is_timeout(Exception("SOCKSHTTPSConnectionPool(host='www.googleapis.com'): ConnectTimeoutError")))
+
+    def test_devices_page(self):
+        config.DATA_DIR = self.dir
+        d = api.devices_page(self.R())
+        self.assertIn("services", d["this"])
+        self.assertIn("disk_free", d["this"])

@@ -130,6 +130,10 @@ def dashboard(ws_id, tz_name, now=None, since=None):
     nxt = db.one("""SELECT s.due_at, s.channel_id, c.title FROM slots s JOIN channels c ON c.id=s.channel_id
                     WHERE c.workspace_id=? AND s.status IN ('planned','queued') AND s.due_at>=? ORDER BY s.due_at LIMIT 1""",
                  (ws_id, now - 60))
+    if nxt:  # what will go out next, and from where (Instagram, your Drive, Inbox, YouTube, TikTok)
+        q = db.jload((db.one("SELECT queue_json FROM channels WHERE id=?", (nxt["channel_id"],)) or {}).get("queue_json"), []) or []
+        nxt = dict(nxt)
+        nxt["item"] = q[0] if q else None
     from . import worker
     live = {cid: p for cid, p in list(worker.PROGRESS.items()) if cid in cmap}
     today_card = {

@@ -4,6 +4,7 @@ publish it through that channel's IP group.
 Bulkhead rule: every job runs inside its own try/except. A failure changes only
 that channel (and, for proxy problems, that IP group) — never the whole server.
 """
+import json
 import logging
 import os
 import shutil
@@ -153,6 +154,7 @@ def run(job, adapters=None):
             files = files + photo_candidates(ch)
         files = order_queue(files)
         db.run("UPDATE channels SET queue_count=?, queue_checked_at=? WHERE id=?", (len(files), now, ch["id"]))
+        snapshot(ch, files)
         chosen, encore, m, targets = None, None, None, []
         for f in files:
             mid = _media_id(f)
@@ -306,6 +308,48 @@ def run(job, adapters=None):
         PROGRESS.pop(ch["id"], None)
         if tmp:
             shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _origin(f):
+    """Where a queued file came from, for the 'Up next' list: Instagram / YouTube / TikTok / Client Inbox / your Drive."""
+    p = f.get("appProperties") or {}
+    src = p.get("dc_src")
+    if not src and p.get("dc_media"):
+        m = db.one("SELECT origin FROM media WHERE id=?", (int(p["dc_media"]),))
+        src = m and m["origin"]
+    if not src:
+        src = "drive" if not p.get("dc_ref") else "instagram"
+    return src
+
+
+def snapshot(ch, files, limit=12):
+    """Remember the real posting order (the same order the worker uses) so the panel can show it without a Drive call."""
+    items = []
+    for f in files[:limit]:
+        p = f.get("appProperties") or {}
+        m = db.one("SELECT title, taken_at, ref, width, height FROM media WHERE id=?", (int(p["dc_media"]),)) if p.get("dc_media") else None
+        items.append({"name": (m and m["title"]) or _plain_title(f.get("name")), "origin": _origin(f),
+                      "lane": p.get("dc_lane") or ("drive" if not p.get("dc_ref") else "fresh"), "photo": bool(f.get("photo")),
+                      "taken": (m and m["taken_at"]) or int(p.get("dc_taken") or 0) or None, "ref": (m and m["ref"]) or p.get("dc_ref"),
+                      "size": f"{m['width']}×{m['height']}" if m and m["width"] else None, "added": f.get("createdTime")})
+    db.run("UPDATE channels SET queue_json=?, queue_at=? WHERE id=?", (json.dumps(items), time.time(), ch["id"]))
+    return items
+
+
+def refresh_queues():
+    """Every 10 minutes: the real 'Up next' for every live client (one Drive listing each, through its group)."""
+    for ch in db.all("SELECT * FROM channels WHERE state='live' AND folder_id IS NOT NULL"):
+        g = store.group(ch["group_id"])
+        if not g or g["status"] == "down" or ch["id"] in PROGRESS:
+            continue
+        try:
+            ws = store.workspace(ch["workspace_id"])
+            files = drive.videos(session_for(g), store.drive_box(ws), ch["folder_id"])
+            if any(d["photo"] for d in destinations(ch)):
+                files = files + photo_candidates(ch)
+            snapshot(ch, order_queue(files))
+        except Exception as e:
+            log.info("queue refresh %s: %s", ch["id"], e)
 
 
 def _plain_title(name):

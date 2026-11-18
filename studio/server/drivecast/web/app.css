@@ -175,8 +175,8 @@ input.i:focus,select.i:focus{outline:2px solid var(--ink);outline-offset:1px}
 
 /* ---------- v1.0.14: dense dashboard ---------- */
 .dgrid{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:12px;margin-bottom:12px}
-.s4{grid-column:span 4}.s5{grid-column:span 5}.s7{grid-column:span 7}.s8{grid-column:span 8}.s12{grid-column:span 12}
-@media (max-width:1180px){.s4,.s5,.s7,.s8{grid-column:span 12}.s4.half{grid-column:span 6}}
+.s4{grid-column:span 4}.s5{grid-column:span 5}.s6{grid-column:span 6}.s7{grid-column:span 7}.s8{grid-column:span 8}.s12{grid-column:span 12}
+@media (max-width:1180px){.s4,.s5,.s6,.s7,.s8{grid-column:span 12}.s4.half{grid-column:span 6}}
 .kp{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:12px;margin-bottom:12px}
 @media (max-width:1280px){.kp{grid-template-columns:repeat(3,minmax(0,1fr))}}
 .kpi{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 14px;display:flex;flex-direction:column;gap:6px;min-width:0}
