@@ -37,7 +37,7 @@ def collect():
         for dv in fleet.devices():
             mins = int((now - (dv["last_seen"] or now)) / 60)
             if not dv["online"]:
-                out.append(_a("PHONE_OFFLINE", "off:" + dv["host"], host=dv["host"], mins=mins))
+                out.append(dict(_a("PHONE_OFFLINE", "off:" + dv["host"], host=dv["host"], mins=mins), mins=mins))
             elif dv["max_users"] and dv["users"] >= 0.85 * dv["max_users"]:
                 out.append(_a("PHONE_FULL", "full:" + dv["host"], "warn", host=dv["host"], users=dv["users"], max=dv["max_users"]))
     return out
@@ -46,9 +46,13 @@ def collect():
 def tick():
     al = collect()
     old = {a["key"] for a in db.jload(db.meta_get("alerts_json"), []) or []}
+    from . import notify
     for a in al:
         if a["key"] not in old:
             db.event(a["level"], "alert", f"{a['title']}. {a['message']}", None, None, a["code"])
+        if a["level"] == "error" and (a["code"] != "PHONE_OFFLINE" or (a.get("mins") or 0) >= 60):
+            notify.alert("al:" + a["key"], f"{a['title']}. {a['message']}")  # a server is told only after 1 hour offline
+    notify.resolved_codes({"al:" + a["key"] for a in al if a["level"] == "error"})
     db.meta_set("alerts_json", json.dumps(al))
     db.meta_set("alerts_at", str(time.time()))
     return al

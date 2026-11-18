@@ -138,6 +138,7 @@ def login(req):
     if not u or not security.check_password(b["password"], u["pw_hash"]):
         _login_fail[key] = fails + [time.time()]
         raise HttpError(401, "Email or password is wrong")
+    _moved_check(u)
     if u["status"] != "active":
         raise HttpError(403, "This account is suspended. Contact the server owner.")
     _login_fail.pop(key, None)
@@ -364,7 +365,7 @@ def _probe(p):
 
 def _save_probe(gid, r):
     hist = db.jload(db.one("SELECT latency_json FROM ip_groups WHERE id=?", (gid,))["latency_json"], [])[-23:] + [r["ms"]]
-    db.run("""UPDATE ip_groups SET status='ok', latency_ms=?, last_check=?, last_error=NULL, fail_count=0, latency_json=?,
+    db.run("""UPDATE ip_groups SET status='ok', latency_ms=?, last_check=?, last_error=NULL, fail_count=0, fail_since=NULL, latency_json=?,
               country=COALESCE(?,country), country_name=COALESCE(?,country_name), city=COALESCE(?,city), isp=COALESCE(?,isp)
               WHERE id=?""", (r["ms"], time.time(), json.dumps(hist), r["country"], r["country_name"], r["city"], r["isp"], gid))
 
@@ -380,7 +381,7 @@ def add_group(req):
     lim = store.limits_for_workspace(req.ws)
     have = db.one("SELECT COUNT(*) n FROM ip_groups WHERE workspace_id=?", (req.ws,))["n"]
     if lim["max_groups"] and have >= int(lim["max_groups"]):
-        raise HttpError(403, f"Your account allows {lim['max_groups']} IP groups")
+        raise HttpError(403, f"Your account allows {lim['max_groups']} Pools")
     p = _proxy_fields(b)
     r = _probe(p)
     num = db.one("SELECT COALESCE(MAX(number),0)+1 n FROM ip_groups WHERE workspace_id=?", (req.ws,))["n"]
@@ -407,7 +408,7 @@ def test_group_form(req):
 def _own_group(req, gid):
     g = db.one("SELECT * FROM ip_groups WHERE id=? AND workspace_id=?", (int(gid), req.ws))
     if not g:
-        raise HttpError(404, "IP group not found")
+        raise HttpError(404, "Pool not found")
     return g
 
 
@@ -429,7 +430,7 @@ def maintenance_one_group(gid):
             db.run("UPDATE ip_groups SET outgoing_ip=COALESCE(outgoing_ip,?) WHERE id=?", (r["ip"], gid))
             _save_probe(gid, r)
     except DriveCastError as e:
-        db.run("UPDATE ip_groups SET status='down', last_error=?, last_check=? WHERE id=?", (e.user_message, time.time(), gid))
+        maintenance.proxy_failed(g, e.user_message)  # patient: one failed test does not call it down
 
 
 @route("POST", "/api/groups/(\\d+)/accept-ip")
@@ -457,7 +458,7 @@ def edit_group(req, gid):
         if g["outgoing_ip"] and r["ip"] != g["outgoing_ip"] and n and not b.get("accept_new_ip"):
             loc = ", ".join(x for x in (r["city"], r["country"]) if x)
             raise HttpError(409, f"The new proxy leaves from {r['ip']}{' (' + loc + ')' if loc else ''}, not {g['outgoing_ip']}. "
-                                 f"The {n} channel(s) in this group will post from the new IP. Confirm to continue.")
+                                 f"The {n} channel(s) in this pool will post from the new IP. Confirm to continue.")
         db.run("UPDATE ip_groups SET host=?, port=?, username=?, password_enc=?, outgoing_ip=? WHERE id=?",
                (p["host"], p["port"], p["username"], security.seal(p["password"]) if p.get("password") else None, r["ip"], g["id"]))
         _save_probe(g["id"], r)
@@ -474,7 +475,7 @@ def edit_group(req, gid):
 def delete_group(req, gid):
     g = _own_group(req, gid)
     if db.one("SELECT 1 FROM channels WHERE group_id=?", (g["id"],)):
-        raise HttpError(409, "Move or remove this group's channels first")
+        raise HttpError(409, "Move or remove this pool's channels first")
     db.run("DELETE FROM ip_groups WHERE id=?", (g["id"],))
     return {"ok": True}
 
@@ -529,23 +530,23 @@ def new_link(req):
     if gx and gx["workspace_id"] != req.ws:
         gx = None
     if purpose == "youtube" and not all(store.google_app_for(ws, gx)):
-        raise HttpError(400, "Add a Google app first — the client's own (IP group → Apps) or yours (Settings)")
+        raise HttpError(400, "Add a Google app first — the client's own (Pool → Apps) or yours (Settings)")
     if purpose == "drive" and not all(store.drive_app(ws)):
         raise HttpError(400, "Add your Google API app (or the separate Drive app) in Settings first")
     gid = None
     if purpose == "youtube":
         g = _own_group(req, b.get("group_id") or 0)
         if g["status"] == "down":
-            raise HttpError(400, f"Group {g['number']} is not responding. Fix it before connecting a channel.")
+            raise HttpError(400, f"Pool {g['number']} is not responding. Fix it before connecting a channel.")
         gid = g["id"]
     elif purpose == "facebook":
         if not all(store.meta_app_for(ws, gx)):
-            raise HttpError(400, "Add a Meta app first — the client's own (IP group → Apps) or yours (Settings)")
+            raise HttpError(400, "Add a Meta app first — the client's own (Pool → Apps) or yours (Settings)")
         g = _own_group(req, b.get("group_id") or 0)
         gid = g["id"]
     elif purpose == "instagram":
         if not all(store.ig_app_for(ws, gx)):
-            raise HttpError(400, "Add an Instagram app ID and secret first — the client's own (IP group → Apps) or yours (Settings)")
+            raise HttpError(400, "Add an Instagram app ID and secret first — the client's own (Pool → Apps) or yours (Settings)")
         g = _own_group(req, b.get("group_id") or 0)
         gid = g["id"]
     elif purpose != "drive":
@@ -635,8 +636,8 @@ def oauth_callback(req):
             db.run("UPDATE connect_links SET used_at=?, result_json=? WHERE code=?", (time.time(), json.dumps({"email": email}), code))
             return 200, _page("Google Drive connected", f"Connected as <b>{html.escape(email or '')}</b>. You can close this tab.")
         g = store.group(l["group_id"])
-        cid, sec = store.google_app_for(ws, g)  # the client's own Google app when its group has one
-        s = session_for(g)  # the channel's very first call already leaves from its group IP
+        cid, sec = store.google_app_for(ws, g)  # the client's own Google app when its pool has one
+        s = session_for(g)  # the channel's very first call already leaves from its pool IP
         tok = exchange(s, cid, sec, req.query.get("code", ""), public_base(req) + "/oauth/callback")
         sealed = security.seal(json.dumps(tok))
         p = platform("youtube")
@@ -735,7 +736,7 @@ def _own_channel(req, cid):
 
 @route("POST", "/api/channels/(\\d+)/route")
 def set_route(req, cid):
-    """Finish the wizard: IP group, content source (Drive folder and/or Instagram), posting plan."""
+    """Finish the wizard: Pool, content source (Drive folder and/or Instagram), posting plan."""
     c = _own_channel(req, cid)
     b = req.json
     igb = b.get("instagram") or None
@@ -807,9 +808,9 @@ def edit_channel(req, cid):
         db.run("UPDATE channels SET ai_json=? WHERE id=?", (json.dumps(_ai.normalize(b["ai"], _ai.settings(c))), c["id"]))
     if b.get("group_id") and int(b["group_id"]) != c["group_id"]:
         if c["state"] == "live":
-            raise HttpError(409, "Pause the client before moving it to another IP group")
+            raise HttpError(409, "Pause the client before moving it to another Pool")
         _own_group(req, b["group_id"])
-        # Facebook pages and Instagram accounts belong to the old group's identity: unlink them
+        # Facebook pages and Instagram accounts belong to the old pool's identity: unlink them
         db.run("UPDATE fb_pages SET channel_id=NULL WHERE channel_id=?", (c["id"],))
         db.run("UPDATE ig_dest SET channel_id=NULL WHERE channel_id=?", (c["id"],))
         db.run("UPDATE channels SET group_id=?, fb_page_id=NULL, ig_dest_id=NULL WHERE id=?", (int(b["group_id"]), c["id"]))
@@ -1023,6 +1024,23 @@ def admin_reset_password(req, uid):
     return {"temporary_password": temp}
 
 
+def delete_workspace_data(u):
+    ws = u["workspace_id"]
+    if db.one("SELECT 1 FROM jobs j JOIN channels c ON c.id=j.channel_id WHERE c.workspace_id=? AND j.status='running'", (ws,)):
+        raise HttpError(409, "A post is uploading for this user right now. Try again in a few minutes.")
+    with db.tx() as c:
+        c.execute("DELETE FROM jobs WHERE channel_id IN (SELECT id FROM channels WHERE workspace_id=?)", (ws,))
+        c.execute("DELETE FROM sources WHERE channel_id IN (SELECT id FROM channels WHERE workspace_id=?)", (ws,))
+        for t in ("uploads", "media", "ig_dest", "fb_pages", "fb_accounts", "ig_accounts", "ig_vault", "channels", "ip_groups",
+                  "connect_links", "events", "ai_log"):
+            c.execute(f"DELETE FROM {t} WHERE workspace_id=?", (ws,))
+        c.execute("DELETE FROM sessions WHERE user_id IN (SELECT id FROM users WHERE workspace_id=?)", (ws,))
+        c.execute("DELETE FROM password_resets WHERE user_id IN (SELECT id FROM users WHERE workspace_id=?)", (ws,))
+        c.execute("UPDATE invites SET used_by=NULL WHERE used_by IN (SELECT id FROM users WHERE workspace_id=?)", (ws,))
+        c.execute("DELETE FROM users WHERE workspace_id=?", (ws,))
+        c.execute("DELETE FROM workspaces WHERE id=?", (ws,))
+
+
 @route("POST", "/api/admin/users/(\\d+)/delete", auth="owner")
 def admin_delete_user(req, uid):
     """Remove a student and everything in their workspace. Videos already on
@@ -1030,22 +1048,7 @@ def admin_delete_user(req, uid):
     u = db.one("SELECT * FROM users WHERE id=?", (int(uid),))
     if not u or u["role"] == "owner":
         raise HttpError(404, "User not found")
-    ws = u["workspace_id"]
-    if db.one("SELECT 1 FROM jobs j JOIN channels c ON c.id=j.channel_id WHERE c.workspace_id=? AND j.status='running'", (ws,)):
-        raise HttpError(409, "A post is uploading for this user right now. Try again in a few minutes.")
-    with db.tx() as c:
-        c.execute("DELETE FROM jobs WHERE channel_id IN (SELECT id FROM channels WHERE workspace_id=?)", (ws,))
-        c.execute("DELETE FROM uploads WHERE workspace_id=?", (ws,))
-        c.execute("DELETE FROM media WHERE workspace_id=?", (ws,))
-        c.execute("DELETE FROM ig_accounts WHERE workspace_id=?", (ws,))
-        c.execute("DELETE FROM channels WHERE workspace_id=?", (ws,))
-        c.execute("DELETE FROM ip_groups WHERE workspace_id=?", (ws,))
-        c.execute("DELETE FROM connect_links WHERE workspace_id=?", (ws,))
-        c.execute("DELETE FROM events WHERE workspace_id=?", (ws,))
-        c.execute("DELETE FROM sessions WHERE user_id=?", (u["id"],))
-        c.execute("UPDATE invites SET used_by=NULL WHERE used_by=?", (u["id"],))
-        c.execute("DELETE FROM users WHERE id=?", (u["id"],))
-        c.execute("DELETE FROM workspaces WHERE id=?", (ws,))
+    delete_workspace_data(u)
     db.event("info", "account", f"Account {u['name']} ({u['email']}) was deleted by the owner")
     return {"ok": True}
 
@@ -1200,7 +1203,7 @@ def ig_lookup(req):
     g = _own_group(req, b["group_id"])
     acc = db.one("SELECT * FROM ig_accounts WHERE group_id=?", (g["id"],))
     if not acc:
-        raise HttpError(400, f"Group {g['number']} has no Instagram account yet. Add its cookies on the IP groups page.")
+        raise HttpError(400, f"Pool {g['number']} has no Instagram account yet. Add its cookies on the Pools page.")
     try:
         handle = _ig.clean_handle(b["handle"])
         cl = igsync.client_for(acc, g)
@@ -1342,7 +1345,7 @@ def configure_source(c, b):
 def put_source(req, cid):
     c = _own_channel(req, cid)
     if not c["group_id"]:
-        raise HttpError(400, "Choose an IP group for this channel first")
+        raise HttpError(400, "Choose a pool for this channel first")
     configure_source(c, req.json or {})
     return channel_detail(req, cid)
 
@@ -1647,7 +1650,7 @@ from .errors import CodedError  # noqa: E402
 
 
 def _fb_store_account(ws, g, user_tok, expires, s):
-    """Save the connected Facebook identity for a group and its pages' tokens."""
+    """Save the connected Facebook identity for a pool and its pages' tokens."""
     who = _fb.me(s, user_tok)
     now = time.time()
     sealed = security.seal(user_tok)
@@ -1679,7 +1682,7 @@ def _fb_store_account(ws, g, user_tok, expires, s):
 
 
 def _discover_ig_dest(ws, g, s):
-    """Every Instagram Professional account linked to this group's pages becomes a ready destination."""
+    """Every Instagram Professional account linked to this pool's pages becomes a ready destination."""
     from . import igpost
     acc = db.one("SELECT * FROM fb_accounts WHERE group_id=?", (g["id"],))
     if not acc:
@@ -1709,7 +1712,7 @@ def _ig_dest_upsert(ws_id, gid, via, a, token_enc, expires, page_id=None):
     other = db.one("SELECT g.number FROM ig_dest d JOIN ip_groups g ON g.id=d.group_id WHERE d.ig_user_id=? AND d.group_id!=?",
                    (a["ig_user_id"], gid))
     if other:  # one IP group = one identity
-        db.event("warn", "instagram", f"@{a['username']} is already a destination on Group {other['number']} — kept there.", ws_id)
+        db.event("warn", "instagram", f"@{a['username']} is already a destination on Pool {other['number']} — kept there.", ws_id)
         return None
     return db.run("""INSERT INTO ig_dest(workspace_id,group_id,via,ig_user_id,username,picture,page_id,token_enc,token_expires,created_at,updated_at)
                      VALUES(?,?,?,?,?,?,?,?,?,?,?)""", (ws_id, gid, via, a["ig_user_id"], a["username"], a["picture"], page_id,
@@ -1728,14 +1731,14 @@ def fb_callback(req):
     ws = store.workspace(l["workspace_id"])
     g = store.group(l["group_id"])
     try:
-        s = session_for(g)  # Facebook sees this group's proxy IP, like its YouTube traffic
+        s = session_for(g)  # Facebook sees this pool's proxy IP, like its YouTube traffic
         app_id, app_secret = store.meta_app_for(ws, g)
         tok, exp = _fb.exchange_code(s, app_id, app_secret, req.query.get("code", ""), public_base(req) + "/oauth/fb/callback")
         who, n = _fb_store_account(ws, g, tok, exp, s)
         db.run("UPDATE connect_links SET used_at=?, result_json=? WHERE code=?",
                (time.time(), json.dumps({"fb": who.get("name"), "pages": n}), code))
         return 200, _page("Facebook connected",
-                          f"Connected as <b>{html.escape(who.get('name') or '')}</b> on Group {g['number']}. "
+                          f"Connected as <b>{html.escape(who.get('name') or '')}</b> on Pool {g['number']}. "
                           f"<b>{n}</b> page(s) are ready. Go back to DriveCast and link each page to a channel. You can close this tab.")
     except CodedError as e:
         db.run("UPDATE connect_links SET error=? WHERE code=?", (e.info()["message"][:300], code))
@@ -1780,7 +1783,7 @@ def fb_refresh(req, gid):
     g = _own_group(req, gid)
     acc = db.one("SELECT * FROM fb_accounts WHERE group_id=?", (g["id"],))
     if not acc:
-        raise HttpError(400, "No Facebook connected on this group")
+        raise HttpError(400, "No Facebook connected on this pool")
     ws = store.workspace(req.ws)
     try:
         s = session_for(g)
@@ -1805,7 +1808,7 @@ def fb_assign(req, pid):
         return {"ok": True, "channel": None}
     c = _own_channel(req, ch_id)
     if c["group_id"] != db.one("SELECT group_id FROM fb_accounts WHERE id=?", (p["fb_account_id"],))["group_id"]:
-        raise HttpError(400, "This page and channel are on different IP groups. Keep each client on one group (one IP = one ID).")
+        raise HttpError(400, "This page and channel are on different Pools. Keep each client on one group (one IP = one ID).")
     # one page per channel, one channel per page
     db.run("UPDATE fb_pages SET channel_id=NULL WHERE channel_id=? AND id!=?", (c["id"], p["id"]))
     db.run("UPDATE channels SET fb_page_id=NULL WHERE fb_page_id IN (SELECT page_id FROM fb_pages WHERE id=? ) AND id!=?", (p["id"], c["id"]))
@@ -1828,7 +1831,7 @@ def ig_callback(req):
     ws = store.workspace(l["workspace_id"])
     g = store.group(l["group_id"])
     try:
-        s = session_for(g)  # Instagram sees this group's proxy IP, like everything else of this client
+        s = session_for(g)  # Instagram sees this pool's proxy IP, like everything else of this client
         ig_id, ig_secret = store.ig_app_for(ws, g)
         tok, exp = igpost.exchange_code(s, ig_id, ig_secret, req.query.get("code", "").split("#")[0], public_base(req) + "/oauth/ig/callback")
         a = igpost.me(s, tok)
@@ -1838,7 +1841,7 @@ def ig_callback(req):
         db.run("UPDATE connect_links SET used_at=?, result_json=? WHERE code=?",
                (time.time(), json.dumps({"instagram": a["username"], "dest_id": did}), code))
         return 200, _page("Instagram connected",
-                          f"<b>@{html.escape(a['username'] or '')}</b> is ready on Group {g['number']}. "
+                          f"<b>@{html.escape(a['username'] or '')}</b> is ready on Pool {g['number']}. "
                           "Go back to DriveCast and choose it as this client's Instagram destination. You can close this tab.")
     except CodedError as e:
         db.run("UPDATE connect_links SET error=? WHERE code=?", (e.info()["message"][:300], code))
@@ -1865,7 +1868,7 @@ def ig_dest_list(req):
 def ig_dest_discover(req, gid):
     g = _own_group(req, gid)
     if not db.one("SELECT 1 FROM fb_accounts WHERE group_id=?", (g["id"],)):
-        raise HttpError(400, f"Connect Facebook on Group {g['number']} first — its pages carry the linked Instagram accounts.")
+        raise HttpError(400, f"Connect Facebook on Pool {g['number']} first — its pages carry the linked Instagram accounts.")
     n = _discover_ig_dest(store.workspace(req.ws), g, session_for(g))
     out = ig_dest_list(req)
     out["found"] = n
@@ -1884,7 +1887,7 @@ def ig_dest_assign(req, did):
         return {"ok": True, "channel": None}
     c = _own_channel(req, ch_id)
     if c["group_id"] != d["group_id"]:
-        raise HttpError(400, "This Instagram account and client are on different IP groups. Keep each client on one group (one IP = one ID).")
+        raise HttpError(400, "This Instagram account and client are on different Pools. Keep each client on one group (one IP = one ID).")
     db.run("UPDATE ig_dest SET channel_id=NULL WHERE channel_id=? AND id!=?", (c["id"], d["id"]))
     db.run("UPDATE channels SET ig_dest_id=NULL WHERE ig_dest_id=? AND id!=?", (d["id"], c["id"]))
     db.run("UPDATE ig_dest SET channel_id=? WHERE id=?", (c["id"], d["id"]))
@@ -2003,7 +2006,13 @@ def _fleet_body(req):
 @route("POST", "/fleet/hello", auth=None)
 def fleet_hello(req):
     fleet = _fleet_body(req)
-    return {"ok": fleet.apply("/fleet/hello", req.json), "update_now": db.meta_get("fleet_update_now") or None}
+    from . import usermove
+    host = (req.json.get("host") or "").lower()
+    moved = usermove.pending_for(host)
+    if moved:
+        usermove.clear_pending(host)  # it applies them on this answer
+    return {"ok": fleet.apply("/fleet/hello", req.json), "update_now": db.meta_get("fleet_update_now") or None,
+            "telegram": fleet.telegram_for_fleet(), "moved_away": moved}
 
 
 @route("POST", "/fleet/dir", auth=None)
@@ -2177,10 +2186,10 @@ def fleet_move(req):
         raise HttpError(400, str(e))
 
 
-# ---------------------------------------------------------------- the client's own apps, per IP group
+# ---------------------------------------------------------------- the client's own apps, per Pool
 @route("PUT", "/api/groups/(\\d+)/apps")
 def group_apps(req, gid):
-    """Google / Meta / Instagram apps that belong to the client of this group (their own Cloud project and
+    """Google / Meta / Instagram apps that belong to the client of this pool (their own Cloud project and
     Meta app). Empty = use yours from Settings. Existing sign-ins keep working with the app that issued them."""
     g = _own_group(req, gid)
     b = req.json
@@ -2275,7 +2284,7 @@ def vault_delete(req, vid):
 
 @route("POST", "/api/groups/(\\d+)/instagram/from-vault")
 def group_from_vault(req, gid):
-    """Give this group one of the prepared test accounts."""
+    """Give this pool one of the prepared test accounts."""
     g = _own_group(req, gid)
     v = db.one("SELECT * FROM ig_vault WHERE id=? AND workspace_id=?", (int(req.json.get("vault_id") or 0), req.ws))
     if not v:
@@ -2336,7 +2345,7 @@ def ai_overview(req):
     if ws.get("groq_key_enc"):
         keys.append({"scope": f"ws{ws['id']}", "where": "Yours (Settings)", "usage": _ai.usage(f"ws{ws['id']}")})
     for g in db.all("SELECT * FROM ip_groups WHERE workspace_id=? AND groq_key_enc IS NOT NULL ORDER BY number", (req.ws,)):
-        keys.append({"scope": f"g{g['id']}", "where": f"Group {g['number']}" + (f" · {g['label']}" if g.get("label") else ""),
+        keys.append({"scope": f"g{g['id']}", "where": f"Pool {g['number']}" + (f" · {g['label']}" if g.get("label") else ""),
                      "group_id": g["id"], "usage": _ai.usage(f"g{g['id']}")})
     chans = []
     for c in db.all("SELECT * FROM channels WHERE workspace_id=? ORDER BY title", (req.ws,)):
@@ -2364,7 +2373,7 @@ def ai_report_now(req, cid):
     from . import ai as _ai
     c = _own_channel(req, cid)
     if not _ai.key_for(c):
-        raise HttpError(400, "Add a Groq key first — in Settings, or on this client's IP group")
+        raise HttpError(400, "Add a Groq key first — in Settings, or on this client's Pool")
     _ai.weekly(force_channel=c["id"])
     return _ai_channel(store.channel(c["id"]))
 
@@ -2377,7 +2386,7 @@ def ai_preview(req):
     c = _own_channel(req, int(b.get("channel_id") or 0))
     k = _ai.key_for(c)
     if not k:
-        raise HttpError(400, "Add a Groq key first — in Settings, or on this client's IP group")
+        raise HttpError(400, "Add a Groq key first — in Settings, or on this client's Pool")
     cfg = _ai.normalize(b.get("ai") or {}, _ai.settings(c))
     tmp = dict(c, ai_json=json.dumps({**cfg, "captions": True, "subtitles": False}))
     title = (b.get("title") or "").strip() or c["title"]
@@ -2555,6 +2564,9 @@ def google_login_callback(req, l):
         return 400, _page("Email not verified", "Google did not confirm this email address. Use another Google account.", False)
     u = db.one("SELECT * FROM users WHERE google_sub=?", (sub,)) or db.one("SELECT * FROM users WHERE lower(email)=lower(?)", (email,))
     if u:
+        w = store.workspace(u["workspace_id"])
+        if w and w.get("moved_to"):
+            return 302, {"Location": _panel(w["moved_to"]) + "/oauth/google?mode=login&hint=" + email}
         if u["status"] != "active":
             return 403, _page("Account suspended", "Contact the studio owner.", False)
         if not u.get("google_sub"):
@@ -2589,3 +2601,180 @@ def google_login_callback(req, l):
     db.run("UPDATE users SET google_sub=? WHERE id=?", (sub, u["id"]))
     _start_session(req, u)
     return 302, {"Location": "/#/settings"}
+
+
+# ---------------------------------------------------------------- Telegram alerts (owner)
+@route("GET", "/api/telegram", auth="owner")
+def telegram_get(req):
+    from . import notify
+    return notify.view()
+
+
+@route("POST", "/api/telegram", auth="owner")
+def telegram_save(req):
+    from . import notify
+    try:
+        return notify.save(req.json)
+    except ValueError as e:
+        raise HttpError(400, str(e))
+
+
+@route("POST", "/api/telegram/find", auth="owner")
+def telegram_find(req):
+    from . import notify
+    try:
+        return notify.find_chat()
+    except ValueError as e:
+        raise HttpError(400, str(e))
+
+
+@route("POST", "/api/telegram/test", auth="owner")
+def telegram_test(req):
+    from . import notify
+    if not notify.ready():
+        raise HttpError(400, "Save the bot token and chat id first")
+    if not notify.send_now(f"✅ DriveCast alerts work. You will hear here when a server is offline for an hour, a pool's proxy is down for real, or something serious needs you.\n— {notify._host()}"):
+        raise HttpError(502, "Telegram did not deliver — check the chat id (press Start in your bot first)")
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------- Accounts (every connected account) and deep stats
+@route("GET", "/api/accounts")
+def accounts_list(req):
+    return insights.accounts(req.ws)
+
+
+@route("GET", "/api/accounts/(youtube|facebook|instagram)/(\\d+)")
+def account_detail(req, kind, aid):
+    d = insights.account_deep(req.ws, kind, int(aid), req.user["timezone"])
+    if not d:
+        raise HttpError(404, "Account not found")
+    from . import ai as _ai
+    if d["channel_id"]:
+        c = store.channel(d["channel_id"])
+        d["ai_pick"] = _ai.last_pick(c["id"]) if c else None
+        d["ai_ready"] = bool(c and _ai.key_for(c))
+    return d
+
+
+@route("POST", "/api/accounts/(youtube|facebook|instagram)/(\\d+)/analyse")
+def account_analyse(req, kind, aid):
+    from . import ai as _ai
+    d = insights.account_deep(req.ws, kind, int(aid), req.user["timezone"])
+    if not d or not d["channel_id"]:
+        raise HttpError(404, "This account is not linked to a client yet")
+    c = store.channel(d["channel_id"])
+    facts = {"platform": kind, "account": d["head"]["name"], "summary": d["summary"], "origins": d["origins"],
+             "best_posts": d["top"], "recent": [{k: p[k] for k in ("title", "views", "first_day", "status")} for p in d["posts"][:25]],
+             "growth_last_14_days": d["growth"][-14:]}
+    try:
+        return {"text": _ai.analyse(c, facts)}
+    except _ai.AiError as e:
+        raise HttpError(400, str(e))
+
+
+def _moved_check(u):
+    w = store.workspace(u["workspace_id"])
+    if w and w.get("moved_to"):
+        raise HttpError(409, f"Your studio moved to a new server. Sign in at https://{w['moved_to']}")
+
+
+# ---------------------------------------------------------------- whole-user moves between servers (hub board)
+def _fleet_signed(req):
+    from . import fleet
+    if not fleet.verify(req.raw or b"", req.headers.get("X-DC-Fleet") or ""):
+        raise HttpError(403, "Bad fleet signature")
+    return fleet
+
+
+@route("POST", "/fleet/ws-export", auth=None)
+def fleet_ws_export(req):
+    _fleet_signed(req)
+    from . import usermove
+    b = json.loads(req.raw or b"{}")
+    if db.one("SELECT 1 FROM jobs j JOIN channels c ON c.id=j.channel_id JOIN users u ON u.workspace_id=c.workspace_id "
+              "WHERE j.status='running' AND lower(u.email)=lower(?)", (b.get("email") or "",)):
+        raise HttpError(409, "One of this user's posts is uploading — try again in a few minutes")
+    try:
+        return FileOut(usermove.seal_bundle(usermove.export_workspace(b.get("email") or "")), "ws.bin")
+    except ValueError as e:
+        raise HttpError(404, str(e))
+
+
+@route("POST", "/fleet/ws-import", auth=None)
+def fleet_ws_import(req):
+    _fleet_signed(req)
+    from . import usermove
+    try:
+        return usermove.import_workspace(usermove.open_bundle(req.raw))
+    except ValueError as e:
+        raise HttpError(409, str(e))
+
+
+@route("POST", "/fleet/ws-action", auth=None)
+def fleet_ws_action(req):
+    _fleet_signed(req)
+    from . import usermove
+    b = json.loads(req.raw or b"{}")
+    try:
+        return usermove.local_action(b.get("email") or "", b.get("action"), b.get("to"))
+    except ValueError as e:
+        raise HttpError(400, str(e))
+
+
+@route("POST", "/fleet/ws-snapshot", auth=None)
+def fleet_ws_snapshot(req):
+    fleet = _fleet_signed(req)
+    if fleet.role() != "hub":
+        raise HttpError(400, "This phone is not the hub")
+    from . import usermove
+    raw = req.raw or b""
+    n = int.from_bytes(raw[:4], "big")
+    head = json.loads(raw[4:4 + n])
+    usermove.store_snapshot(head["host"], head["email"], raw[4 + n:])
+    return {"ok": True}
+
+
+@route("GET", "/api/fleet/users", auth="owner")
+def fleet_users(req):
+    from . import fleet, usermove
+    if fleet.role() != "hub":
+        return {"hub": False, "servers": [{"host": fleet.my_host() or (req.headers.get("Host") or "this server"), "online": True,
+                                           "label": "This server", "users_list": usermove.summary(), "stats": fleet._stats(),
+                                           "users": fleet.users_count(), "max_users": fleet.max_users(), "snapshots": {}}],
+                "log": []}
+    return {"hub": True, "servers": usermove.board(), "log": db.jload(db.meta_get("move_log"), []) or []}
+
+
+@route("POST", "/api/fleet/users/action", auth="owner")
+def fleet_users_action(req):
+    from . import usermove
+    b = req.json
+    need(b, "host", "email", "action")
+    if b["action"] not in ("suspend", "activate", "delete", "reset_link"):
+        raise HttpError(400, "Unknown action")
+    try:
+        out = usermove.action(b["host"], b["email"], b["action"])
+    except ValueError as e:
+        raise HttpError(400, str(e))
+    from . import fleet
+    if fleet.role() == "hub":
+        threading_hello()
+    return out
+
+
+def threading_hello():
+    import threading
+    from . import fleet
+    threading.Thread(target=lambda: fleet.hello(), daemon=True).start()
+
+
+@route("POST", "/api/fleet/users/move", auth="owner")
+def fleet_users_move(req):
+    from . import usermove
+    b = req.json
+    need(b, "email", "from", "to")
+    try:
+        return usermove.move(b["email"], b["from"], b["to"])
+    except ValueError as e:
+        raise HttpError(400, str(e))

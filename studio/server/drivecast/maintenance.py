@@ -27,31 +27,77 @@ def refresh_folders(ws_id=None):
             db.run("UPDATE workspaces SET folders_error=? WHERE id=?", (msg[:300], ws["id"]))
 
 
-def check_groups():
-    for g in db.all("SELECT * FROM ip_groups"):
+PROXY_PATIENCE = 10 * 60   # a proxy must fail for this long (and 3 checks in a row) before it is called down
+QUICK_RETRIES = 2          # short blips: try again twice, 15 s apart, before counting a failure
+
+
+def _probe_patiently(g):
+    err = None
+    for i in range(1 + QUICK_RETRIES):
         try:
-            r = probe(g)
-            ip, ms = r["ip"], r["ms"]
-            if r["country"]:
-                db.run("UPDATE ip_groups SET country=?, country_name=COALESCE(?,country_name), city=?, isp=? WHERE id=?",
-                       (r["country"], r["country_name"], r["city"], r["isp"], g["id"]))
-            hist = db.jload(g["latency_json"], [])[-23:] + [ms]
-            if g["outgoing_ip"] and ip != g["outgoing_ip"]:
-                db.run("UPDATE ip_groups SET status='down', last_error=?, last_check=?, latency_json=? WHERE id=?",
-                       (f"Outgoing IP changed to {ip}", time.time(), json.dumps(hist), g["id"]))
-                db.event("error", "proxy", f"Group {g['number']}: outgoing IP changed to {ip}. Channels held until you confirm.",
-                         g["workspace_id"])
-                continue
-            was_down = g["status"] == "down"
-            db.run("""UPDATE ip_groups SET status='ok', outgoing_ip=COALESCE(outgoing_ip,?), latency_ms=?, last_check=?,
-                      last_error=NULL, fail_count=0, latency_json=? WHERE id=?""",
-                   (ip, ms, time.time(), json.dumps(hist), g["id"]))
-            if was_down:
-                db.event("info", "proxy", f"Group {g['number']} is back online.", g["workspace_id"])
+            return probe(g), None
         except Exception as e:
-            hist = db.jload(g["latency_json"], [])[-23:] + [0]
-            db.run("UPDATE ip_groups SET status='down', last_error=?, last_check=?, fail_count=fail_count+1, latency_json=? WHERE id=?",
-                   (str(getattr(e, "user_message", e))[:200], time.time(), json.dumps(hist), g["id"]))
+            err = e
+            if i < QUICK_RETRIES:
+                time.sleep(QUICK_WAIT)
+    return None, err
+
+
+QUICK_WAIT = 15
+
+
+def proxy_failed(g, why):
+    """One more failed check. 'unstable' first (still tried before each post); 'down' only after real patience.
+    Even down, the pool is checked every 5 minutes forever and comes back by itself."""
+    now = time.time()
+    g = db.one("SELECT * FROM ip_groups WHERE id=?", (g["id"],)) or g
+    fails = (g.get("fail_count") or 0) + 1
+    since = g.get("fail_since") or now
+    down = fails >= 3 and now - since >= PROXY_PATIENCE
+    hist = db.jload(g.get("latency_json"), [])[-23:] + [0]
+    db.run("UPDATE ip_groups SET status=?, last_error=?, last_check=?, fail_count=?, fail_since=?, latency_json=? WHERE id=?",
+           ("down" if down else "unstable", str(why)[:200], now, fails, since, json.dumps(hist), g["id"]))
+    if down and g.get("status") != "down":
+        mins = int((now - since) / 60)
+        msg = (f"Pool {g['number']}: the proxy has not answered for {mins} min. Its posts wait (nothing goes out from another IP). "
+               f"DriveCast keeps testing it every 5 minutes and resumes by itself when it answers.")
+        db.event("error", "proxy", msg, g["workspace_id"], None, "PROXY_DEAD", str(why)[:500])
+        from . import notify
+        notify.alert(f"px:{g['id']}", msg)
+    return down
+
+
+def proxy_ok(g, ip, ms, hist):
+    was = g.get("status")
+    db.run("""UPDATE ip_groups SET status='ok', outgoing_ip=COALESCE(outgoing_ip,?), latency_ms=?, last_check=?,
+              last_error=NULL, fail_count=0, fail_since=NULL, latency_json=? WHERE id=?""",
+           (ip, ms, time.time(), json.dumps(hist), g["id"]))
+    if was == "down":
+        db.run("UPDATE events SET resolved=1 WHERE code='PROXY_DEAD' AND workspace_id=? AND resolved=0", (g["workspace_id"],))
+        db.event("info", "proxy", f"Pool {g['number']} is back online — posting resumes.", g["workspace_id"])
+        from . import notify
+        notify.alert(f"px:{g['id']}", f"Pool {g['number']} is back online — posting resumes.", solved=True)
+
+
+def check_groups():
+    for g in db.all("SELECT * FROM ip_groups WHERE moved_to IS NULL"):
+        r, err = _probe_patiently(g)
+        if err is not None:
+            proxy_failed(g, getattr(err, "user_message", err))
+            continue
+        ip, ms = r["ip"], r["ms"]
+        if r["country"]:
+            db.run("UPDATE ip_groups SET country=?, country_name=COALESCE(?,country_name), city=?, isp=? WHERE id=?",
+                   (r["country"], r["country_name"], r["city"], r["isp"], g["id"]))
+        hist = db.jload(g["latency_json"], [])[-23:] + [ms]
+        if g["outgoing_ip"] and ip != g["outgoing_ip"]:
+            # a different IP is a safety problem, not a blip: hold at once (it clears when the old IP is back)
+            db.run("UPDATE ip_groups SET status='down', last_error=?, last_check=?, latency_json=? WHERE id=?",
+                   (f"Outgoing IP changed to {ip}", time.time(), json.dumps(hist), g["id"]))
+            db.event("error", "proxy", f"Pool {g['number']}: outgoing IP changed to {ip}. Posts held until you confirm.",
+                     g["workspace_id"], None, "PROXY_IP_CHANGED")
+            continue
+        proxy_ok(g, ip, ms, hist)
 
 
 STATS_EVERY = 20 * 60  # per channel; ~2 quota units each time, well inside 10,000/day
@@ -97,7 +143,7 @@ def sync_stats(ws_id=None, force=False):
         except Exception as e:
             from .errors import is_timeout
             if is_timeout(e):
-                db.event("warn", "stats", f"{ch['title']}: stats wait for the next round — the group's proxy was too slow.",
+                db.event("warn", "stats", f"{ch['title']}: stats wait for the next round — the pool's proxy was too slow.",
                          ch["workspace_id"], ch["id"], "PROXY_SLOW", str(e)[:500])
             else:
                 msg = getattr(e, "user_message", str(e))

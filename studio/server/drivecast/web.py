@@ -109,7 +109,7 @@ class Handler(BaseHTTPRequestHandler):
         query = {k: v[0] for k, v in parse_qs(u.query).items()}
         try:
             n = int(self.headers.get("Content-Length") or 0)
-            if n > (80 * 1024 * 1024 if path in ("/api/restore", "/local/restore") else 40 * 1024 * 1024 if path == "/fleet/import" else MAX_BODY):
+            if n > (80 * 1024 * 1024 if path in ("/api/restore", "/local/restore") else 40 * 1024 * 1024 if path in ("/fleet/import", "/fleet/ws-import", "/fleet/ws-snapshot", "/fleet/ws-export") else MAX_BODY):
                 return self._send(413, {"error": "Request too large"})
             body = self.rfile.read(n) if n else b""
             req = Req(self, path, query, body)

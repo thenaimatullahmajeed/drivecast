@@ -270,7 +270,7 @@ SCHEMA = [
     ALTER TABLE fleet_devices ADD COLUMN stats_json TEXT;
     ALTER TABLE ip_groups ADD COLUMN moved_to TEXT;
     """,
-    # version 10: each IP group can carry the client's own Google / Meta / Instagram apps; cookie vault; queue snapshot
+    # version 10: each Pool can carry the client's own Google / Meta / Instagram apps; cookie vault; queue snapshot
     """
     ALTER TABLE ip_groups ADD COLUMN label TEXT;
     ALTER TABLE ip_groups ADD COLUMN google_client_id TEXT;
@@ -290,7 +290,7 @@ SCHEMA = [
         group_id INTEGER REFERENCES ip_groups(id) ON DELETE SET NULL, created_at REAL NOT NULL
     );
     """,
-    # version 11: AI captions with Groq (owner key + each group's own key), subtitles scope, usage log, weekly reports
+    # version 11: AI captions with Groq (owner key + each pool's own key), subtitles scope, usage log, weekly reports
     """
     ALTER TABLE workspaces ADD COLUMN groq_key_enc TEXT;
     ALTER TABLE workspaces ADD COLUMN ai_model TEXT;
@@ -316,6 +316,15 @@ SCHEMA = [
         token_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
         created_at REAL NOT NULL, expires_at REAL NOT NULL, used_at REAL, made_by TEXT
     );
+    """,
+    # version 13: patient proxy checks; AI picks the next post (per client)
+    """
+    ALTER TABLE ip_groups ADD COLUMN fail_since REAL;
+    """,
+    # version 14: whole-user moves between servers (hub board)
+    """
+    ALTER TABLE workspaces ADD COLUMN moved_to TEXT;
+    ALTER TABLE fleet_devices ADD COLUMN users_json TEXT;
     """,
 ]
 
@@ -401,6 +410,9 @@ def event(level, kind, message, workspace_id=None, channel_id=None, code=None, d
                 return
         run("INSERT INTO events(workspace_id,channel_id,level,kind,message,at,code,detail) VALUES(?,?,?,?,?,?,?,?)",
             (workspace_id, channel_id, level, kind, message[:500], now, code, (detail or "")[:2000] or None))
+        if level == "error" and code and kind != "alert":
+            from . import notify
+            notify.from_event(level, message, code, workspace_id)
     except Exception:  # an event must never break the caller
         pass
 

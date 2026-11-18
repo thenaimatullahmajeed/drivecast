@@ -71,7 +71,7 @@ async function draw() {
       <div style="display:flex;gap:8px;margin-top:8px"><button class="btn sm" data-copy="${esc(m.command || '')}">Copy command</button></div>
       <p class="muted" style="font-size:12px;margin:10px 0 0">Then come back here and tap Apply. You can turn it off any time from this screen. The server works without this mode too.</p></details>`}</div>`;
   document.getElementById('root').innerHTML = `
-    <div class="top">${LOGO}<span style="display:flex;flex-direction:column;line-height:1.1"><b>DriveCast</b><span style="font-size:10.5px;letter-spacing:.08em;color:#8E94A0">Studio | By Naimat</span></span>${chip}</div>
+    <div class="top">${LOGO}<span style="display:flex;flex-direction:column;line-height:1.1"><b>DriveCast</b><span style="font-size:10.5px;letter-spacing:.08em;color:#8E94A0">Studio | By Naimat${s && s.version ? ' · v' + esc(s.version) : ''}</span></span>${chip}</div>
     <div class="eq">${eq}</div><h1>${running ? 'Running in the background.' : 'Server is stopped.'}</h1>
       <p class="muted" style="margin:0">${running ? 'Everything is managed from your browser. Keep the phone on Wi-Fi and the charger.' : 'Uploads are paused. Start again and it resumes safely — nothing is posted twice.'}</p>
     ${!ready ? `<div class="card"><div class="kick">Recommended for 24/7 · ${done} of ${items.length}</div><p class="muted" style="font-size:12px;margin:6px 0 4px">Optional — the server already runs. Each item is checked for you; some phones don’t have every setting.</p><div class="bar" style="margin:8px 0 4px"><span style="width:${items.length ? Math.round(100 * done / items.length) : 0}%"></span></div>${rows}</div>` : ''}

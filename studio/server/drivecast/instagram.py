@@ -1,6 +1,6 @@
 """Minimal Instagram web client (the same endpoints Instagram's own web app and
-gallery-dl use). Every request goes through the IP group's proxy with that
-group's own signed-in test account. Nothing here logs in with a password;
+gallery-dl use). Every request goes through the Pool's proxy with that
+pool's own signed-in test account. Nothing here logs in with a password;
 the owner pastes cookies from a browser.
 
 Every failure becomes an errors.CodedError so callers stop only the right scope.

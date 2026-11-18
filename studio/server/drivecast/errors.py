@@ -5,7 +5,7 @@ Scope rules (bulkhead):
   post     → only this video is affected
   channel  → only this channel waits
   source   → only this channel's Instagram source waits
-  ig       → every Instagram source using this group's Instagram account waits
+  ig       → every Instagram source using this pool's Instagram account waits
   group    → every channel on this IP group waits (never falls back to the phone IP)
   library  → the workspace's Drive connection (all Drive work in the workspace waits)
   server   → the phone itself (ffmpeg missing, disk full)
@@ -13,18 +13,18 @@ Scope rules (bulkhead):
 
 CATALOG = {
     # --- proxy ---
-    "PROXY_DEAD": ("group", "Proxy not responding", "Group {group} does not answer. Its channels are held — nothing leaves from the phone’s own IP.", "replace_proxy"),
-    "PROXY_SLOW": ("group", "Proxy is slow", "Group {group} answers slowly ({ms} ms). Uploads may fail. Consider replacing it.", "replace_proxy"),
-    "PROXY_IP_CHANGED": ("group", "Proxy IP changed", "Group {group} now leaves from a different IP. Confirm it before posting continues.", "confirm_ip"),
+    "PROXY_DEAD": ("group", "Proxy not responding", "Pool {group} does not answer. Its channels are held — nothing leaves from the phone’s own IP.", "replace_proxy"),
+    "PROXY_SLOW": ("group", "Proxy is slow", "Pool {group} answers slowly ({ms} ms). Uploads may fail. Consider replacing it.", "replace_proxy"),
+    "PROXY_IP_CHANGED": ("group", "Proxy IP changed", "Pool {group} now leaves from a different IP. Confirm it before posting continues.", "confirm_ip"),
     # --- Instagram ---
-    "IG_NO_ACCOUNT": ("ig", "No Instagram account on this group", "Group {group} has no Instagram cookies yet. Add them to start pulling posts.", "add_cookies"),
-    "IG_COOKIES_EXPIRED": ("ig", "Instagram sign-in expired", "The Instagram account on Group {group} is signed out. Paste fresh cookies.", "replace_cookies"),
-    "IG_CHALLENGE": ("ig", "Instagram wants a check", "Instagram asked the account on Group {group} to confirm it’s you. Open Instagram in a browser on that account, complete the check, then paste fresh cookies.", "replace_cookies"),
-    "IG_RATE_LIMIT": ("ig", "Instagram asked us to slow down", "Group {group}’s Instagram account is resting until {until}. Nothing to do — it resumes by itself.", None),
-    "IG_FEEDBACK": ("ig", "Instagram blocked actions for a while", "Instagram paused the account on Group {group} (“feedback required”). It rests for some hours; if it repeats, use another test account.", "replace_cookies"),
+    "IG_NO_ACCOUNT": ("ig", "No Instagram account on this pool", "Pool {group} has no Instagram cookies yet. Add them to start pulling posts.", "add_cookies"),
+    "IG_COOKIES_EXPIRED": ("ig", "Instagram sign-in expired", "The Instagram account on Pool {group} is signed out. Paste fresh cookies.", "replace_cookies"),
+    "IG_CHALLENGE": ("ig", "Instagram wants a check", "Instagram asked the account on Pool {group} to confirm it’s you. Open Instagram in a browser on that account, complete the check, then paste fresh cookies.", "replace_cookies"),
+    "IG_RATE_LIMIT": ("ig", "Instagram asked us to slow down", "Pool {group}’s Instagram account is resting until {until}. Nothing to do — it resumes by itself.", None),
+    "IG_FEEDBACK": ("ig", "Instagram blocked actions for a while", "Instagram paused the account on Pool {group} (“feedback required”). It rests for some hours; if it repeats, use another test account.", "replace_cookies"),
     "IG_HOME_REDIRECT": ("source", "Instagram hid this profile", "Instagram sent us to its home page for @{handle}. Open the profile in a browser; if it opens, wait a few hours.", "check_source"),
     "IG_PROFILE_NOT_FOUND": ("source", "Instagram profile not found", "@{handle} does not exist or was renamed. Update the handle.", "edit_source"),
-    "IG_PROFILE_PRIVATE": ("source", "Instagram profile is private", "@{handle} is private. Follow it from the group’s test account, or ask the client to make it public.", "edit_source"),
+    "IG_PROFILE_PRIVATE": ("source", "Instagram profile is private", "@{handle} is private. Follow it from the pool’s test account, or ask the client to make it public.", "edit_source"),
     "IG_MEDIA_GONE": ("post", "Post removed from Instagram", "This post was deleted or hidden on Instagram before we could download it.", None),
     "IG_UNKNOWN": ("source", "Instagram returned an unexpected answer", "Instagram answered in an unexpected way for @{handle}. It will retry later.", None),
     # --- media ---
@@ -42,10 +42,10 @@ CATALOG = {
     "DRIVE_FOLDER_GONE": ("channel", "Drive folder missing", "This channel’s Drive folder was moved or deleted. Choose it again.", "edit_source"),
     # --- Facebook ---
     "FB_NO_APP": ("library", "Facebook app not set", "Add your Meta app's App ID and secret in Settings before connecting Facebook.", "fb_app"),
-    "FB_NO_ACCOUNT": ("fb", "No Facebook connected on this group", "Group {group} has no Facebook account yet. Connect one to post to its pages.", "connect_facebook"),
-    "FB_TOKEN_EXPIRED": ("fb", "Facebook sign-in expired", "The Facebook connection on Group {group} ended. Reconnect it (one Allow).", "reconnect_facebook"),
+    "FB_NO_ACCOUNT": ("fb", "No Facebook connected on this pool", "Pool {group} has no Facebook account yet. Connect one to post to its pages.", "connect_facebook"),
+    "FB_TOKEN_EXPIRED": ("fb", "Facebook sign-in expired", "The Facebook connection on Pool {group} ended. Reconnect it (one Allow).", "reconnect_facebook"),
     "FB_PERMISSION": ("channel", "Facebook permission missing", "Facebook refused: {perm}. Reconnect and accept all the page permissions, and make sure you are an admin of this page.", "reconnect_facebook"),
-    "FB_RATE_LIMIT": ("fb", "Facebook asked us to slow down", "Group {group}'s Facebook is resting briefly. It resumes by itself.", None),
+    "FB_RATE_LIMIT": ("fb", "Facebook asked us to slow down", "Pool {group}'s Facebook is resting briefly. It resumes by itself.", None),
     "FB_BLOCKED": ("fb", "Facebook paused this action", "Facebook temporarily blocked posting for policy reasons. It will retry later; if it repeats, check the page in Facebook.", None),
     "FB_BUSY": ("post", "Facebook is busy", "Facebook did not answer. It will retry.", None),
     "FB_NO_PAGE": ("channel", "No Facebook page linked", "Choose which page this channel posts to.", "edit_source"),
@@ -77,7 +77,7 @@ CATALOG = {
     "FB_GRAPH_OLD": ("library", "Meta API version retired", "Meta no longer accepts API version {ver}. Open Settings → Meta app and set a newer version (e.g. the one Meta's changelog lists as current).", "fb_app"),
     # --- AI (Groq) ---
     "AI_HOLD": ("post", "Held by the AI check", "The AI check stopped this post: {why}. It is in Failed — move it back into the client's folder to post it anyway.", None),
-    "AI_KEY_BAD": ("library", "AI key not accepted", "Groq refused the AI key. Posts go out with their normal text until you paste a new key (Settings or IP group → Apps).", "ai_key"),
+    "AI_KEY_BAD": ("library", "AI key not accepted", "Groq refused the AI key. Posts go out with their normal text until you paste a new key (Settings or Pool → Apps).", "ai_key"),
     # --- YouTube ---
     "YT_AUTH_REVOKED": ("channel", "YouTube access ended", "Reconnect this channel — Google access was removed.", "reconnect_channel"),
     "YT_QUOTA": ("channel", "YouTube daily limit reached", "Posting resumes after midnight Pacific.", None),

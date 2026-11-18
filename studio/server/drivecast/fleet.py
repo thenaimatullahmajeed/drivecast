@@ -117,8 +117,13 @@ def _stats():
 
 
 def _status():
+    try:
+        from . import usermove
+        people = usermove.summary()
+    except Exception:
+        people = []
     return {"host": my_host(), "label": my_host().split(".")[0].upper(), "users": users_count(), "max_users": max_users(),
-            "open_signup": open_signup(), "version": VERSION, "at": time.time(), "stats": _stats()}
+            "open_signup": open_signup(), "version": VERSION, "at": time.time(), "stats": _stats(), "people": people}
 
 
 def _send(path, payload):
@@ -152,7 +157,31 @@ def hello():
     res = _send("/fleet/hello", _status())
     if isinstance(res, dict):
         follow_update(res.get("update_now"))
+        take_telegram(res.get("telegram"))
+        if res.get("moved_away"):
+            from . import usermove
+            for m in res["moved_away"]:
+                usermove.mark_moved(m["email"], m["to"])  # moved off this server while it was offline
     return res
+
+
+def take_telegram(t):
+    """Phone: use the hub's Telegram bot, so one bot hears from every server."""
+    if not isinstance(t, dict) or not t.get("token") or not t.get("chat_id"):
+        return
+    from . import notify, security
+    cur = notify.config()
+    if cur.get("chat_id") == t["chat_id"] and cur.get("token_enc") and notify._token() == t["token"]:
+        return
+    db.meta_set("telegram_json", json.dumps({"token_enc": security.seal(t["token"]), "chat_id": t["chat_id"], "bot": t.get("bot")}))
+
+
+def telegram_for_fleet():
+    from . import notify
+    if not notify.ready():
+        return None
+    c = notify.config()
+    return {"token": notify._token(), "chat_id": c.get("chat_id"), "bot": c.get("bot")}
 
 
 def push_update():
@@ -211,13 +240,14 @@ def apply(path, p):
     if not host:
         return False
     if path == "/fleet/hello":
-        db.run("""INSERT INTO fleet_devices(host,label,users,max_users,open_signup,version,last_seen,created_at,stats_json)
-                  VALUES(?,?,?,?,?,?,?,?,?)
+        db.run("""INSERT INTO fleet_devices(host,label,users,max_users,open_signup,version,last_seen,created_at,stats_json,users_json)
+                  VALUES(?,?,?,?,?,?,?,?,?,?)
                   ON CONFLICT(host) DO UPDATE SET label=excluded.label, users=excluded.users, max_users=excluded.max_users,
                   open_signup=excluded.open_signup, version=excluded.version, last_seen=excluded.last_seen,
-                  stats_json=excluded.stats_json, hidden=0""",
+                  stats_json=excluded.stats_json, users_json=excluded.users_json, hidden=0""",
                (host, (p.get("label") or host.split(".")[0])[:20], int(p.get("users") or 0), int(p.get("max_users") or 0),
-                1 if p.get("open_signup") else 0, str(p.get("version") or "")[:20], now, now, json.dumps(p.get("stats") or {})[:2000]))
+                1 if p.get("open_signup") else 0, str(p.get("version") or "")[:20], now, now, json.dumps(p.get("stats") or {})[:2000],
+                json.dumps(p.get("people") or [])[:200000]))
         return True
     if path == "/fleet/dir" and p.get("kind") in ("email", "invite") and len(p.get("hash") or "") == 64:
         db.run("""INSERT INTO fleet_dir(kind,hash,host,created_at) VALUES(?,?,?,?)
@@ -270,7 +300,7 @@ def _plain(row):
 def export_group(gid):
     g = db.one("SELECT * FROM ip_groups WHERE id=?", (gid,))
     if not g:
-        raise ValueError("IP group not found")
+        raise ValueError("Pool not found")
     chs = db.all("SELECT * FROM channels WHERE group_id=?", (gid,))
     cids = [c["id"] for c in chs] or [-1]
     q = ",".join("?" * len(cids))
@@ -348,7 +378,7 @@ def import_group(b):
             put(c, "uploads", r, workspace_id=ws, channel_id=ids["channels"][r["channel_id"]], media_id=ids["media"].get(r.get("media_id")))
     mine = db.one("SELECT google_client_id FROM workspaces WHERE id=?", (ws,))
     same_google = bool(mine and mine["google_client_id"] and mine["google_client_id"] == b.get("google_client_id"))
-    db.event("info", "fleet", f"Group from {b.get('from')} moved in as Group {num}: {len(b['channels'])} client(s)."
+    db.event("info", "fleet", f"Group from {b.get('from')} moved in as Pool {num}: {len(b['channels'])} client(s)."
              + ("" if same_google else " This phone uses a different Google app — reconnect YouTube on these clients."), ws)
     return {"group_number": num, "clients": len(b["channels"]), "same_google_app": same_google}
 

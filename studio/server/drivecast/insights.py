@@ -308,18 +308,22 @@ def attention(ws_id, now=None):
                           "action": "fix" if a.get("fix") else None, "fix": a.get("fix"), "ref": None, "code": a["code"]})
     for g in db.all("SELECT * FROM ip_groups WHERE workspace_id=? AND status='down' AND moved_to IS NULL", (ws_id,)):
         n = db.one("SELECT COUNT(*) n FROM channels WHERE group_id=?", (g["id"],))["n"]
-        items.append({"level": "error", "kind": "proxy", "title": f"Group {g['number']} is not responding",
+        items.append({"level": "error", "kind": "proxy", "title": f"Pool {g['number']} is not responding",
                       "detail": f"{n} channel(s) held. Nothing is sent from the phone’s own IP.", "action": "fix",
                       "fix": "replace_proxy", "ref": g["id"], "code": "PROXY_DEAD"})
+    for g in db.all("SELECT * FROM ip_groups WHERE workspace_id=? AND status='unstable' AND moved_to IS NULL", (ws_id,)):
+        items.append({"level": "warn", "kind": "proxy", "title": f"Pool {g['number']}: proxy slow to answer — retrying",
+                      "detail": f"Missed {g['fail_count'] or 1} check(s). DriveCast keeps trying; nothing to do yet.",
+                      "action": "fix", "fix": "test_group", "ref": g["id"], "code": "PROXY_RETRYING"})
     for a in db.all("""SELECT a.*, g.number FROM fb_accounts a JOIN ip_groups g ON g.id=a.group_id
                        WHERE a.workspace_id=? AND a.status='needs_reconnect'""", (ws_id,)):
         i = errors.info(a["error_code"] or "FB_TOKEN_EXPIRED", group=a["number"])
-        items.append({"level": "error", "kind": "facebook", "title": i["title"] + f" · Group {a['number']}", "detail": i["message"],
+        items.append({"level": "error", "kind": "facebook", "title": i["title"] + f" · Pool {a['number']}", "detail": i["message"],
                       "action": "fix", "fix": "reconnect_facebook", "ref": a["group_id"], "code": i["code"]})
     for a in db.all("""SELECT a.*, g.number FROM ig_accounts a JOIN ip_groups g ON g.id=a.group_id
                        WHERE a.workspace_id=? AND a.status='needs_cookies'""", (ws_id,)):
         i = errors.info(a["error_code"] or "IG_COOKIES_EXPIRED", group=a["number"])
-        items.append({"level": "error", "kind": "instagram", "title": i["title"] + f" · Group {a['number']}", "detail": i["message"],
+        items.append({"level": "error", "kind": "instagram", "title": i["title"] + f" · Pool {a['number']}", "detail": i["message"],
                       "action": "fix", "fix": "replace_cookies", "ref": a["group_id"], "code": i["code"]})
     for d in db.all("""SELECT d.*, c.title FROM ig_dest d LEFT JOIN channels c ON c.id=d.channel_id
                        WHERE d.workspace_id=? AND d.status='needs_reconnect'""", (ws_id,)):
@@ -387,3 +391,126 @@ def user_report(ws_id, tz_name, days=30, now=None):
     events = db.all("SELECT level, kind, message, at FROM events WHERE workspace_id=? ORDER BY at DESC LIMIT 25", (ws_id,))
     return {"trend": dash["trend"], "kpis": dash["kpis"], "channels": per, "status": status,
             "daily_uploads": daily_up, "groups": groups, "events": events}
+
+
+# ---------------------------------------------------------------- Accounts: every connected account, by platform
+def accounts(ws_id):
+    now = time.time()
+    w7 = now - 7 * 86400
+
+    def posts(where, args):
+        r = db.one(f"""SELECT COUNT(*) n, COALESCE(SUM(CASE WHEN published_at>? THEN 1 ELSE 0 END),0) n7,
+                       COALESCE(SUM(views),0) v, MAX(published_at) last,
+                       COALESCE(SUM(CASE WHEN status IN ('failed','uncertain') AND reserved_at>? THEN 1 ELSE 0 END),0) bad7
+                       FROM uploads WHERE workspace_id=? AND {where}""", (w7, w7, ws_id, *args))
+        return {"posts": r["n"], "posts_7d": r["n7"], "views": r["v"], "last_post": r["last"], "failed_7d": r["bad7"]}
+
+    yt = []
+    for c in db.all("""SELECT c.*, g.number pool FROM channels c LEFT JOIN ip_groups g ON g.id=c.group_id
+                       WHERE c.workspace_id=? AND c.platform='youtube' AND c.external_id IS NOT NULL ORDER BY c.title""", (ws_id,)):
+        p = posts("destination=? AND status='published'", (f"youtube:{c['external_id']}",))
+        p["failed_7d"] = posts("destination=?", (f"youtube:{c['external_id']}",))["failed_7d"]
+        yt.append({"id": c["id"], "name": c["title"], "handle": c["handle"], "picture": c["thumbnail"], "pool": c["pool"],
+                   "state": c["state"], "subscribers": c["subscribers"], "total_views": c["total_views"],
+                   "videos": c.get("video_count"), "youtube_on": c.get("youtube_on", 1), **p,
+                   "url": f"https://www.youtube.com/channel/{c['external_id']}"})
+    fb = []
+    for pg in db.all("""SELECT p.*, c.title client, g.number pool FROM fb_pages p JOIN fb_accounts a ON a.id=p.fb_account_id
+                        LEFT JOIN channels c ON c.id=p.channel_id LEFT JOIN ip_groups g ON g.id=a.group_id
+                        WHERE p.workspace_id=? ORDER BY p.name""", (ws_id,)):
+        p = posts("destination=? AND status='published'", (f"facebook:{pg['page_id']}",))
+        fb.append({"id": pg["id"], "name": pg["name"], "picture": pg["picture"], "pool": pg["pool"], "client": pg["client"],
+                   "client_id": pg["channel_id"], "category": pg["category"], **p, "url": f"https://www.facebook.com/{pg['page_id']}"})
+    ig = []
+    for d in db.all("""SELECT d.*, c.title client, g.number pool FROM ig_dest d LEFT JOIN channels c ON c.id=d.channel_id
+                       LEFT JOIN ip_groups g ON g.id=d.group_id WHERE d.workspace_id=? ORDER BY d.username""", (ws_id,)):
+        p = posts("destination=? AND status='published'", (f"instagram:{d['id']}",))
+        ig.append({"id": d["id"], "name": "@" + (d["username"] or d["ig_user_id"]), "picture": d["picture"], "pool": d["pool"],
+                   "client": d["client"], "client_id": d["channel_id"], "status": d["status"], **p,
+                   "url": f"https://www.instagram.com/{d['username']}/" if d["username"] else None})
+    return {"youtube": yt, "facebook": fb, "instagram": ig}
+
+
+def account_deep(ws_id, kind, aid, tz_name):
+    """Everything about one account: growth, every post with its numbers, best hours, sources, reliability."""
+    tz = _tz(tz_name)
+    now = time.time()
+    if kind == "youtube":
+        c = db.one("SELECT * FROM channels WHERE id=? AND workspace_id=?", (aid, ws_id))
+        if not c:
+            return None
+        dest = f"youtube:{c['external_id']}"
+        head = {"name": c["title"], "picture": c["thumbnail"], "handle": c["handle"], "subscribers": c["subscribers"],
+                "total_views": c["total_views"], "videos": c.get("video_count"), "client_id": c["id"],
+                "url": f"https://www.youtube.com/channel/{c['external_id']}", "stats_at": c["stats_at"]}
+        pts = db.all("SELECT day, views, subscribers FROM channel_points WHERE channel_id=? ORDER BY day DESC LIMIT 91", (c["id"],))[::-1]
+        growth = [{"day": pts[i]["day"], "views": max(0, (pts[i]["views"] or 0) - (pts[i - 1]["views"] or 0)),
+                   "subs": (pts[i]["subscribers"] or 0) - (pts[i - 1]["subscribers"] or 0)} for i in range(1, len(pts))]
+        ch_id = c["id"]
+    elif kind == "facebook":
+        p = db.one("SELECT * FROM fb_pages WHERE id=? AND workspace_id=?", (aid, ws_id))
+        if not p:
+            return None
+        dest = f"facebook:{p['page_id']}"
+        head = {"name": p["name"], "picture": p["picture"], "category": p["category"], "client_id": p["channel_id"],
+                "url": f"https://www.facebook.com/{p['page_id']}"}
+        growth, ch_id = [], p["channel_id"]
+    elif kind == "instagram":
+        d = db.one("SELECT * FROM ig_dest WHERE id=? AND workspace_id=?", (aid, ws_id))
+        if not d:
+            return None
+        dest = f"instagram:{d['id']}"
+        head = {"name": "@" + (d["username"] or d["ig_user_id"]), "picture": d["picture"], "client_id": d["channel_id"],
+                "url": f"https://www.instagram.com/{d['username']}/" if d["username"] else None, "status": d["status"]}
+        growth, ch_id = [], d["channel_id"]
+    else:
+        return None
+    ups = db.all("""SELECT u.*, m.origin origin FROM uploads u LEFT JOIN media m ON m.id=u.media_id
+                    WHERE u.workspace_id=? AND u.destination=? ORDER BY u.reserved_at DESC LIMIT 400""", (ws_id, dest))
+    pub = [u for u in ups if u["status"] == "published"]
+    first24 = _first_day_views(pub)
+    with_views = [u for u in pub if u["views"] is not None]
+    # posting per day (last 30 days, the account owner's time)
+    daymap = defaultdict(lambda: {"published": 0, "failed": 0})
+    for u in ups:
+        t = u["published_at"] or u["reserved_at"]
+        if not t or t < now - 30 * 86400:
+            continue
+        k = dt.datetime.fromtimestamp(t, tz).date().isoformat()
+        daymap[k]["published" if u["status"] == "published" else "failed" if u["status"] in ("failed", "uncertain") else "published"] += 1
+    days = [(dt.datetime.now(tz).date() - dt.timedelta(days=i)).isoformat() for i in range(29, -1, -1)]
+    cadence = [{"day": d, **daymap[d]} for d in days]
+    cells = defaultdict(list)
+    for u in pub:
+        v = first24.get(u["id"], u["views"])
+        if v is None or not u["published_at"]:
+            continue
+        t = dt.datetime.fromtimestamp(u["published_at"], tz)
+        cells[(t.weekday(), t.hour)].append(v)
+    heat = [[round(sum(cells[(d, h)]) / len(cells[(d, h)])) if cells[(d, h)] else None for h in range(24)] for d in range(7)]
+    hours = defaultdict(list)
+    for (d, h), vs in cells.items():
+        hours[h] += vs
+    best_hours = sorted(((h, round(sum(v) / len(v))) for h, v in hours.items() if v), key=lambda x: -x[1])[:3]
+    origins = defaultdict(int)
+    for u in pub:
+        origins[u.get("origin") or ("encore" if u.get("encore_of") else "drive")] += 1
+    total = len(ups)
+    ok = len(pub)
+    posts = [{"id": u["id"], "title": u["title"], "status": u["status"], "at": u["published_at"] or u["reserved_at"],
+              "views": u["views"], "likes": u["likes"], "comments": u["comments"], "first_day": first24.get(u["id"]),
+              "video_id": u["external_video_id"], "origin": u.get("origin"), "encore": bool(u.get("encore_of"))} for u in ups[:200]]
+    summary = {"posts": ok, "failed": sum(1 for u in ups if u["status"] in ("failed", "uncertain")),
+               "success_rate": round(100 * ok / total) if total else None,
+               "views_on_posts": sum(u["views"] or 0 for u in with_views),
+               "avg_views": round(sum(u["views"] for u in with_views) / len(with_views)) if with_views else None,
+               "avg_first_day": round(sum(first24.values()) / len(first24)) if first24 else None,
+               "likes": sum(u["likes"] or 0 for u in pub), "comments": sum(u["comments"] or 0 for u in pub),
+               "views_30d": sum(g["views"] for g in growth[-30:]) if growth else None,
+               "subs_30d": sum(g["subs"] for g in growth[-30:]) if growth else None,
+               "best_hours": [{"hour": h, "avg": v} for h, v in best_hours]}
+    top = sorted(with_views, key=lambda u: -(u["views"] or 0))[:5]
+    return {"kind": kind, "id": aid, "head": head, "summary": summary, "growth": growth[-90:], "cadence": cadence, "heat": heat,
+            "origins": dict(origins), "posts": posts, "top": [{"title": u["title"], "views": u["views"], "video_id": u["external_video_id"]} for u in top],
+            "has_views": kind == "youtube", "channel_id": ch_id}
+

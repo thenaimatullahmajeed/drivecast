@@ -9,7 +9,7 @@ What it does for a post (each part only when its switch is on for the route):
   * uploads subtitles to YouTube (when the channel allowed it)
   * a short weekly summary per client
 
-Keys: each IP group may carry the client's own Groq key; otherwise the owner's key from
+Keys: each Pool may carry the client's own Groq key; otherwise the owner's key from
 Settings. No key, a refused key, the daily limit or any API problem → the post goes out
 with its original text. Only the check can hold a post, and only when it is sure.
 """
@@ -38,7 +38,7 @@ ISO = {"english": "en", "urdu": "ur", "hindi": "hi", "arabic": "ar", "spanish": 
        "french": "fr", "turkish": "tr", "indonesian": "id", "bengali": "bn", "japanese": "ja", "german": "de",
        "punjabi": "pa", "persian": "fa", "russian": "ru", "italian": "it", "korean": "ko", "chinese": "zh"}
 FORCE_SSL = "https://www.googleapis.com/auth/youtube.force-ssl"
-DEFAULTS = {"captions": False, "subtitles": False, "check": False, "language": "auto", "voice": ""}
+DEFAULTS = {"captions": False, "subtitles": False, "check": False, "pick": False, "language": "auto", "voice": ""}
 
 
 class AiError(Exception):
@@ -54,7 +54,7 @@ def settings(ch):
 
 def normalize(b, old=None):
     cfg = dict(old or DEFAULTS)
-    for k in ("captions", "subtitles", "check"):
+    for k in ("captions", "subtitles", "check", "pick"):
         if k in b:
             cfg[k] = bool(b[k])
     if "language" in b:
@@ -65,12 +65,12 @@ def normalize(b, old=None):
 
 
 def key_for(ch=None, ws=None, g=None):
-    """(key, scope, where) — the group's own key first, then the owner's. None when there is no key."""
+    """(key, scope, where) — the pool's own key first, then the owner's. None when there is no key."""
     if ch is not None:
         g = store.group(ch.get("group_id"))
         ws = store.workspace(ch["workspace_id"])
     if g and g.get("groq_key_enc"):
-        return security.unseal(g["groq_key_enc"]), f"g{g['id']}", f"Group {g['number']}"
+        return security.unseal(g["groq_key_enc"]), f"g{g['id']}", f"Pool {g['number']}"
     if ws and ws.get("groq_key_enc"):
         return security.unseal(ws["groq_key_enc"]), f"ws{ws['id']}", "your Settings"
     return None
@@ -512,3 +512,80 @@ def service():
         weekly()
     except Exception as e:
         log.warning("weekly AI reports: %s", e)
+
+
+# ---------------------------------------------------------------- decisions: which ready video goes next
+PICK_FROM = 8
+
+
+def _name(f):
+    n = (f.get("name") or "").rsplit(".", 1)[0]
+    return re.sub(r"[_\-]+", " ", n).strip()[:120]
+
+
+def pick_next(ch, files):
+    """When 'AI picks the next post' is on: among the first few ready items of the same lane (Fresh stays first),
+    Groq chooses the one most like this client's best performers. Any problem → the normal order."""
+    cfg = settings(ch)
+    if not cfg["pick"] or len(files) < 2:
+        return files
+    k = key_for(ch)
+    if not k:
+        return files
+    key, scope, _ = k
+    if usage(scope)["text"] >= TEXT_PER_DAY:
+        return files
+    lane = lambda f: (f.get("appProperties") or {}).get("dc_lane")
+    first = lane(files[0])
+    pool = [f for f in files[:PICK_FROM] if lane(f) == first]
+    if len(pool) < 2:
+        return files
+    best = db.all("""SELECT title, views FROM uploads WHERE channel_id=? AND status='published' AND views IS NOT NULL
+                     ORDER BY views DESC LIMIT 8""", (ch["id"],))
+    if len(best) < 3:
+        return files  # not enough history to judge yet
+    weak = db.all("""SELECT title, views FROM uploads WHERE channel_id=? AND status='published' AND views IS NOT NULL
+                     AND published_at < ? ORDER BY views ASC LIMIT 5""", (ch["id"], time.time() - 2 * 86400))
+    cands = "\n".join(f"{i}: {_name(f)}" for i, f in enumerate(pool))
+    good = "; ".join(f"{r['title']} · {r['views']}" for r in best)
+    bad = "; ".join(r["title"] for r in weak) or "unknown"
+    prompt = (f"You plan posts for the social media client “{ch['title']}”.\n"
+              f"Their best posts (title · views): {good}\n"
+              f"Their weakest posts: {bad}\n"
+              f"Ready to post now:\n{cands}\n"
+              "Which one is most likely to do well next, and does not repeat the last topic? "
+              'Reply JSON only: {"pick": <number>, "why": "<one short sentence>"}')
+    try:
+        out, tokens = chat(key, scope, store.workspace(ch["workspace_id"]), [{"role": "user", "content": prompt}], ch=ch, max_tokens=120)
+        _log(scope, ch, "pick", tokens=tokens)
+        i = int(out.get("pick"))
+    except Exception as e:
+        _log(scope, ch, "pick", ok=False, note=str(e))
+        return files
+    if not 0 <= i < len(pool) or i == 0:
+        if 0 <= i < len(pool):
+            db.meta_set(f"ai_pick:{ch['id']}", json.dumps({"name": _name(pool[0]), "why": str(out.get("why") or "")[:200], "at": time.time()}))
+        return files
+    chosen = pool[i]
+    db.meta_set(f"ai_pick:{ch['id']}", json.dumps({"name": _name(chosen), "why": str(out.get("why") or "")[:200], "at": time.time()}))
+    return [chosen] + [f for f in files if f is not chosen]
+
+
+def last_pick(ch_id):
+    return db.jload(db.meta_get(f"ai_pick:{ch_id}"), None)
+
+
+# ---------------------------------------------------------------- analysis of one account
+def analyse(ch, facts):
+    k = key_for(ch)
+    if not k:
+        raise AiError("Add a Groq key first — on the AI page, or on this client's pool")
+    key, scope, _ = k
+    cfg = settings(ch)
+    lang = cfg["language"] if cfg["language"] != "auto" else "English"
+    text, tokens = chat(key, scope, store.workspace(ch["workspace_id"]), [{"role": "user", "content":
+                        f"You are a sharp social media analyst. In {lang}, from these facts only (no invented numbers), write: "
+                        "1) what works on this account, 2) what does not, 3) three concrete next steps (posting times, topics, titles). "
+                        f"Plain short lines, no markdown headings.\nFacts: {json.dumps(facts)[:6000]}"}], ch=ch, max_tokens=600, as_json=False)
+    _log(scope, ch, "analysis", tokens=tokens)
+    return text

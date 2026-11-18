@@ -1,5 +1,5 @@
 """Publishing worker. One job = pick the next Drive video for a channel and
-publish it through that channel's IP group.
+publish it through that channel's Pool.
 
 Bulkhead rule: every job runs inside its own try/except. A failure changes only
 that channel (and, for proxy problems, that IP group) — never the whole server.
@@ -83,11 +83,16 @@ def _breaker(ch, err_msg):
         db.run("UPDATE channels SET consecutive_failures=? WHERE id=?", (n, ch["id"]))
 
 
-def _group_down(g, why):
-    db.run("UPDATE ip_groups SET status='down', last_error=?, fail_count=fail_count+1, last_check=? WHERE id=?",
-           (why, time.time(), g["id"]))
-    db.event("error", "proxy", f"Group {g['number']} is not responding — its channels are held. {why}",
-             g["workspace_id"])
+def _group_down(g, why, hard=False):
+    """The proxy failed right before a post: count it patiently (see maintenance.proxy_failed).
+    A different outgoing IP is a safety problem: held at once."""
+    if hard:
+        db.run("UPDATE ip_groups SET status='down', last_error=?, last_check=? WHERE id=?", (why, time.time(), g["id"]))
+        db.event("error", "proxy", f"Pool {g['number']}: {why}. Posts held — nothing goes out from another IP.",
+                 g["workspace_id"], None, "PROXY_IP_CHANGED")
+        return
+    from .maintenance import proxy_failed
+    proxy_failed(g, why)
 
 
 def run(job, adapters=None):
@@ -115,10 +120,10 @@ def run(job, adapters=None):
         return finish(job, "failed", "Channel not live", "held", ch["state_reason"] or "Channel paused")
     g = store.group(ch["group_id"])
     if not g:
-        store.set_channel_state(ch["id"], "attention", "No IP group — choose one")
-        return finish(job, "failed", "No IP group", "held", "No IP group")
+        store.set_channel_state(ch["id"], "attention", "No Pool — choose one")
+        return finish(job, "failed", "No Pool", "held", "No Pool")
     if g["status"] == "down":
-        return finish(job, "failed", "Proxy down", "held", f"Group {g['number']} not responding")
+        return finish(job, "failed", "Proxy down", "held", f"Pool {g['number']} not responding")
     dests = destinations(ch, a)
     if not dests:
         return finish(job, "failed", "No destination", "held", "No destination is on — connect YouTube, Facebook or Instagram")
@@ -140,11 +145,14 @@ def run(job, adapters=None):
             ip, ms = check_ip(session)
         except Exception as e:
             _group_down(g, str(e)[:120])
-            return finish(job, "failed", "Proxy down", "held", f"Group {g['number']} not responding")
+            return finish(job, "failed", "Proxy down", "held", f"Pool {g['number']} not responding")
         if g.get("outgoing_ip") and ip != g["outgoing_ip"]:
-            _group_down(g, f"Outgoing IP changed to {ip} (expected {g['outgoing_ip']})")
-            return finish(job, "failed", "IP changed", "held", "Proxy IP changed — confirm the group")
-        db.run("UPDATE ip_groups SET outgoing_ip=COALESCE(outgoing_ip,?), status='ok', latency_ms=?, last_check=? WHERE id=?",
+            _group_down(g, f"Outgoing IP changed to {ip} (expected {g['outgoing_ip']})", hard=True)
+            return finish(job, "failed", "IP changed", "held", "Proxy IP changed — confirm the pool")
+        if g["status"] in ("unstable", "down"):
+            from .maintenance import proxy_ok
+            proxy_ok(g, ip, ms, db.jload(g.get("latency_json"), [])[-23:] + [ms])
+        db.run("UPDATE ip_groups SET outgoing_ip=COALESCE(outgoing_ip,?), status='ok', latency_ms=?, last_check=?, fail_count=0, fail_since=NULL WHERE id=?",
                (ip, ms, now, g["id"]))
 
         dbox = store.drive_box(ws)
@@ -153,6 +161,11 @@ def run(job, adapters=None):
         if any(d["photo"] for d in dests):
             files = files + photo_candidates(ch)
         files = order_queue(files)
+        try:
+            from . import ai
+            files = ai.pick_next(ch, files)  # optional: Groq chooses among the next ready videos of the same lane
+        except Exception as e:
+            log.warning("AI pick skipped: %s", e)
         db.run("UPDATE channels SET queue_count=?, queue_checked_at=? WHERE id=?", (len(files), now, ch["id"]))
         snapshot(ch, files)
         chosen, encore, m, targets = None, None, None, []
@@ -353,7 +366,7 @@ def snapshot(ch, files, limit=12):
 
 
 def refresh_queues():
-    """Every 10 minutes: the real 'Up next' for every live client (one Drive listing each, through its group)."""
+    """Every 10 minutes: the real 'Up next' for every live client (one Drive listing each, through its pool)."""
     for ch in db.all("SELECT * FROM channels WHERE state='live' AND folder_id IS NOT NULL"):
         g = store.group(ch["group_id"])
         if not g or g["status"] == "down" or ch["id"] in PROGRESS:

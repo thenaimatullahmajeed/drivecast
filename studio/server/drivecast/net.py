@@ -1,4 +1,4 @@
-"""HTTP sessions bound to an IP group's SOCKS5 proxy, and the error types the
+"""HTTP sessions bound to a pool's SOCKS5 proxy, and the error types the
 worker uses to decide what is safe to retry."""
 import time
 from urllib.parse import quote
@@ -131,7 +131,7 @@ def parse_proxy(text):
 
 
 def check_group(group):
-    """Connect through the group proxy and report its outgoing IP."""
+    """Connect through the pool proxy and report its outgoing IP."""
     try:
         return outgoing_ip(session_for(group))
     except ProxyDown:

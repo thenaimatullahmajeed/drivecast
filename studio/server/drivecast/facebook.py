@@ -6,7 +6,7 @@ Flow (one per IP group, like the Instagram account):
     -> exchanged for a long-lived user token (~60 days)
     -> /me/accounts gives one long-lived Page token per Page the user administers.
 Posting uses the Page token. Every server-side call goes through the group proxy,
-so Facebook sees the same IP as that group's YouTube and Instagram traffic.
+so Facebook sees the same IP as that pool's YouTube and Instagram traffic.
 
 Graph version is configurable: Meta ships a new one about every few months and the
 old ones keep working for ~2 years, but if a field changes the owner can bump it.

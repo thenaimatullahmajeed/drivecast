@@ -43,7 +43,7 @@ def group_google_app(g):
 
 
 def google_app_for(ws, g):
-    """The Google app for a client: its IP group's own app (the client's Cloud project) when set, else yours."""
+    """The Google app for a client: its Pool's own app (the client's Cloud project) when set, else yours."""
     cid, sec = group_google_app(g)
     return (cid, sec) if cid else google_app(ws)
 
