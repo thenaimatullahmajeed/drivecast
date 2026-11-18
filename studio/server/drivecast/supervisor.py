@@ -20,7 +20,7 @@ class Service(threading.Thread):
 
     def run(self):
         while not _stop.is_set():
-            HEARTBEATS[self.svc] = {"at": time.time(), "state": "running", "errors": self.errors}
+            HEARTBEATS[self.svc] = {"at": time.time(), "state": "running", "errors": self.errors, "every": self.interval}
             try:
                 self.fn()
                 self.errors = 0
@@ -29,7 +29,8 @@ class Service(threading.Thread):
                 self.errors += 1
                 wait = min(600, self.interval * (2 ** min(self.errors, 5)))
                 log.exception("service %s failed", self.svc)
-                HEARTBEATS[self.svc] = {"at": time.time(), "state": "error", "errors": self.errors, "last_error": str(e)[:200]}
+                HEARTBEATS[self.svc] = {"at": time.time(), "state": "error", "errors": self.errors, "last_error": str(e)[:200],
+                                        "every": self.interval}
                 if self.errors in (1, 5, 20):
                     db.event("error", "service", f"Background service “{self.svc}” hit an error and will retry: {e}")
             HEARTBEATS[self.svc]["at"] = time.time()

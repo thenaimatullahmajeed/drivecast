@@ -1828,9 +1828,12 @@ def live(req):
     from . import worker
     now = time.time()
     hb = supervisor.HEARTBEATS
-    services = {k: {"age": round(now - v.get("at", now)), "state": v.get("state"), "errors": v.get("errors", 0)}
-                for k, v in hb.items()}
-    stale = [k for k, v in services.items() if not k.startswith("worker") and v["age"] > 1800]
+    services = {k: {"age": round(now - v.get("at", now)), "state": v.get("state"), "errors": v.get("errors", 0),
+                    "every": v.get("every")} for k, v in hb.items()}
+    # slow = has not checked in for well over its own schedule (cleanup runs every 6 h, backup hourly…),
+    # or keeps failing. Workers only wake up for posts, so they are never "slow".
+    stale = [k for k, v in services.items() if not k.startswith("worker")
+             and (v["age"] > 2 * (v["every"] or 900) + 600 or v["errors"] >= 3)]
     mine = {c["id"]: c["title"] for c in db.all("SELECT id, title FROM channels WHERE workspace_id=?", (req.ws,))}
     running = [{"channel_id": cid, "client": mine[cid], "stage": p.get("stage"), "pct": p.get("pct"),
                 "video": p.get("title"), "started": p.get("started")}
