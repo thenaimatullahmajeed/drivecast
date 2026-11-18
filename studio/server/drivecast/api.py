@@ -784,8 +784,8 @@ def set_route(req, cid):
     c = store.channel(c["id"])
     for sb in srcs:
         configure_source(store.channel(c["id"]), sb)
-    if not srcs and (b.get("inbox") or not c["folder_id"]):
-        _ensure_folder(c, c["folder_name"] or c["title"])
+    if not c["folder_id"] or (not srcs and b.get("inbox")):
+        _ensure_folder(c, (c["folder_name"] or c["title"]).strip())  # Drive folder named after the client
     c = store.channel(c["id"])
     if "youtube_on" in b and c["platform"] == "youtube":
         db.run("UPDATE channels SET youtube_on=? WHERE id=?", (1 if b["youtube_on"] else 0, c["id"]))
@@ -800,6 +800,8 @@ def set_route(req, cid):
     c = store.channel(c["id"])
     if start:
         scheduler.replan_future(c)
+        if any(x.get("kind", "instagram") == "instagram" for x in srcs):
+            igsync.kick(c["id"])  # recent video → Drive straight away, with a live bar
     return {"channel": _channel_out(c)}
 
 
@@ -851,6 +853,12 @@ def channel_action(req, cid, action):
     elif action == "post-now":
         if c["state"] != "live":
             raise HttpError(400, "Resume the channel first")
+        ready = (c.get("queue_count") or 0) > 0 or db.one("SELECT 1 FROM media WHERE channel_id=? AND state='in_drive'", (c["id"],))
+        fetching = db.one("SELECT 1 FROM sources WHERE channel_id=? AND state='active' AND kind='instagram'", (c["id"],))
+        if not ready and fetching:
+            igsync.want_post(c["id"])
+            igsync.kick(c["id"])
+            return {"channel": _channel_out(store.channel(c["id"])), "waiting": True}
         if not scheduler.post_now(c):
             raise HttpError(409, "Today's posts are all done — nothing left to bring forward")
     elif action == "delete":
@@ -1333,7 +1341,7 @@ def configure_source(c, b):
     include_old = 1 if b.get("include_old", cur["include_old"] if cur else True) else 0
     cap = max(1, min(30, int(b.get("daily_cap") or (cur and cur["daily_cap"]) or 6)))
     if not c["folder_id"] or not c.get("inbox_id"):
-        c = _ensure_folder(c, handle)
+        c = _ensure_folder(c, (c["title"] or handle).strip())
     if cur and cur["handle"] == handle:
         db.run("UPDATE sources SET content_type=?, include_old=?, daily_cap=?, state=?, updated_at=? WHERE id=?",
                (ctype, include_old, cap, "paused" if b.get("paused") else "active", now, cur["id"]))

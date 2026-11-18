@@ -1,3 +1,5 @@
+import os
+os.environ["DC_NO_KICK"] = "1"  # no background pass during tests
 import datetime as dt
 import json
 import os

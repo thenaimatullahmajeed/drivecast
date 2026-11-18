@@ -18,6 +18,7 @@ import random
 import re
 import secrets
 import shutil
+import threading
 import time
 
 from . import db
@@ -30,6 +31,7 @@ log = logging.getLogger("drivecast.igsync")
 LOCAL_KEEP = 6 * 3600          # phone copy kept this long after the post is live
 ACCOUNT_DAILY = 160            # Instagram actions per test account per day
 CHECK_MIN, CHECK_MAX = 45 * 60, 90 * 60
+_tick_lock = threading.Lock()
 _next_action = {}              # account id -> earliest next action time (in memory, randomised)
 _clients = {}                  # account id -> (cookies_enc, Client)
 
@@ -191,6 +193,7 @@ def check_source(src, ch, cl):
     items, cursor = cl.feed(uid, handle=src["handle"])
     fresh = 0
     newest = src["newest_seen"] or 0
+    first = not db.one("SELECT 1 FROM media WHERE source_id=?", (src["id"],))
     for it in items:
         if not it["pk"] or not _wanted(it, src["content_type"]):
             continue
@@ -200,6 +203,8 @@ def check_source(src, ch, cl):
         elif src["include_old"]:
             _insert(src, ch, it, "backfill")
         newest = max(newest, t)
+    if first and not fresh:
+        fresh += _kickoff(src, ch, items)
     upd = {"newest_seen": newest, "last_check": now, "error_code": None, "error_detail": None,
            "next_check": now + random.uniform(CHECK_MIN, CHECK_MAX) * (1.5 if time.gmtime(now).tm_hour in range(20, 24) else 1)}
     if src["include_old"] and not src["backfill_cursor"] and not src["backfill_done"]:
@@ -215,6 +220,18 @@ def check_source(src, ch, cl):
     return fresh
 
 
+def _kickoff(src, ch, items):
+    """A brand-new client starts with its most recent post, even if it is older than the moment it was added:
+    Drive is never empty on day one. Everything else follows the normal rules."""
+    wanted = [it for it in items if it["pk"] and _wanted(it, src["content_type"])]
+    if not wanted:
+        return 0
+    top = max(wanted, key=lambda it: it["taken_at"] or 0)
+    _insert(src, ch, top, "fresh")
+    db.run("UPDATE media SET lane='fresh' WHERE source_id=? AND ext_id=? AND state='found'", (src["id"], top["pk"]))
+    return 1
+
+
 def discover_older(src, ch, cl):
     items, cursor = cl.feed(src["ig_user_id"], src["backfill_cursor"] or None, handle=src["handle"])
     for it in items:
@@ -222,6 +239,81 @@ def discover_older(src, ch, cl):
             _insert(src, ch, it, "fresh" if (it["taken_at"] or 0) > src["started_at"] else "backfill")
     db.run("UPDATE sources SET backfill_cursor=?, backfill_done=?, total_found=(SELECT COUNT(*) FROM media WHERE source_id=?), updated_at=? WHERE id=?",
            (cursor or "", 0 if cursor else 1, src["id"], time.time(), src["id"]))
+
+
+# ------------------------------------------------------------------ live progress (what the person sees)
+def sync_progress(ch_id, title="First video"):
+    """One honest 0-100 bar for the whole trip: Instagram → phone → clean → Google Drive."""
+    from . import worker
+
+    def p(stage, f=None):
+        pct = None
+        if stage.startswith("Downloading"):
+            pct = 0.05 + 0.35 * f if f is not None else 0.05
+        elif stage.startswith("Removing"):
+            pct = 0.45
+        elif stage.startswith("Saving"):
+            pct = 0.5 + 0.48 * (f or 0)
+        elif stage.startswith("Saved"):
+            pct = 1.0
+        worker._stage(ch_id, stage, pct, title)
+        worker.PROGRESS[ch_id]["by"] = "sync"
+    return p
+
+
+def sync_clear(ch_id):
+    from . import worker
+    if (worker.PROGRESS.get(ch_id) or {}).get("by") == "sync":
+        worker.PROGRESS.pop(ch_id, None)
+
+
+def _want_key(ch_id):
+    return f"postwhenready:{ch_id}"
+
+
+def want_post(ch_id):
+    """The person pressed Post now while nothing was ready: post the moment the first video reaches Drive."""
+    db.meta_set(_want_key(ch_id), str(time.time()))
+
+
+def _after_ready(ch):
+    from . import scheduler
+    from . import worker
+    raw = db.meta_get(_want_key(ch["id"]))
+    if not raw:
+        return
+    db.run("DELETE FROM meta WHERE key=?", (_want_key(ch["id"]),))
+    if time.time() - float(raw) > 6 * 3600:
+        return
+    fresh = store.channel(ch["id"])
+    if fresh and fresh["state"] == "live" and scheduler.post_now(fresh):
+        worker.PROGRESS.pop(ch["id"], None)  # the poster takes over with its own bar
+
+
+def pending_kickoff(ch_id):
+    return bool(db.one("""SELECT 1 FROM sources WHERE channel_id=? AND state='active' AND kind='instagram' AND last_check IS NULL""", (ch_id,))
+                or db.one("SELECT 1 FROM media WHERE channel_id=? AND lane='fresh' AND state IN ('found','downloading')", (ch_id,)))
+
+
+def kick(ch_id):
+    """Start right now (no waiting for the next minute): check the profile, take the latest video, put it in Drive."""
+    for a in db.all("SELECT id FROM ig_accounts"):
+        _next_action.pop(a["id"], None)
+    db.run("UPDATE sources SET next_check=0, error_code=NULL WHERE channel_id=? AND state='active' AND kind='instagram'", (ch_id,))
+
+    if os.environ.get("DC_NO_KICK"):  # tests drive the passes themselves
+        return
+
+    def run():
+        for _ in range(10):
+            try:
+                tick(wait=30)
+            except Exception:
+                log.exception("kick pass failed")
+            if not pending_kickoff(ch_id):
+                break
+            time.sleep(6)
+    threading.Thread(target=run, name="ig-kick", daemon=True).start()
 
 
 # ------------------------------------------------------------------ download → clean → Drive
@@ -241,6 +333,8 @@ def process(m, src, ch, cl, group, progress=None):
     folder = channel_dir(ch)
     ref = m["ref"] or new_ref()
     db.run("UPDATE media SET ref=? WHERE id=?", (ref, m["id"]))
+    if progress:
+        progress("Downloading from Instagram", None)
     item = cl.media(m["ext_id"], handle=src["handle"])
     used = [r["title"] for r in db.all("SELECT title FROM media WHERE channel_id=? AND title IS NOT NULL", (ch["id"],))]
     title = titles.choose(caption=item["caption"], channel_title=ch["title"],
@@ -255,7 +349,7 @@ def process(m, src, ch, cl, group, progress=None):
             if not plan:
                 raise CodedError("IG_MEDIA_GONE", "no video in post")
             v = os.path.join(tmpdir, "v.mp4")
-            cl.download(plan["video"], v, progress and (lambda n: progress("Downloading from Instagram", None)))
+            cl.download(plan["video"], v, progress and (lambda n, total=None: progress("Downloading from Instagram", (n / total) if total else None)))
             raw = v
             if plan["mode"] == "dash" and plan.get("audio"):
                 a = os.path.join(tmpdir, "a.mp4")
@@ -292,6 +386,8 @@ def process(m, src, ch, cl, group, progress=None):
         return False
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
+        if progress:
+            sync_clear(ch["id"])
 
 
 def store_video(m, ch, raw, title, caption, folder, ref, dsess, dbox, props, progress=None):
@@ -302,6 +398,8 @@ def store_video(m, ch, raw, title, caption, folder, ref, dsess, dbox, props, pro
         raise CodedError(bad, f"{meta}")
     safe = re.sub(r'[\\/:*?"<>|]+', " ", title)[:80].strip() or ref
     final = os.path.join(folder, f"{safe} [{ref}].mp4")
+    if progress:
+        progress("Removing hidden data", None)
     cleaner.clean_video(raw, final, ref, VERSION(), meta.get("vcodec"))
     if progress:
         progress("Saving to Google Drive", 0)
@@ -311,6 +409,12 @@ def store_video(m, ch, raw, title, caption, folder, ref, dsess, dbox, props, pro
               local_path=?, local_bytes=?, drive_file_id=?, error_code=NULL, updated_at=? WHERE id=?""",
            (title, caption, meta["width"], meta["height"], meta["duration"], 1 if meta["has_audio"] else 0,
             final, os.path.getsize(final), fid, time.time(), m["id"]))
+    if progress:
+        progress("Saved in Google Drive", 1.0)
+    try:
+        _after_ready(ch)
+    except Exception:
+        log.exception("post-when-ready failed")
     return fid
 
 
@@ -369,6 +473,8 @@ def account_pass(acc, now=None, serve=None):
                 db.event("error", "pipeline", f"{ch['title']}: " + e.info()["message"], ch["workspace_id"], ch["id"], e.code, e.detail)
                 db.run("UPDATE sources SET next_check=? WHERE id=?", (time.time() + 1800, src["id"]))
         gap = (20, 45) if kind == "check" else (75, 200)
+        if kind == "check" and pending_kickoff(src["channel_id"]):
+            gap = (1, 3)  # a new client's first video follows straight away
         _next_action[acc["id"]] = time.time() + random.uniform(*gap)
         return kind
 
@@ -383,7 +489,7 @@ def account_pass(acc, now=None, serve=None):
             continue
         m = _next_item(s, "fresh")
         if m:
-            return act("fresh", s, lambda s, ch, m=m: process(m, s, ch, cl, sg))
+            return act("fresh", s, lambda s, ch, m=m: process(m, s, ch, cl, sg, sync_progress(ch["id"], "First video" if m["lane"] == "fresh" else "Next video")))
     # 3/4. older posts, only while the channel's ready buffer is low
     for s in sorted(sources, key=lambda s: ready_count(s["channel_id"])):
         ch = store.channel(s["channel_id"])
@@ -395,13 +501,22 @@ def account_pass(acc, now=None, serve=None):
         m = _next_item(s, "backfill")
         if m:
             db.run("UPDATE sources SET day_count=day_count+1 WHERE id=?", (s["id"],))
-            return act("backfill", s, lambda s, ch, m=m: process(m, s, ch, cl, sg))
+            return act("backfill", s, lambda s, ch, m=m: process(m, s, ch, cl, sg, sync_progress(ch["id"], "Older video")))
         if s["ig_user_id"] and not s["backfill_done"]:
             return act("discover", s, lambda s, ch: discover_older(s, ch, cl))
     return "idle"
 
 
-def tick():
+def tick(wait=0):
+    if not _tick_lock.acquire(timeout=wait):
+        return
+    try:
+        _tick()
+    finally:
+        _tick_lock.release()
+
+
+def _tick():
     if db.meta_get("superseded_by"):  # this phone was replaced: never download twice
         return
     if not cleaner.available():

@@ -1,3 +1,5 @@
+import os
+os.environ["DC_NO_KICK"] = "1"  # no background pass during tests
 import http.cookiejar
 import json
 import os
@@ -216,8 +218,8 @@ class SourceApiTests(unittest.TestCase):
             st, r = c.call("POST", f"/api/channels/{ch}/route", {"group_id": g, "instagram": {"handle": "https://instagram.com/InkEpoch", "content_type": "videos"},
                                                                  "plan": {"posts_per_day": 2}})
             self.assertEqual(st, 200, r)
-            self.assertIn(("ROOT", "inkepoch"), made)
-            self.assertIn(("ROOT/inkepoch", "Inbox"), made)
+            self.assertIn(("ROOT", "Ink"), made)  # the folder carries the client's name
+            self.assertIn(("ROOT/Ink", "Inbox"), made)
             st, d = c.call("GET", f"/api/channels/{ch}/detail")
             self.assertEqual((d["source"]["handle"], d["source"]["state"], d["has_inbox"]), ("inkepoch", "active", True))
             sid = d["source"]["id"]

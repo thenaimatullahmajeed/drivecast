@@ -525,7 +525,7 @@ async function pageDashboard() {
   every(1000, () => document.querySelectorAll('[data-count]').forEach(el => { el.textContent = countdown(+el.dataset.count); }));
   const liveNow = (d.today.live || []).length > 0;
   every(liveNow ? 4000 : 60000, () => { if (!document.getElementById('modal') && !document.querySelector('.sheet.open')) render(); });
-  S.acts['post-now'] = async x => { await api('POST', `/api/channels/${x.id}/post-now`); toast('Queued — it will post in a moment'); render(); };
+  S.acts['post-now'] = async x => { const r = await api('POST', `/api/channels/${x.id}/post-now`); toast(r.waiting ? 'Getting the video first — it posts as soon as it is ready' : 'Queued — it will post in a moment'); render(); };
   S.acts.dismiss = async x => { await api('POST', `/api/events/${x.id}/dismiss`); render(); };
   S.acts.fixit = x => runFix(S.attention[+x.i]);
   S.acts.pausemodal = () => pauseModal();
@@ -1325,7 +1325,7 @@ async function pageChannels() {
   every(1000, () => document.querySelectorAll('[data-count]').forEach(el => { el.textContent = countdown(+el.dataset.count); }));
   every(channels.some(c => c.live) ? 4000 : 60000, () => { if (!document.getElementById('modal')) render(); });
   S.acts.chf = d => { S.chFilter = d.f; render(); };
-  S.acts.cact = async d => { closeModal(); await api('POST', `/api/channels/${d.id}/${d.a}`); toast({ 'post-now': 'Queued — posting now', pause: 'Paused', resume: 'Live again' }[d.a]); render(); };
+  S.acts.cact = async d => { closeModal(); const r = await api('POST', `/api/channels/${d.id}/${d.a}`); toast(r && r.waiting ? 'Getting the video first — it posts as soon as it is ready' : { 'post-now': 'Queued — posting now', pause: 'Paused', resume: 'Live again' }[d.a]); render(); };
   S.acts.cdel = async d => { if (!confirm('Remove this channel from DriveCast? Videos on YouTube and files in Drive stay untouched.')) return; await api('POST', `/api/channels/${d.id}/delete`); render(); };
   S.acts.cmore = d => {
     const c = channels.find(x => x.id === +d.id), p = c.plan;

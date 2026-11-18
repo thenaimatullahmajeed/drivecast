@@ -169,12 +169,19 @@ class Client:
         if r.status_code >= 400:
             raise CodedError("IG_UNKNOWN", f"cdn {r.status_code}")
         size = 0
+        try:
+            total = int(r.headers.get("Content-Length") or 0) or None
+        except Exception:
+            total = None
         with open(path, "wb") as f:
             for part in r.iter_content(1 << 20):
                 f.write(part)
                 size += len(part)
                 if on_progress:
-                    on_progress(size)
+                    try:
+                        on_progress(size, total)
+                    except TypeError:
+                        on_progress(size)
         if size < 1024:
             raise CodedError("IG_MEDIA_GONE", "empty download")
         return size
