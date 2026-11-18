@@ -1981,12 +1981,20 @@ async function tgCard() {
   const box = document.getElementById('tgcard'); if (!box) return;
   let t; try { t = await api('GET', '/api/telegram'); } catch (e) { return; }
   box.innerHTML = `<section class="card" style="margin-bottom:16px">${hd('Telegram alerts', 'A message on your phone when a server is offline for 1 hour, a pool’s proxy is down for real, or something serious needs you. Every server of the studio uses this bot.', t.ready ? chip('On' + (t.bot ? ' · @' + esc(t.bot) : ''), 'ok') : chip('Off', 'neutral'))}
-    <ol class="muted" style="font-size:12.5px;line-height:1.7;margin:0 0 10px;padding-left:18px"><li>In Telegram open ${deep('https://t.me/BotFather', '@BotFather')} → <b>/newbot</b> → copy the token.</li><li>Paste it below and Save.</li><li>Open your new bot, press <b>Start</b>, send “hi”, then press <b>Find my chat</b>.</li></ol>
+    <ol class="muted" style="font-size:12.5px;line-height:1.7;margin:0 0 10px;padding-left:18px"><li>In Telegram open ${deep('https://t.me/BotFather', '@BotFather')} → <b>/newbot</b> → copy the token.</li><li>Open your new bot in Telegram, press <b>Start</b> and send “hi”.</li><li>Paste the token below and press <b>Save</b> — the chat is found by itself and a test message arrives.</li></ol>
     <form data-form="tgsave" style="display:flex;flex-direction:column;gap:10px">
       <label class="f">Bot token<span class="pw"><input class="i" name="token" type="password" autocomplete="off" placeholder="${t.has_token ? 'Saved — paste a new one to replace' : '123456:ABC…'}"><button type="button" class="pw-eye" data-act="pweye" aria-label="Show token">${ic('eye', 16)}</button></span></label>
       <label class="f">Chat id<input class="i" name="chat_id" value="${esc(t.chat_id)}" placeholder="filled by Find my chat"></label>
       <div class="actions"><button class="btn primary" type="submit">Save</button>${t.has_token ? '<button type="button" class="btn" data-act="tgfind">Find my chat</button>' : ''}${t.ready ? '<button type="button" class="btn" data-act="tgtest">Send a test</button><button type="button" class="btn danger" data-act="tgoff">Turn off</button>' : ''}</div></form></section>`;
-  S.acts.tgsave = async v => { const b = { chat_id: v.chat_id }; if (v.token) b.token = v.token; await api('POST', '/api/telegram', b); toast('Telegram saved'); tgCard(); };
+  S.acts.tgsave = async v => {
+    const b = { chat_id: v.chat_id }; if (v.token) b.token = v.token;
+    await api('POST', '/api/telegram', b);
+    if (!v.chat_id) {
+      try { const r = await api('POST', '/api/telegram/find'); await api('POST', '/api/telegram/test'); toast(`Connected to ${r.name || 'your chat'} — a test message is in Telegram`); }
+      catch (e) { toast('Token saved. ' + e.message, true); }
+    } else toast('Telegram saved');
+    tgCard();
+  };
   S.acts.tgfind = async () => { const r = await api('POST', '/api/telegram/find'); toast(`Found ${r.name || 'your chat'} · ${r.chat_id}`); tgCard(); };
   S.acts.tgtest = async () => { await api('POST', '/api/telegram/test'); toast('Test sent — check Telegram'); };
   S.acts.tgoff = async () => { await api('POST', '/api/telegram', { clear: true }); tgCard(); };
