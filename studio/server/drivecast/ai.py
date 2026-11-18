@@ -25,9 +25,10 @@ from . import db, security, store
 log = logging.getLogger("drivecast.ai")
 
 API = "https://api.groq.com/openai/v1"
-DEFAULT_MODEL = "llama-3.3-70b-versatile"
-MODELS = ["llama-3.3-70b-versatile", "openai/gpt-oss-120b", "llama-3.1-8b-instant"]
-WHISPER = "whisper-large-v3-turbo"
+AUTO = "auto"  # pick the best model Groq offers right now (models come and go)
+PREFER = ("openai/gpt-oss-120b", "gpt-oss-120b", "70b", "qwen", "gpt-oss-20b", "llama", "")
+NOT_CHAT = ("whisper", "guard", "tts", "playai", "orpheus", "distil", "compound", "embed")
+FALLBACK_MODEL = "openai/gpt-oss-120b"
 TEXT_PER_DAY = 900        # Groq free plan allows about 1,000 text requests a day per account
 AUDIO_PER_DAY = 27000     # seconds; free plan allows 28,800
 MAX_AUDIO_S = 600         # first 10 minutes are plenty for captions and Shorts subtitles
@@ -75,8 +76,55 @@ def key_for(ch=None, ws=None, g=None):
     return None
 
 
+def known():
+    """The model list Groq gave us last time (refreshed when a key is saved or a model disappears)."""
+    return db.jload(db.meta_get("ai_models"), {}) or {}
+
+
+def best(chat):
+    for p in PREFER:
+        for i in chat:
+            if p in i.lower():
+                return i
+    return None
+
+
 def model(ws):
-    return (ws or {}).get("ai_model") or DEFAULT_MODEL
+    chosen = (ws or {}).get("ai_model")
+    chat = known().get("chat") or []
+    if chosen and chosen != AUTO and (not chat or chosen in chat):
+        return chosen
+    return best(chat) or FALLBACK_MODEL
+
+
+def whisper():
+    stt = known().get("stt") or []
+    for p in ("whisper-large-v3-turbo", "whisper-large-v3"):
+        if p in stt:
+            return p
+    return stt[0] if stt else "whisper-large-v3-turbo"
+
+
+def fetch_models(key):
+    """Ask Groq which models this key can use today."""
+    try:
+        code, _h, text = _get(key, "/models")
+    except Exception as e:
+        raise AiError(f"Could not reach Groq: {e}")
+    if code == 401:
+        raise AiError("Groq did not accept this key")
+    if code >= 400:
+        raise AiError(f"Groq answered {code}: {text[:160]}")
+    ids = [m.get("id") for m in (json.loads(text).get("data") or []) if m.get("id") and m.get("active", True) is not False]
+    chat = sorted(i for i in ids if not any(x in i.lower() for x in NOT_CHAT))
+    stt = sorted(i for i in ids if "whisper" in i.lower())
+    if chat:
+        db.meta_set("ai_models", json.dumps({"chat": chat, "stt": stt, "at": time.time()}))
+    return chat, stt
+
+
+class ModelGone(AiError):
+    pass
 
 
 def _day():
@@ -113,6 +161,12 @@ def _post(key, path, json_body=None, files=None, data=None, timeout=60):
     return r.status_code, dict(r.headers), r.text
 
 
+def _get(key, path, timeout=30):
+    s = _session()
+    r = s.get(API + path, headers={"Authorization": "Bearer " + key}, timeout=timeout)
+    return r.status_code, dict(r.headers), r.text
+
+
 def _call(key, scope, path, ch=None, **kw):
     if float(db.meta_get("ai_block:" + scope) or 0) > time.time():
         raise AiError("resting")
@@ -136,6 +190,12 @@ def _call(key, scope, path, ch=None, **kw):
                 wait = 0
         db.meta_set("ai_block:" + scope, str(time.time() + max(60, min(wait or 1800, 6 * 3600))))
         raise AiError("rate limited")
+    if code in (400, 404) and ("model_not_found" in text or "decommissioned" in text or "does not exist" in text):
+        try:
+            fetch_models(key)  # Groq retired the model: learn today's list, the caller retries once
+        except AiError:
+            pass
+        raise ModelGone("model retired")
     if code >= 400:
         raise AiError(f"HTTP {code}: {text[:200]}")
     db.meta_set("ai_bad:" + scope, "0")
@@ -143,10 +203,15 @@ def _call(key, scope, path, ch=None, **kw):
 
 
 def chat(key, scope, ws, messages, ch=None, max_tokens=900, as_json=True):
-    body = {"model": model(ws), "messages": messages, "temperature": 0.8, "max_tokens": max_tokens}
-    if as_json:
-        body["response_format"] = {"type": "json_object"}
-    out = _call(key, scope, "/chat/completions", ch=ch, json_body=body)
+    def ask():
+        body = {"model": model(ws), "messages": messages, "temperature": 0.8, "max_tokens": max_tokens}
+        if as_json:
+            body["response_format"] = {"type": "json_object"}
+        return _call(key, scope, "/chat/completions", ch=ch, json_body=body)
+    try:
+        out = ask()
+    except ModelGone:
+        out = ask()
     msg = out["choices"][0]["message"]["content"] or ""
     tokens = (out.get("usage") or {}).get("total_tokens") or 0
     return (json.loads(_json_part(msg)) if as_json else msg.strip()), tokens
@@ -175,9 +240,14 @@ def extract_audio(video, out_dir):
 
 
 def transcribe(key, scope, audio, ch=None):
-    with open(audio, "rb") as fh:
-        out = _call(key, scope, "/audio/transcriptions", ch=ch, files={"file": ("voice.flac", fh, "audio/flac")},
-                    data={"model": WHISPER, "response_format": "verbose_json"}, timeout=120)
+    def ask():
+        with open(audio, "rb") as fh:
+            return _call(key, scope, "/audio/transcriptions", ch=ch, files={"file": ("voice.flac", fh, "audio/flac")},
+                         data={"model": whisper(), "response_format": "verbose_json"}, timeout=120)
+    try:
+        out = ask()
+    except ModelGone:
+        out = ask()
     segs = [{"start": float(s.get("start") or 0), "end": float(s.get("end") or 0), "text": (s.get("text") or "").strip()}
             for s in out.get("segments") or [] if (s.get("text") or "").strip()]
     return {"text": (out.get("text") or "").strip(), "language": (out.get("language") or "").lower(),
@@ -421,16 +491,20 @@ def latest_report(ch_id):
 
 
 def test_key(key, ws):
-    """A tiny request that proves the key works. Returns the model name."""
+    """Proves the key works and learns which models it may use. Returns the model that will write."""
+    chat, _stt = fetch_models(key)
+    if not chat:
+        raise AiError("Groq lists no text models for this key")
+    use = model(ws)
     code, _h, text = _post(key, "/chat/completions", json_body={
-        "model": model(ws), "messages": [{"role": "user", "content": "Reply with OK"}], "max_tokens": 5}, timeout=30)
+        "model": use, "messages": [{"role": "user", "content": "Reply with OK"}], "max_tokens": 5}, timeout=30)
     if code == 401:
         raise AiError("Groq did not accept this key")
     if code == 429:
-        raise AiError("This key is at its limit right now — it still works, try later")
+        return use  # the key works, it is only at its limit right now
     if code >= 400:
         raise AiError(f"Groq answered {code}: {text[:160]}")
-    return model(ws)
+    return use
 
 
 def service():

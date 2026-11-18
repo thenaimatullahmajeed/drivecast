@@ -181,7 +181,7 @@ def get_settings(req):
             "ig_redirect_uri": public_base(req) + "/oauth/ig/callback",
             "drive_client_id": ws.get("drive_client_id"), "has_drive_secret": bool(ws.get("drive_client_secret_enc")),
             "drive_uses_own_app": bool(ws.get("drive_token_client") and ws.get("drive_token_client") == ws.get("drive_client_id")),
-            "has_groq": bool(ws.get("groq_key_enc")), "ai_model": ws.get("ai_model") or _ai.DEFAULT_MODEL, "ai_models": _ai.MODELS}
+            "has_groq": bool(ws.get("groq_key_enc")), "ai_model": ws.get("ai_model") or _ai.AUTO, "ai_models": _ai.known().get("chat") or []}
 
 
 @route("POST", "/api/settings")
@@ -222,7 +222,7 @@ def save_settings(req):
         db.run("UPDATE workspaces SET groq_key_enc=NULL WHERE id=?", (req.ws,))
     if b.get("ai_model"):
         from . import ai as _ai
-        if b["ai_model"] in _ai.MODELS:
+        if b["ai_model"] == _ai.AUTO or b["ai_model"] in (_ai.known().get("chat") or []):
             db.run("UPDATE workspaces SET ai_model=? WHERE id=?", (b["ai_model"], req.ws))
     if b.get("fb_graph_version"):
         v = b["fb_graph_version"].strip()
@@ -2316,7 +2316,8 @@ def ai_overview(req):
                      COALESCE(SUM(CASE WHEN kind='subs' AND ok=1 THEN 1 ELSE 0 END),0) subs,
                      COALESCE(SUM(CASE WHEN kind='flag' THEN 1 ELSE 0 END),0) held,
                      COALESCE(SUM(audio_s),0) audio FROM ai_log WHERE workspace_id=? AND at>=?""", (req.ws, since))
-    return {"has_owner_key": bool(ws.get("groq_key_enc")), "model": _ai.model(ws), "models": _ai.MODELS, "keys": keys,
+    return {"has_owner_key": bool(ws.get("groq_key_enc")), "model": _ai.model(ws), "choice": ws.get("ai_model") or _ai.AUTO,
+            "models": _ai.known().get("chat") or [], "keys": keys,
             "channels": chans, "week": week, "limits": {"text": _ai.TEXT_PER_DAY, "audio": _ai.AUDIO_PER_DAY},
             "languages": _ai.LANGUAGES}
 

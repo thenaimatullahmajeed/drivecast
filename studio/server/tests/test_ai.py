@@ -57,10 +57,16 @@ class AiCaptions(unittest.TestCase):
         a["facebook"], a["igpost"] = self.fb, self.ig
         return a
 
+    MODELS = {"data": [{"id": "openai/gpt-oss-120b"}, {"id": "llama-3.1-8b-instant"}, {"id": "whisper-large-v3"},
+                       {"id": "meta-llama/llama-guard-4-12b"}, {"id": "old-model", "active": False}]}
+
     def fake(self, reply):
         def _post(key, path, **kw):
             self.calls.append((key, path, kw))
             return reply(key, path, kw) if callable(reply) else reply
+        p2 = mock.patch.object(ai, "_get", lambda key, path, timeout=30: (200, {}, json.dumps(self.MODELS)))
+        p2.start()
+        self.addCleanup(p2.stop)
         return mock.patch.object(ai, "_post", _post)
 
     def test_each_platform_gets_its_own_text(self):
@@ -164,6 +170,30 @@ class AiCaptions(unittest.TestCase):
             g.json = {"groq_key": "wrong"}
             with self.assertRaises(api.HttpError):
                 api.group_apps(g, str(self.g))
+
+    def test_models_come_from_groq_and_a_retired_one_is_replaced(self):
+        ws = store.workspace(self.ws)
+        with self.fake(groq_reply({"x": 1})):
+            ai.test_key("k", ws)
+        k = ai.known()
+        self.assertEqual(k["chat"], ["llama-3.1-8b-instant", "openai/gpt-oss-120b"])  # no guard, no whisper, no inactive
+        self.assertEqual(ai.model(ws), "openai/gpt-oss-120b")
+        self.assertEqual(ai.whisper(), "whisper-large-v3")
+        db.run("UPDATE workspaces SET ai_model='gone-model' WHERE id=?", (self.ws,))
+        self.assertEqual(ai.model(store.workspace(self.ws)), "openai/gpt-oss-120b")  # not in Groq's list → automatic
+        seen = []
+
+        def reply(key, path, kw):
+            seen.append(kw["json_body"]["model"])
+            if len(seen) == 1:
+                return 404, {}, '{"error":{"code":"model_not_found"}}'
+            return groq_reply(GOOD)
+        db.run("UPDATE workspaces SET ai_model=NULL WHERE id=?", (self.ws,))
+        db.meta_set("ai_models", json.dumps({"chat": ["dead-70b"], "stt": []}))
+        with self.fake(reply):
+            pack = ai.prepare(store.channel(self.ch), {"id": "x"}, None, "T", "D", ["facebook"])
+        self.assertEqual(seen, ["dead-70b", "openai/gpt-oss-120b"])  # learned the new list and retried once
+        self.assertTrue(pack["texts"])
 
     def test_weekly_report(self):
         db.run("UPDATE channels SET ai_json=? WHERE id=?", (json.dumps({"captions": True}), self.ch))
