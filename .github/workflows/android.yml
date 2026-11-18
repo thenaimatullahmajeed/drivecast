@@ -122,6 +122,23 @@ jobs:
         with:
           gradle-version: "8.9"
 
+      - name: Stamp version and build the server update bundle
+        run: |
+          V=2.0.${{ github.run_number }}
+          sed -i "s/^VERSION = .*/VERSION = \"$V\"/" studio/server/drivecast/__init__.py
+          mkdir -p dist
+          cd studio/server
+          find drivecast -name "__pycache__" -prune -exec rm -rf {} +
+          zip -qrX ../../dist/dc-server-$V.zip drivecast -x "*.pyc"
+          cd ../..
+          python3 - <<EOF
+          import hashlib, json, os
+          v = "$V"; z = f"dist/dc-server-{v}.zip"; b = open(z, "rb").read()
+          json.dump({"version": v, "sha256": hashlib.sha256(b).hexdigest(), "size": len(b), "shell_api": 2},
+                    open(f"dist/dc-server-{v}.json", "w"))
+          print(v, len(b))
+          EOF
+
       - name: Signing key
         env:
           KS: ${{ secrets.DC_KEYSTORE_B64 }}
@@ -137,25 +154,29 @@ jobs:
         working-directory: studio/android
         env:
           DC_KEYSTORE_PASS: ${{ secrets.DC_KEYSTORE_PASS }}
-        run: gradle assembleRelease --no-daemon -PdcVersionCode=${{ github.run_number }} -PdcVersionName=1.2.${{ github.run_number }}
+        run: gradle assembleRelease --no-daemon -PdcVersionCode=${{ github.run_number }} -PdcVersionName=2.0.${{ github.run_number }}
 
       - name: Name APK
         run: |
-          mkdir -p dist
-          cp studio/android/app/build/outputs/apk/release/*.apk dist/DriveCast-Studio-1.2.${{ github.run_number }}.apk
+          cp studio/android/app/build/outputs/apk/release/*.apk dist/DriveCast-Studio-2.0.${{ github.run_number }}.apk
           ls -la dist
 
       - uses: actions/upload-artifact@v4
         with:
-          name: DriveCast-Studio-1.2.${{ github.run_number }}
+          name: DriveCast-Studio-2.0.${{ github.run_number }}
           path: dist/*.apk
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: server-1.2.${{ github.run_number }}
-          name: DriveCast Studio 1.2.${{ github.run_number }}
+          tag_name: server-2.0.${{ github.run_number }}
+          name: DriveCast Studio 2.0.${{ github.run_number }}
           target_commitish: ${{ github.sha }}
           prerelease: true
-          files: dist/*.apk
-          body: Install on the server phone. Allow “install unknown apps” for your browser when asked.
+          files: |
+            dist/*.apk
+            dist/dc-server-*.zip
+            dist/dc-server-*.json
+          body: |
+            DriveCast Studio · By Naimat. Phones on 2.0 or newer update themselves from this release (Server → Updates);
+            install the APK only on a new phone or when the Updates card asks for it.

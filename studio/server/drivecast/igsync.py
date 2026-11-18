@@ -396,6 +396,8 @@ def account_pass(acc, now=None):
 
 
 def tick():
+    if db.meta_get("superseded_by"):  # this phone was replaced: never download twice
+        return
     if not cleaner.available():
         if db.one("SELECT 1 FROM sources WHERE state='active'"):
             db.event("error", "server", err_info("FFMPEG_MISSING")["message"], None, None, "FFMPEG_MISSING")
@@ -430,6 +432,8 @@ def cleanup_local(now=None):
 # ------------------------------------------------------------------ client Inbox
 def inbox_pass():
     """Files the client uploads to Inbox: download → clean → into the channel folder → remove the original."""
+    if db.meta_get("superseded_by"):  # this phone was replaced: never download twice
+        return
     for ch in db.all("SELECT * FROM channels WHERE inbox_id IS NOT NULL AND folder_id IS NOT NULL AND state!='setup'"):
         g = store.group(ch["group_id"])
         if not g or g["status"] == "down":

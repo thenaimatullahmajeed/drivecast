@@ -277,7 +277,13 @@ def attention(ws_id, now=None):
     from . import errors
     now = now or time.time()
     items = []
-    for g in db.all("SELECT * FROM ip_groups WHERE workspace_id=? AND status='down'", (ws_id,)):
+    # phone / fleet alerts (owner only): replaced phone, battery, heat, phones offline or full, quota, backup test
+    owner = db.one("SELECT workspace_id FROM users WHERE role='owner' ORDER BY id LIMIT 1")
+    if owner and owner["workspace_id"] == ws_id:
+        for a in db.jload(db.meta_get("alerts_json"), []) or []:
+            items.append({"level": a["level"], "kind": "alert", "title": a["title"], "detail": a["message"],
+                          "action": "fix" if a.get("fix") else None, "fix": a.get("fix"), "ref": None, "code": a["code"]})
+    for g in db.all("SELECT * FROM ip_groups WHERE workspace_id=? AND status='down' AND moved_to IS NULL", (ws_id,)):
         n = db.one("SELECT COUNT(*) n FROM channels WHERE group_id=?", (g["id"],))["n"]
         items.append({"level": "error", "kind": "proxy", "title": f"Group {g['number']} is not responding",
                       "detail": f"{n} channel(s) held. Nothing is sent from the phone’s own IP.", "action": "fix",

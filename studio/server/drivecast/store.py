@@ -16,8 +16,20 @@ def google_app(ws):
     return cid, sec
 
 
+def drive_app(ws):
+    """The Google app that issues Drive access: the separate Drive app when set (owner only,
+    so the client-facing app needs only YouTube permissions), else the main Google app."""
+    if ws.get("drive_client_id") and ws.get("drive_client_secret_enc"):
+        return ws["drive_client_id"], security.unseal(ws["drive_client_secret_enc"])
+    return google_app(ws)
+
+
 def drive_box(ws):
-    cid, sec = google_app(ws)
+    # refresh with the app that issued the token (switching apps never breaks the current Drive link)
+    if ws.get("drive_token_client") and ws.get("drive_token_client") == ws.get("drive_client_id") and ws.get("drive_client_secret_enc"):
+        cid, sec = ws["drive_client_id"], security.unseal(ws["drive_client_secret_enc"])
+    else:
+        cid, sec = google_app(ws)
 
     def save(sealed):
         db.run("UPDATE workspaces SET drive_token_enc=? WHERE id=?", (sealed, ws["id"]))
@@ -67,7 +79,8 @@ def set_channel_state(cid, state, reason=None):
     db.run("UPDATE channels SET state=?, state_reason=? WHERE id=?", (state, reason, cid))
 
 
-def public(row, drop=("token_enc", "password_enc", "google_client_secret_enc", "drive_token_enc", "pw_hash")):
+def public(row, drop=("token_enc", "password_enc", "google_client_secret_enc", "drive_token_enc", "pw_hash",
+                      "drive_client_secret_enc", "fb_app_secret_enc", "ig_app_secret_enc", "cookies_enc")):
     if row is None:
         return None
     return {k: v for k, v in row.items() if k not in drop}

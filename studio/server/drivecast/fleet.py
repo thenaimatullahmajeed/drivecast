@@ -35,7 +35,8 @@ def key():
 
 
 def my_url():
-    return (db.meta_get("public_url_override") or "").rstrip("/")
+    from . import urls
+    return urls.own_domain()
 
 
 def my_host():
@@ -101,9 +102,23 @@ def verify(body, sig):
 
 
 # ------------------------------------------------------------------ device → hub
+def _stats():
+    now = time.time()
+    day = now - 86400
+    d = db.jload(db.meta_get("device_info"), {}) or {}
+    v7 = db.one("SELECT COALESCE(SUM(views),0) v FROM uploads WHERE status='published' AND published_at>?", (now - 7 * 86400,))
+    return {"channels": db.one("SELECT COUNT(*) n FROM channels")["n"],
+            "live": db.one("SELECT COUNT(*) n FROM channels WHERE state='live'")["n"],
+            "posts_24h": db.one("SELECT COUNT(*) n FROM uploads WHERE status='published' AND published_at>?", (day,))["n"],
+            "failed_24h": db.one("SELECT COUNT(*) n FROM uploads WHERE status IN ('failed','uncertain') AND reserved_at>?", (day,))["n"],
+            "groups": db.one("SELECT COUNT(*) n FROM ip_groups WHERE moved_to IS NULL")["n"],
+            "views_7d": int(v7["v"] or 0), "battery": d.get("battery"), "charging": d.get("charging"), "temp": d.get("temp"),
+            "replaced": bool(db.meta_get("superseded_by"))}
+
+
 def _status():
     return {"host": my_host(), "label": my_host().split(".")[0].upper(), "users": users_count(), "max_users": max_users(),
-            "open_signup": open_signup(), "version": VERSION, "at": time.time()}
+            "open_signup": open_signup(), "version": VERSION, "at": time.time(), "stats": _stats()}
 
 
 def _send(path, payload):
@@ -160,12 +175,13 @@ def apply(path, p):
     if not host:
         return False
     if path == "/fleet/hello":
-        db.run("""INSERT INTO fleet_devices(host,label,users,max_users,open_signup,version,last_seen,created_at)
-                  VALUES(?,?,?,?,?,?,?,?)
+        db.run("""INSERT INTO fleet_devices(host,label,users,max_users,open_signup,version,last_seen,created_at,stats_json)
+                  VALUES(?,?,?,?,?,?,?,?,?)
                   ON CONFLICT(host) DO UPDATE SET label=excluded.label, users=excluded.users, max_users=excluded.max_users,
-                  open_signup=excluded.open_signup, version=excluded.version, last_seen=excluded.last_seen""",
+                  open_signup=excluded.open_signup, version=excluded.version, last_seen=excluded.last_seen,
+                  stats_json=excluded.stats_json, hidden=0""",
                (host, (p.get("label") or host.split(".")[0])[:20], int(p.get("users") or 0), int(p.get("max_users") or 0),
-                1 if p.get("open_signup") else 0, str(p.get("version") or "")[:20], now, now))
+                1 if p.get("open_signup") else 0, str(p.get("version") or "")[:20], now, now, json.dumps(p.get("stats") or {})[:2000]))
         return True
     if path == "/fleet/dir" and p.get("kind") in ("email", "invite") and len(p.get("hash") or "") == 64:
         db.run("""INSERT INTO fleet_dir(kind,hash,host,created_at) VALUES(?,?,?,?)
@@ -179,7 +195,161 @@ def devices():
     rows = db.all("SELECT * FROM fleet_devices WHERE hidden=0 ORDER BY host")
     for r in rows:
         r["online"] = (r["last_seen"] or 0) > now - ONLINE_FOR
+        r["stats"] = db.jload(r.pop("stats_json", None), {}) or {}
     return rows
+
+
+def totals(devs):
+    t = {"phones": len(devs), "online": sum(1 for d in devs if d["online"]), "users": 0, "channels": 0, "live": 0,
+         "posts_24h": 0, "failed_24h": 0, "views_7d": 0, "groups": 0}
+    for d in devs:
+        t["users"] += d["users"] or 0
+        for k in ("channels", "live", "posts_24h", "failed_24h", "views_7d", "groups"):
+            t[k] += int(d["stats"].get(k) or 0)
+    return t
+
+
+# ------------------------------------------------------------------ move an IP group (with all its clients) to another phone
+# One IP group = one identity, so a group always moves whole: proxy, Instagram/Facebook connections,
+# clients, sources and the full ledger (nothing posts twice after the move).
+MOVE_TABLES = ("ip_groups", "channels", "sources", "ig_accounts", "fb_accounts", "fb_pages", "ig_dest", "media", "uploads")
+
+
+def _cipher(k=None):
+    from . import security
+    return security.AESGCM(hashlib.sha256(((k or key()) + "|move").encode()).digest())
+
+
+def _plain(row):
+    from . import security
+    out = {}
+    for k, v in row.items():
+        if k.endswith("_enc") and v:
+            out[k[:-4] + "__plain"] = security.unseal(v)
+        else:
+            out[k] = v
+    return out
+
+
+def export_group(gid):
+    g = db.one("SELECT * FROM ip_groups WHERE id=?", (gid,))
+    if not g:
+        raise ValueError("IP group not found")
+    chs = db.all("SELECT * FROM channels WHERE group_id=?", (gid,))
+    cids = [c["id"] for c in chs] or [-1]
+    q = ",".join("?" * len(cids))
+    fb = db.all("SELECT * FROM fb_accounts WHERE group_id=?", (gid,))
+    fbids = [a["id"] for a in fb] or [-1]
+    ws = db.one("SELECT google_client_id FROM workspaces WHERE id=?", (g["workspace_id"],))
+    return {"v": 1, "from": my_host(), "google_client_id": ws and ws["google_client_id"],
+            "ip_groups": [_plain(g)], "channels": [_plain(c) for c in chs],
+            "sources": [_plain(r) for r in db.all(f"SELECT * FROM sources WHERE channel_id IN ({q})", cids)],
+            "ig_accounts": [_plain(r) for r in db.all("SELECT * FROM ig_accounts WHERE group_id=?", (gid,))],
+            "fb_accounts": [_plain(a) for a in fb],
+            "fb_pages": [_plain(r) for r in db.all(f"SELECT * FROM fb_pages WHERE fb_account_id IN ({','.join('?' * len(fbids))})", fbids)],
+            "ig_dest": [_plain(r) for r in db.all("SELECT * FROM ig_dest WHERE group_id=?", (gid,))],
+            "media": [dict(r) for r in db.all(f"SELECT * FROM media WHERE channel_id IN ({q})", cids)],
+            "uploads": [dict(r) for r in db.all(f"SELECT * FROM uploads WHERE channel_id IN ({q})", cids)]}
+
+
+def _cols(c, table):
+    return {r[1] for r in c.execute(f"PRAGMA table_info({table})").fetchall()}
+
+
+def import_group(b):
+    """On the receiving phone: everything lands in the owner's workspace, with new ids, secrets sealed again."""
+    from . import security
+    owner = db.one("SELECT workspace_id FROM users WHERE role='owner' ORDER BY id LIMIT 1")
+    if not owner:
+        raise ValueError("This phone has no owner yet")
+    ws = owner["workspace_id"]
+    now = time.time()
+    ids = {t: {} for t in MOVE_TABLES}
+
+    def put(c, table, row, **over):
+        row = dict(row)
+        old = row.pop("id", None)
+        for k in [k for k in row if k.endswith("__plain")]:
+            v = row.pop(k)
+            row[k[:-7] + "_enc"] = security.seal(v) if v else None
+        row.update(over)
+        cols = _cols(c, table)
+        row = {k: v for k, v in row.items() if k in cols}
+        cur = c.execute(f"INSERT INTO {table}({','.join(row)}) VALUES({','.join('?' * len(row))})", list(row.values()))
+        ids[table][old] = cur.lastrowid
+        return cur.lastrowid
+
+    with db.tx() as c:
+        g = b["ip_groups"][0]
+        if c.execute("SELECT 1 FROM ip_groups WHERE workspace_id=? AND host=? AND port=? AND username IS ?",
+                     (ws, g.get("host"), g.get("port"), g.get("username"))).fetchone():
+            raise ValueError("This proxy is already on this phone")
+        num = (c.execute("SELECT COALESCE(MAX(number),0)+1 FROM ip_groups WHERE workspace_id=?", (ws,)).fetchone()[0])
+        gid = put(c, "ip_groups", g, workspace_id=ws, number=num, moved_to=None, status="unknown")
+        for ch in b["channels"]:
+            if c.execute("SELECT 1 FROM channels WHERE workspace_id=? AND platform=? AND external_id=?",
+                         (ws, ch["platform"], ch["external_id"])).fetchone():
+                raise ValueError(f"{ch['title']} is already on this phone")
+            put(c, "channels", ch, workspace_id=ws, group_id=gid, ig_dest_id=None, queue_count=None)
+        for r in b["sources"]:
+            put(c, "sources", r, channel_id=ids["channels"].get(r["channel_id"]))
+        for r in b["ig_accounts"]:
+            put(c, "ig_accounts", r, workspace_id=ws, group_id=gid)
+        for r in b["fb_accounts"]:
+            put(c, "fb_accounts", r, workspace_id=ws, group_id=gid)
+        for r in b["fb_pages"]:
+            put(c, "fb_pages", r, workspace_id=ws, fb_account_id=ids["fb_accounts"].get(r["fb_account_id"]),
+                channel_id=ids["channels"].get(r.get("channel_id")))
+        for r in b["ig_dest"]:
+            new = put(c, "ig_dest", r, workspace_id=ws, group_id=gid, channel_id=ids["channels"].get(r.get("channel_id")))
+            if r.get("channel_id") in ids["channels"]:
+                c.execute("UPDATE channels SET ig_dest_id=? WHERE id=?", (new, ids["channels"][r["channel_id"]]))
+        for r in b["media"]:
+            put(c, "media", r, workspace_id=ws, channel_id=ids["channels"][r["channel_id"]],
+                source_id=ids["sources"].get(r.get("source_id")), local_path=None, local_deleted_at=now,
+                ref=r.get("ref"), state="in_drive" if r.get("state") == "downloading" else r.get("state"))
+        for r in b["uploads"]:
+            put(c, "uploads", r, workspace_id=ws, channel_id=ids["channels"][r["channel_id"]], media_id=ids["media"].get(r.get("media_id")))
+    mine = db.one("SELECT google_client_id FROM workspaces WHERE id=?", (ws,))
+    same_google = bool(mine and mine["google_client_id"] and mine["google_client_id"] == b.get("google_client_id"))
+    db.event("info", "fleet", f"Group from {b.get('from')} moved in as Group {num}: {len(b['channels'])} client(s)."
+             + ("" if same_google else " This phone uses a different Google app — reconnect YouTube on these clients."), ws)
+    return {"group_number": num, "clients": len(b["channels"]), "same_google_app": same_google}
+
+
+def send_group(gid, host):
+    """From this phone to another phone in the fleet. The bundle is encrypted with the fleet key."""
+    import os
+    host = host.strip().lower().split("://")[-1].strip("/")
+    if not key():
+        raise ValueError("Join the fleet first")
+    if host == my_host():
+        raise ValueError("Choose another phone")
+    if db.one("SELECT 1 FROM jobs WHERE status='running'"):
+        raise ValueError("A post is uploading right now. Try again in a few minutes.")
+    bundle = json.dumps(export_group(gid)).encode()
+    nonce = os.urandom(12)
+    body = nonce + _cipher().encrypt(nonce, bundle, b"dc-move")
+    r = session_for(None).post(f"https://{host}/fleet/import", data=body, timeout=(15, 120),
+                               headers={"Content-Type": "application/octet-stream", "X-DC-Fleet": sign(body)})
+    if r.status_code >= 400:
+        try:
+            msg = r.json().get("error")
+        except ValueError:
+            msg = r.text[:200]
+        raise ValueError(f"{host} refused: {msg}")
+    out = r.json()
+    # this phone stops serving the group at once; nothing is deleted (the owner can remove it later)
+    db.run("UPDATE ip_groups SET moved_to=? WHERE id=?", (host, gid))
+    db.run("UPDATE channels SET state='paused', state_reason=? WHERE group_id=?", (f"Moved to {host}", gid))
+    db.run("UPDATE sources SET state='paused' WHERE channel_id IN (SELECT id FROM channels WHERE group_id=?)", (gid,))
+    return out
+
+
+def receive_group(body):
+    nonce, ct = body[:12], body[12:]
+    data = json.loads(_cipher().decrypt(nonce, ct, b"dc-move"))
+    return import_group(data)
 
 
 def where(email):

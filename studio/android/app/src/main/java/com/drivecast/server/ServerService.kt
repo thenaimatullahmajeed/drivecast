@@ -102,8 +102,10 @@ class ServerService : Service() {
             val env = Python.getInstance().getModule("os").get("environ")
             Phone.ffmpeg(this)?.let { env?.callAttr("__setitem__", "DC_FFMPEG", it) }
             Phone.mediaDir(this)?.let { env?.callAttr("__setitem__", "DC_MEDIA_DIR", it) }
+            env?.callAttr("__setitem__", "DC_SHELL_API", SHELL_API.toString())
             val data = File(filesDir, "data").absolutePath
-            Python.getInstance().getModule("drivecast.main").callAttr("start", data, "127.0.0.1", Local.PORT)
+            // dcboot picks the newest verified server code (hot update) or the one inside this APK
+            Python.getInstance().getModule("dcboot").callAttr("start", data, "127.0.0.1", Local.PORT)
             File(filesDir, "server_error.txt").delete()
         } catch (t: Throwable) {
             File(filesDir, "server_error.txt").writeText(t.toString())
@@ -116,8 +118,39 @@ class ServerService : Service() {
             thread(isDaemon = true) { Local.post(this@ServerService, "/local/device", info) }
             val url = Store.tunnelState(this@ServerService).optString("url", "")
             if (url.isNotBlank()) thread(isDaemon = true) { Local.post(this@ServerService, "/local/public-url", JSONObject().put("url", url)) }
+            if (++ticks % 5 == 0) thread(isDaemon = true) { notifyAlerts() }
             main.postDelayed(this, 60_000L)
         }
+    }
+    private var ticks = 0
+
+    /** Owner alerts from the server (phone off, battery, replaced, quota…) as phone notifications, once per problem. */
+    private fun notifyAlerts() {
+        val res = Local.get(this, "/local/alerts") ?: return
+        val arr = res.optJSONArray("alerts") ?: return
+        val seen = Store.read(this, "alerts_seen.json")
+        val now = JSONObject()
+        val nm = getSystemService(NOTIFICATION_SERVICE) as android.app.NotificationManager
+        if (Build.VERSION.SDK_INT >= 26 && nm.getNotificationChannel("dc_alerts") == null) {
+            nm.createNotificationChannel(android.app.NotificationChannel("dc_alerts", "DriveCast alerts", android.app.NotificationManager.IMPORTANCE_HIGH))
+        }
+        val open = PendingIntent.getActivity(this, 2, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
+        for (i in 0 until arr.length()) {
+            val a = arr.getJSONObject(i)
+            val key = a.optString("key")
+            now.put(key, true)
+            if (seen.has(key)) continue
+            val n = NotificationCompat.Builder(this, "dc_alerts")
+                .setSmallIcon(android.R.drawable.stat_notify_error)
+                .setContentTitle(a.optString("title"))
+                .setContentText(a.optString("message"))
+                .setStyle(NotificationCompat.BigTextStyle().bigText(a.optString("message")))
+                .setContentIntent(open)
+                .setAutoCancel(true)
+                .build()
+            try { nm.notify(1000 + (key.hashCode() and 0xffff), n) } catch (_: Exception) {}
+        }
+        Store.write(this, "alerts_seen.json", now)
     }
 
     override fun onDestroy() {
@@ -131,6 +164,8 @@ class ServerService : Service() {
         const val ACTION_STOP = "com.drivecast.server.STOP"
         const val ACTION_TUNNEL = "com.drivecast.server.TUNNEL"
         const val ACTION_CF = "com.drivecast.server.CF"
+        /** Bump when the Android shell changes in a way server updates depend on (hot updates check it). */
+        const val SHELL_API = 2
 
         fun start(ctx: Context, action: String? = null) {
             val i = Intent(ctx, ServerService::class.java)

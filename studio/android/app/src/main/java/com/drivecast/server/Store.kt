@@ -79,6 +79,18 @@ object Local {
         false
     }
 
+    fun get(ctx: Context, path: String): JSONObject? = try {
+        val c = URL(BASE + path).openConnection() as HttpURLConnection
+        c.setRequestProperty("X-Local-Token", token(ctx))
+        c.connectTimeout = 3000
+        c.readTimeout = 5000
+        val txt = if (c.responseCode in 200..299) c.inputStream.bufferedReader().readText() else null
+        c.disconnect()
+        txt?.let { JSONObject(it) }
+    } catch (e: Exception) {
+        null
+    }
+
     fun up(): Boolean = try {
         val c = URL("$BASE/healthz").openConnection() as HttpURLConnection
         c.connectTimeout = 1500

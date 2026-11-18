@@ -6,7 +6,7 @@ import logging.handlers
 import os
 import threading
 
-from . import backup, config, db, fleet, igsync, maintenance, scheduler, security, supervisor, vidsync, web, worker
+from . import alerts, backup, config, db, fleet, hotupdate, igsync, lease, maintenance, scheduler, security, supervisor, vidsync, web, worker
 
 _httpd = None
 
@@ -61,11 +61,17 @@ def start(data_dir, host="127.0.0.1", port=8765, block=False, workers=2):
         ("instagram", igsync.tick, 60),
         ("video-sources", vidsync.tick, 60),
         ("fleet", fleet.tick, 300),
+        ("updates", hotupdate.service, 1800),
+        ("guard", lease.tick, 300),
+        ("alerts", alerts.tick, 300),
         ("inbox", igsync.inbox_pass, 120),
         ("backup", backup.service, 3600),
     ], workers=workers)
 
     _httpd = web.serve(host, port)
+    # a hot update that runs for a minute is kept; one that crashes earlier is rolled back by dcboot
+    threading.Timer(60, hotupdate.confirm_healthy).start()
+    lease.on_start()
     if block:
         _httpd.serve_forever()
     else:

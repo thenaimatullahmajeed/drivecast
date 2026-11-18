@@ -262,6 +262,14 @@ SCHEMA = [
         PRIMARY KEY (kind, hash)
     );
     """,
+    # version 9: separate Google app for Drive (owner only), fleet stats, moved clients
+    """
+    ALTER TABLE workspaces ADD COLUMN drive_client_id TEXT;
+    ALTER TABLE workspaces ADD COLUMN drive_client_secret_enc TEXT;
+    ALTER TABLE workspaces ADD COLUMN drive_token_client TEXT;
+    ALTER TABLE fleet_devices ADD COLUMN stats_json TEXT;
+    ALTER TABLE ip_groups ADD COLUMN moved_to TEXT;
+    """,
 ]
 
 

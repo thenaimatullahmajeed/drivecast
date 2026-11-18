@@ -108,6 +108,9 @@ def apply_staged(data_dir):
             os.replace(p, os.path.join(old, name))
     os.replace(dbr, os.path.join(data_dir, "drivecast.db"))
     os.replace(keyr, os.path.join(data_dir, "master.key"))
+    # restoring a backup = this phone takes over that phone's address (see lease.py)
+    with open(os.path.join(data_dir, "takeover.flag"), "w") as f:
+        f.write(stamp)
     return True
 
 
@@ -176,7 +179,43 @@ def to_drive(force=False):
     return "done"
 
 
+def test_latest():
+    """Restore drill: download the newest backup from Drive and open it with the saved password."""
+    from . import drive, store
+    from .net import session_for
+    pw = password_get()
+    owner = db.one("SELECT workspace_id FROM users WHERE role='owner' ORDER BY id LIMIT 1")
+    ws = store.workspace(owner["workspace_id"]) if owner else None
+    if not pw or not ws or not ws.get("drive_token_enc") or not ws.get("drive_root_id"):
+        raise ValueError("Set a backup password and connect Drive first.")
+    s, box = session_for(None), store.drive_box(ws)
+    folder = drive.child_folder(s, box, ws["drive_root_id"], FOLDER)
+    files = sorted(drive.files(s, box, folder, limit=50), key=lambda f: f.get("createdTime") or "", reverse=True)
+    if not files:
+        raise ValueError("No backup in Drive yet. Press Back up now first.")
+    fd, tmp = tempfile.mkstemp(suffix=".dcbackup", dir=config.TMP_DIR)
+    os.close(fd)
+    try:
+        drive.download(s, box, files[0]["id"], tmp)
+        with open(tmp, "rb") as f:
+            data = open_file(f.read(), pw)
+        db.meta_set("backup_test_at", str(time.time()))
+        db.meta_set("backup_test_error", "")
+        return {"ok": True, "name": files[0]["name"], "tables": {k: len(v) for k, v in (data.get("tables") or {}).items()} if isinstance(data, dict) else None}
+    except ValueError as e:
+        db.meta_set("backup_test_error", str(e)[:200])
+        raise
+    finally:
+        os.remove(tmp)
+
+
 def service():
+    # weekly restore drill, quietly, after the nightly backup exists
+    if time.time() - float(db.meta_get("backup_test_at") or 0) > 7 * 86400 and db.meta_get("backup_at"):
+        try:
+            test_latest()
+        except Exception:
+            pass
     try:
         to_drive()
     except Exception as e:

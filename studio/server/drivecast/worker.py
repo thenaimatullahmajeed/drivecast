@@ -11,7 +11,7 @@ import tempfile
 import time
 
 from . import db, drive, store
-from .net import (AuthRevoked, DriveCastError, Permanent, ProxyDown, QuotaExceeded, Transient, Uncertain,
+from .net import (AuthRevoked, DriveCastError, Permanent, ProxyDown, QuotaExceeded, Uncertain,
                   outgoing_ip, session_for)
 from .errors import CodedError
 from .platforms import get as platform
@@ -106,6 +106,8 @@ def run(job, adapters=None):
     # --- gates: nothing is touched unless the route is fully healthy ---
     if (ws.get("paused_until") or 0) > now:
         return finish(job, "failed", "Paused", "held", "Paused — everything is on hold")
+    if db.meta_get("superseded_by"):
+        return finish(job, "failed", "Phone replaced", "held", "This phone was replaced by another — posting stopped here")
     # 'attention' only runs again when it came from the cool-down breaker and the cool-down ended
     breaker_over = ch["state"] == "attention" and ch["paused_until"] and ch["paused_until"] <= now
     if not (ch["state"] == "live" or breaker_over) or (ch["paused_until"] or 0) > now:

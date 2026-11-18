@@ -109,7 +109,7 @@ class Handler(BaseHTTPRequestHandler):
         query = {k: v[0] for k, v in parse_qs(u.query).items()}
         try:
             n = int(self.headers.get("Content-Length") or 0)
-            if n > (80 * 1024 * 1024 if path == "/api/restore" else MAX_BODY):
+            if n > (80 * 1024 * 1024 if path in ("/api/restore", "/local/restore") else 40 * 1024 * 1024 if path == "/fleet/import" else MAX_BODY):
                 return self._send(413, {"error": "Request too large"})
             body = self.rfile.read(n) if n else b""
             req = Req(self, path, query, body)
@@ -166,7 +166,8 @@ class Handler(BaseHTTPRequestHandler):
         if path in ("/terms", "/terms/"):
             return "/site/terms.html"
         host = (self.headers.get("Host") or "").split(":")[0].lower()
-        panel = (db.meta_get("public_url_override") or "").split("://")[-1].lower()
+        from . import urls
+        panel = urls.own_domain().split("://")[-1].lower()
         if panel.count(".") >= 2 and host:
             apex = panel.split(".", 1)[1]
             if host in (apex, "www." + apex):

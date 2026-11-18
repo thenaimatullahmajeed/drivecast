@@ -168,3 +168,23 @@ def download(session, box, file_id, path, chunk=1 << 20, on_progress=None):
     if size == 0:
         raise Permanent("The Drive file is empty")
     return size
+
+
+# ---- small metadata-only files (the takeover lease) ----
+def find_by_prop(session, box, parent_id, key, value):
+    hits = _list(session, box, f"'{parent_id}' in parents and appProperties has {{ key='{key}' and value='{value}' }} and trashed=false",
+                 "id,name,appProperties,modifiedTime", limit=5)
+    return hits[0] if hits else None
+
+
+def create_meta(session, box, parent_id, name, props):
+    r = authed(session, box, "POST", API + "/files", params={"supportsAllDrives": "true", "fields": "id,appProperties"},
+               json={"name": name, "parents": [parent_id], "mimeType": "application/json",
+                     "appProperties": {k: str(v)[:100] for k, v in props.items()}})
+    return _check(r, "lease create")
+
+
+def set_props(session, box, file_id, props):
+    r = authed(session, box, "PATCH", f"{API}/files/{file_id}", params={"supportsAllDrives": "true", "fields": "id,appProperties"},
+               json={"appProperties": {k: str(v)[:100] for k, v in props.items()}})
+    return _check(r, "lease update")

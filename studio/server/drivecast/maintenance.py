@@ -7,7 +7,7 @@ import shutil
 import time
 
 from . import db, drive, store
-from .net import DriveCastError, check_group, probe, session_for
+from .net import DriveCastError, probe, session_for
 from .platforms import get as platform
 
 

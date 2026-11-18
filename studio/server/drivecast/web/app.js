@@ -227,14 +227,14 @@ function liveStart() {
 function upTxt(s) { return s >= 86400 ? `${Math.floor(s / 86400)}d ${Math.floor(s % 86400 / 3600)}h` : s >= 3600 ? `${Math.floor(s / 3600)}h ${Math.floor(s % 3600 / 60)}m` : `${Math.floor(s / 60)}m`; }
 function paintLive() {
   const l = S.live, off = (S.liveFail || 0) >= 2;
-  const state = off ? 'off' : !l ? '' : l.paused ? 'paused' : l.running.length ? 'busy' : l.healthy ? '' : 'warn';
+  const state = off ? 'off' : !l ? '' : l.replaced ? 'warn' : l.paused ? 'paused' : l.running.length ? 'busy' : l.healthy ? '' : 'warn';
   ['srvdot', 'mbeat'].forEach(id => { const d = document.getElementById(id); if (d) d.className = 'beat ' + state; });
   const up = document.getElementById('srvup'); if (up && l) up.textContent = off ? 'offline' : 'up ' + upTxt(l.up);
   const ml = document.getElementById('mlive'); if (ml) ml.textContent = off ? 'Reconnecting' : l && l.running.length ? 'Posting' : 'Live';
   const box = document.getElementById('livenow');
   if (box) box.innerHTML = off ? '<span style="color:#FF9B85">Phone not answering — retrying…</span>'
     : !l ? '' : l.running.length ? l.running.map(r => `<div class="ln"><b class="ell">${esc(r.client)}</b><span class="ell">${esc(r.stage || 'Working')}</span><span class="lbar"><i style="width:${r.pct ?? 8}%"></i></span></div>`).join('')
-      : `<span>${l.paused ? 'Paused — nothing posts' : l.healthy ? 'All services healthy' : 'A service is slow: ' + esc(l.stale.join(', '))}</span>`;
+      : `<span>${l.replaced ? '<b style="color:#F2B54A">This phone was replaced — posting stopped</b>' : l.paused ? 'Paused — nothing posts' : l.healthy ? 'All services healthy' : 'A service is slow: ' + esc(l.stale.join(', '))}</span>`;
 }
 async function loadDevice(force) {
   if (S.user.role !== 'owner') return null;
@@ -384,7 +384,7 @@ async function drawBackup() {
         <span class="muted" style="font-size:12.5px">${b.has_password ? `Every night into “_DriveCast backups” in your main Drive folder · last 7 kept.<br>${b.last_at ? `Last: <b>${esc(rel(b.last_at))}</b> · ${esc(b.last_name || '')}` : 'First backup is being made…'}` : 'Choose a backup password. Write it down — without it no one (not even you) can open a backup.'}</span>
         ${b.error ? `<div class="note warn">${ic('alert', 14)}<span>${esc(b.error)}</span></div>` : ''}
         <form data-form="bkpw" class="actions"><input class="i" type="password" name="password" placeholder="${b.has_password ? 'Change backup password' : 'Backup password (8+)'}" autocomplete="new-password" style="flex:1;min-width:160px" aria-label="Backup password"><button class="btn primary" type="submit">${b.has_password ? 'Change' : 'Turn on'}</button></form>
-        ${b.has_password ? `<button class="btn" data-act="bknow">${ic('refresh', 16)}Back up to Drive now</button>` : ''}
+        ${b.has_password ? `<span class="actions"><button class="btn" data-act="bknow">${ic('refresh', 16)}Back up to Drive now</button><button class="btn" data-act="bktest">${ic('shield', 16)}Test restore</button></span><span class="help">The newest Drive backup is test-opened every week by itself.</span>` : ''}
       </div>
       <div style="display:flex;flex-direction:column;gap:10px;padding:14px;border:1px solid var(--line);border-radius:12px">
         <b style="font-size:14px">2 · Download a backup file</b>
@@ -399,6 +399,7 @@ async function drawBackup() {
   Object.assign(S.acts, {
     bkpw: async v => { await api('POST', '/api/backup/password', v); toast('Backup password saved · first backup is being made'); setTimeout(drawBackup, 4000); drawBackup(); },
     bknow: async () => { await api('POST', '/api/backup/now'); toast('Backing up to Drive…'); setTimeout(drawBackup, 6000); },
+    bktest: async () => { try { const r = await api('POST', '/api/backup/test'); toast(`Backup opens fine · ${r.name}`); } catch (e) { toast(e.message, true); } },
     bkdl: async v => {
       const r = await fetch('/api/backup/export', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-DC': '1' }, body: JSON.stringify(v.password ? { password: v.password } : {}) });
       if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.error || 'Download failed'); }
@@ -1059,13 +1060,13 @@ async function pageGroups() {
   const [{ groups }, fb, chs, igd] = await Promise.all([api('GET', '/api/groups'), api('GET', '/api/facebook').catch(() => ({ groups: [], app_ready: false })), api('GET', '/api/channels').catch(() => ({ channels: [] })), api('GET', '/api/instagram/destinations').catch(() => ({ destinations: [] }))]);
   S.fb = fb; S.allChannels = chs.channels; S.igd = igd.destinations;
   const cards = groups.map(g => {
-    const over = g.channel_count > g.max_channels, down = g.status === 'down';
+    const over = g.channel_count > g.max_channels, down = g.status === 'down' && !g.moved_to;
     const color = down ? '#B42318' : over ? '#C27A12' : '#0E1116';
     const lat = (g.latency || []).slice(-24), mx = Math.max(1, ...lat);
     const chans = g.channels.map((c, i) => `<div style="display:flex;align-items:center;gap:10px;padding:9px 0;border-top:1px solid var(--line)">${avatar(c.title, hashI(c.title), c.thumbnail, 28)}<div style="display:flex;flex-direction:column;min-width:0;flex:1"><span class="ell" style="font-weight:600;font-size:13px">${esc(c.title)}</span>${handle(c.handle)}</div>${chip(c.state, c.state === 'live' ? 'ok' : 'neutral', false)}</div>`).join('');
     const ipChanged = down && (g.last_error || '').includes('changed');
     return `<section class="card"><div style="display:flex;flex-direction:column;gap:14px">
-      <div style="display:flex;align-items:center;gap:16px">${ring(g.channel_count, g.max_channels, color)}<div style="display:flex;flex-direction:column;gap:6px;flex:1;min-width:0"><div style="display:flex;justify-content:space-between;gap:8px;align-items:center"><strong style="font-family:var(--disp);font-size:22px">Group ${g.number}</strong>${down ? chip('Not responding', 'bad') : chip('Healthy', 'ok')}</div><span class="mono" style="font-size:13px;font-weight:500">${esc(g.outgoing_ip || '—')}</span>${where(g) ? `<span style="font-size:13px;font-weight:600">${esc(where(g))}${g.isp ? `<span class="muted" style="font-weight:400"> · ${esc(g.isp)}</span>` : ''}</span>` : ''}<span class="muted" style="font-size:12px">SOCKS5 · ${esc(g.host)}:${g.port} · ${esc(g.priority)} priority</span></div></div>
+      <div style="display:flex;align-items:center;gap:16px">${ring(g.channel_count, g.max_channels, color)}<div style="display:flex;flex-direction:column;gap:6px;flex:1;min-width:0"><div style="display:flex;justify-content:space-between;gap:8px;align-items:center"><strong style="font-family:var(--disp);font-size:22px">Group ${g.number}</strong>${g.moved_to ? chip('Moved to ' + g.moved_to, 'neutral') : down ? chip('Not responding', 'bad') : chip('Healthy', 'ok')}</div><span class="mono" style="font-size:13px;font-weight:500">${esc(g.outgoing_ip || '—')}</span>${where(g) ? `<span style="font-size:13px;font-weight:600">${esc(where(g))}${g.isp ? `<span class="muted" style="font-weight:400"> · ${esc(g.isp)}</span>` : ''}</span>` : ''}<span class="muted" style="font-size:12px">SOCKS5 · ${esc(g.host)}:${g.port} · ${esc(g.priority)} priority</span></div></div>
       <div><div style="display:flex;justify-content:space-between;font-size:12px" class="muted"><span>Latency · last checks</span><span class="mono" style="color:var(--ink)">${down ? 'timeout' : (g.latency_ms ?? '—') + ' ms'}</span></div><div style="display:flex;align-items:flex-end;gap:3px;height:34px;margin-top:6px">${lat.map(v => `<span style="flex:1;height:${Math.max(3, Math.round(v / mx * 34))}px;border-radius:2px;background:${v ? '#0E1116' : '#F2B8AD'}"></span>`).join('')}</div></div>
       ${down ? `<div class="note bad">${ic('alert', 16)}<span>${esc(g.last_error || 'Proxy is not responding')}. Uploads for these channels are held — never sent from the server IP.</span></div>` : ''}
       ${over ? `<div class="note warn">${ic('alert', 16)}<span>${g.channel_count} channels on one IP — above the recommended ${g.max_channels}. Allowed, at higher risk.</span></div>` : ''}
@@ -1505,6 +1506,11 @@ async function pageSettings() {
       <div class="linkbox" style="margin-bottom:16px"><span class="kicker">Authorized redirect URI</span><div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><span class="mono" style="flex:1 1 260px;word-break:break-all">${esc(s.redirect_uri)}</span><button class="btn coral" data-act="copy" data-text="${esc(s.redirect_uri)}">${ic('copy', 16)}Copy</button></div></div>
       <form data-form="gapp" style="display:flex;flex-direction:column;gap:12px"><label class="f">Client ID<input class="i" name="google_client_id" value="${esc(s.google_client_id || '')}" placeholder="…apps.googleusercontent.com" autocomplete="off"></label>
       <label class="f">Client secret<input class="i" name="google_client_secret" type="password" placeholder="${s.has_secret ? 'Saved — leave empty to keep' : ''}" autocomplete="off"></label><div class="actions"><button class="btn primary" type="submit">Save app</button>${s.google_client_id && s.has_secret ? chip('Saved · secret encrypted', 'ok') : ''}</div></form></section>
+      <section class="card" style="margin-top:16px">${hd('Google app for Drive — optional, recommended', 'A second Google app used only for your own Drive. Then the app your clients see asks only for YouTube, which makes Google verification quick (no yearly security audit for Drive).', s.drive_uses_own_app ? chip('Drive uses it', 'ok') : s.drive_client_id ? chip('Saved — reconnect Drive to use it', 'warn') : '')}
+      <ol class="muted" style="font-size:13px;line-height:1.8;margin:0 0 16px;padding-left:18px"><li>${deep('https://console.cloud.google.com/projectcreate', 'Create a second project')} (e.g. “DriveCast Library”), enable ${deep('https://console.cloud.google.com/apis/library/drive.googleapis.com', 'Google Drive API')}.</li><li>${deep('https://console.cloud.google.com/apis/credentials/consent', 'Consent screen')} → External → In production. It stays unverified — only you sign in, and you press “Continue” once.</li><li>${deep('https://console.cloud.google.com/apis/credentials/oauthclient', 'Create OAuth client')} → Web application → same redirect URI as above. Paste its ID and secret here, then reconnect Drive on the Google Drive page.</li><li>In your main (client) app, remove the Drive API and Drive scope from the consent screen.</li></ol>
+      <form data-form="driveapp" style="display:flex;flex-direction:column;gap:12px"><div class="form"><label class="f">Drive app Client ID<input class="i" name="drive_client_id" value="${esc(s.drive_client_id || '')}" autocomplete="off"></label>
+      <label class="f">Drive app Client secret<input class="i" name="drive_client_secret" type="password" placeholder="${s.has_drive_secret ? 'Saved — leave empty to keep' : ''}" autocomplete="off"></label></div>
+      <div class="actions"><button class="btn primary" type="submit">Save Drive app</button><a class="btn" href="#/drive">Reconnect Drive →</a></div></form></section>
       <section class="card" style="margin-top:16px">${hd('Meta app — Facebook + Instagram', 'Only if you post to Facebook Pages or Instagram. Make your own Meta app once; then one “Allow” per Facebook ID brings all its pages and their linked Instagram accounts.')}
       <ol class="muted" style="font-size:13px;line-height:1.8;margin:0 0 16px;padding-left:18px">
         <li>${deep('https://developers.facebook.com/apps/creation/', 'Create a Meta app')} → use case <b>Other</b> → type <b>Business</b>.</li>
@@ -1532,6 +1538,7 @@ async function pageSettings() {
   if (S.user.role === 'owner') api('GET', '/api/settings/advanced').then(a => { const i = document.querySelector('[name=public_url_override]'); if (i) i.value = a.public_url_override || ''; }).catch(() => { });
   S.acts.advurl = async v => { await api('POST', '/api/settings/advanced', v); toast(v.public_url_override ? 'Own domain saved' : 'Using the built-in link'); render(); };
   S.acts.gapp = async v => { if (!v.google_client_secret) delete v.google_client_secret; await api('POST', '/api/settings', v); toast('Google app saved'); render(); };
+  S.acts.driveapp = async v => { if (!v.drive_client_secret) delete v.drive_client_secret; await api('POST', '/api/settings', v); toast('Drive app saved — reconnect Drive to use it'); render(); };
   S.acts.igapp = async v => { if (!v.ig_app_secret) delete v.ig_app_secret; await api('POST', '/api/settings', v); toast('Instagram app saved'); render(); };
   S.acts.fbapp = async v => { if (!v.fb_app_secret) delete v.fb_app_secret; await api('POST', '/api/settings', v); toast('Facebook app saved'); render(); };
   S.acts.tz = async v => { await api('POST', '/api/settings', v); S.tz = v.timezone; S.user.timezone = v.timezone; toast('Timezone saved'); render(); };
@@ -1607,12 +1614,34 @@ async function pageUserReport(id) {
 }
 
 // ------------------------------------------------------------------ server
+// ------------------------------------------------------------------ updates without reinstalling the APK
+async function drawUpdates() {
+  const box = $('#upcard'); if (!box) return;
+  let u; try { u = await api('GET', '/api/update'); } catch (e) { return; }
+  const lt = u.latest;
+  const needsApk = u.shell_api < 2;
+  box.innerHTML = `<section class="card">${hd('Updates', 'New versions install themselves at night (2–5 am), never during a post. If a new version ever fails to start, the phone goes back to the previous one by itself.', chip(u.newer ? 'Update ready' : 'Up to date', u.newer ? 'info' : 'ok'))}
+    <div style="display:flex;gap:24px;flex-wrap:wrap;font-size:13px;margin-bottom:12px"><div><span class="mini">Running</span><div class="mono"><b>${esc(u.version)}</b> · ${u.running_from === 'update' ? 'updated copy' : 'app copy'}</div></div><div><span class="mini">Newest</span><div class="mono"><b>${esc(lt ? lt.version : '—')}</b></div></div>${u.last ? `<div><span class="mini">Last update</span><div>${esc((JSON.parse(u.last).from || '') + ' → ' + (JSON.parse(u.last).to || ''))}</div></div>` : ''}</div>
+    ${u.error ? `<div class="note warn">${ic('alert', 16)}<span>${esc(u.error)}</span></div>` : ''}
+    ${needsApk && lt && lt.apk ? `<div class="note info">${ic('down', 16)}<span>Install the new app once: <a class="deep" href="${esc(lt.apk)}">download APK</a>. After that, updates come here by themselves.</span></div>` : ''}
+    <div class="actions">${toggle('upauto', u.auto, 'Install updates by themselves', 'At night, checked releases from your own GitHub only')}${u.newer && !needsApk ? `<button class="btn primary" data-act="upnow">${ic('down', 16)}Update now to ${esc(lt.version)}</button>` : ''}${u.running_from === 'update' ? '<button class="btn" data-act="upback">Use the app copy</button>' : ''}</div></section>`;
+  Object.assign(S.acts, {
+    upauto: async () => { await api('POST', '/api/update', { auto: !u.auto }); drawUpdates(); },
+    upnow: async () => { if (!confirm(`Update to ${lt.version}? The server restarts (about 20 seconds).`)) return; try { await api('POST', '/api/update', {}); toast('Updating — the panel reconnects by itself'); } catch (e) { toast(e.message, true); } },
+    upback: async () => { if (confirm('Go back to the version inside the app?')) { await api('POST', '/api/update', { action: 'back_to_app' }); toast('Restarting…'); } },
+  });
+}
+
 // ------------------------------------------------------------------ fleet: several phones behind drivecast.site
 async function drawFleet() {
   const box = $('#flcard'); if (!box) return;
   let f; try { f = await api('GET', '/api/fleet'); } catch (e) { return; }
   const roleTxt = f.role === 'hub' ? 'Hub — serves the landing page' : f.role === 'node' ? `Joined · hub ${f.hub}` : 'Single phone';
-  const devs = (f.devices || []).map(d => `<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-top:1px solid var(--line)"><span class="beat ${d.online ? '' : 'off'}"></span><b class="mono" style="flex:1">${esc(d.host)}</b><span class="mini">${d.users}/${d.max_users} accounts · ${d.open_signup ? 'open sign-ups' : 'invite only'} · ${esc(d.version || '')}</span><span class="mini">${d.last_seen ? esc(rel(d.last_seen)) : ''}</span>${d.host !== f.host ? `<button class="btn sm" data-act="flhide" data-host="${esc(d.host)}">Hide</button>` : ''}</div>`).join('');
+  const devs = (f.devices || []).map(d => { const st = d.stats || {}; return `<div style="display:grid;grid-template-columns:14px minmax(140px,1.2fr) repeat(5,minmax(70px,1fr)) auto;gap:10px;align-items:center;padding:9px 0;border-top:1px solid var(--line);font-size:12.5px"><span class="beat ${d.online ? (st.replaced ? 'warn' : '') : 'off'}"></span><span style="display:flex;flex-direction:column"><b class="mono">${esc(d.host)}</b><span class="mini">${d.online ? 'online' : 'offline'} · ${d.last_seen ? esc(rel(d.last_seen)) : ''} · ${esc(d.version || '')}</span></span><span><b>${d.users}</b>/${d.max_users}<br><span class="mini">accounts</span></span><span><b>${st.live ?? '—'}</b>/${st.channels ?? '—'}<br><span class="mini">clients live</span></span><span><b>${st.posts_24h ?? '—'}</b>${st.failed_24h ? ` <span style="color:var(--bad)">· ${st.failed_24h}✕</span>` : ''}<br><span class="mini">posts 24h</span></span><span><b>${num(st.views_7d || 0)}</b><br><span class="mini">views 7d</span></span><span><b>${st.battery ?? '—'}%</b>${st.charging ? ' ⚡' : ''}<br><span class="mini">${st.temp ? st.temp + '°C' : ''}</span></span>${d.host !== f.host ? `<button class="btn sm" data-act="flhide" data-host="${esc(d.host)}">Hide</button>` : '<span class="mini">this phone</span>'}</div>`; }).join('');
+  const t = f.totals;
+  const totals = t ? `<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin:4px 0 12px">${[['Phones', `${t.online}/${t.phones}`, 'online'], ['Accounts', t.users, 'all phones'], ['Clients live', `${t.live}/${t.channels}`, `${t.groups} IP groups`], ['Posts · 24h', t.posts_24h, t.failed_24h ? t.failed_24h + ' failed or unclear' : 'all fine'], ['Views · 7 days', num(t.views_7d), 'all phones']].map(([k, v, h]) => `<div style="padding:12px;border:1px solid var(--line);border-radius:12px"><span class="mini">${k}</span><div style="font:700 20px var(--disp)">${v}</div><span class="mini">${h}</span></div>`).join('')}</div>` : '';
+  const movable = (f.groups || []).filter(g => !g.moved_to);
+  const move = f.role && (f.targets || []).length && movable.length ? `<form data-form="flmove" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:12px;padding-top:12px;border-top:1px solid var(--line)"><b style="font-size:13px">Move an IP group (with all its clients) to</b><select class="i" name="host" style="max-width:220px">${f.targets.map(h => `<option>${esc(h)}</option>`).join('')}</select><select class="i" name="group_id" style="max-width:220px">${movable.map(g => `<option value="${g.id}">Group ${g.number} · ${esc(g.outgoing_ip || '')}</option>`).join('')}</select><button class="btn sm" type="submit">Move</button><span class="help" style="flex-basis:100%">Proxy, Instagram/Facebook connections, sources and the full history move together; this phone stops posting for them. Both phones should use the same Google Drive and Google app.</span></form>` : '';
   box.innerHTML = `<section class="card">${hd('Studios · drivecast.site', 'Several phones behind one domain. The landing page sends new users to a phone with room, and returning users to the phone that holds their account.', chip(roleTxt, f.role ? 'ok' : 'neutral'))}
     ${!f.host ? `<div class="note warn">${ic('alert', 16)}<span>Turn on this phone’s <b>Own domain</b> first (phone screen), e.g. s1.drivecast.site.</span></div>` : ''}
     ${f.error ? `<div class="note bad">${ic('alert', 16)}<span>${esc(f.error)}</span></div>` : ''}
@@ -1625,7 +1654,7 @@ async function drawFleet() {
             : `<span class="actions"><button class="btn sm primary" data-act="flhub" ${f.host ? '' : 'disabled'}>Make this phone the hub</button></span><span class="help">Use on the phone that serves drivecast.site (the bare domain route).</span>
                <form data-form="fljoin" style="display:flex;flex-direction:column;gap:8px;margin-top:6px"><input class="i" name="hub" placeholder="Hub address, e.g. https://s1.drivecast.site" aria-label="Hub address"><input class="i" name="key" type="password" placeholder="Fleet key from the hub" aria-label="Fleet key"><button class="btn sm" type="submit" ${f.host ? '' : 'disabled'}>Join a hub</button></form>`}
       </div></div>
-    ${f.role === 'hub' ? `<div>${devs || '<span class="muted">No phones yet.</span>'}</div>` : ''}</section>`;
+    ${f.role === 'hub' ? `${totals}<div>${devs || '<span class="muted">No phones yet.</span>'}</div>` : ''}${move}</section>`;
   const save = async b => { try { await api('POST', '/api/fleet', b); } catch (e) { toast(e.message, true); } drawFleet(); };
   Object.assign(S.acts, {
     flopen: () => save({ open_signup: !f.open_signup }),
@@ -1634,6 +1663,7 @@ async function drawFleet() {
     fljoin: v => save({ action: 'join', hub: v.hub, key: v.key }),
     flleave: () => { if (confirm('Leave the fleet? This phone keeps working on its own address.')) save({ action: 'leave' }); },
     flhide: d => save({ action: 'hide', host: d.host }),
+    flmove: async v => { if (!confirm(`Move this group and all its clients to ${v.host}?`)) return; try { const r = await api('POST', '/api/fleet/move', { group_id: +v.group_id, host: v.host }); toast(`Moved · now Group ${r.group_number} on ${v.host}${r.same_google_app ? '' : ' — reconnect YouTube there'}`); } catch (e) { toast(e.message, true); } drawFleet(); },
   });
 }
 async function drawDownloader() {
@@ -1674,12 +1704,14 @@ async function pageServer() {
             ['Storage folder', dev.storage, 'Downloads go to “Shared with my tool DriveCast” on the phone, hidden from the Gallery. Allow it from the phone checklist.'],
             ['Video tools', dev.ffmpeg, 'Built into the app — cleans every file before it leaves the phone.']].map(([t, on, h]) => `<div style="display:flex;gap:10px;padding:12px;border:1px solid var(--line);border-radius:12px"><span style="color:${on ? 'var(--ok)' : 'var(--muted)'}">${ic(on ? 'check' : 'clock', 18)}</span><div style="display:flex;flex-direction:column;gap:3px"><b style="font-size:13px">${t} · ${on ? 'On' : on === false ? 'Off' : 'unknown'}</b><span class="muted" style="font-size:12px">${h}</span></div></div>`).join('')}
        </div></section></div></div>
+     <div class="dgrid"><div class="s12" id="upcard"></div></div>
      <div class="dgrid"><div class="s12" id="flcard"></div></div>
      <div class="dgrid"><div class="s12" id="dlcard"></div></div>
      <div class="dgrid"><div class="s12" id="bkcard"></div></div>`);
   drawBackup();
   drawDownloader();
   drawFleet();
+  drawUpdates();
   every(60000, () => { if (!document.getElementById('modal')) render(); });
 }
 

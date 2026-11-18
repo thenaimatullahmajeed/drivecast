@@ -37,10 +37,8 @@ _lock = threading.Lock()
 
 def share(path, ttl=3600):
     """A one-hour unguessable link Instagram can fetch the file from."""
-    # Big video files go out through the Tailscale link, not the own domain: Cloudflare's free
-    # plan is for web pages, not for serving video files.
-    ts = db.meta_get("public_url") or ""
-    base = (ts if ts.startswith("https://") else (db.meta_get("public_url_override") or "")).rstrip("/")
+    from . import urls
+    base = urls.media()  # Tailscale first: big files stay off Cloudflare
     if not base.startswith("https://"):
         raise CodedError("IGD_NO_PUBLIC_URL", base or "none")
     tok = secrets.token_urlsafe(24)
@@ -89,6 +87,9 @@ def _check(r, stage):
         err = {"message": r.text[:300]}
     code, sub, msg = err.get("code"), err.get("error_subcode"), err.get("message", "")
     detail = json.dumps(err)[:800]
+    if code == 2635 or ("version" in msg.lower() and "deprecated" in msg.lower()):
+        from . import facebook as _f
+        raise CodedError("FB_GRAPH_OLD", detail, ver=_f.version())
     if code in (190, 102, 463, 467) or sub in (458, 460, 463, 464, 467, 492):
         raise CodedError("IGD_TOKEN_EXPIRED", detail)
     if sub == 2207042 or code == 9 or "limit" in msg.lower() and "publish" in msg.lower():

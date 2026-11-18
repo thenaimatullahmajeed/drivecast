@@ -66,6 +66,15 @@ CATALOG = {
     "IGD_MEDIA": ("post", "Instagram refused this file", "Instagram could not use this file: {why}", None),
     "IGD_NO_PUBLIC_URL": ("server", "No public link for Instagram", "Instagram fetches the file from your panel's public link. Turn on the public link (Server page) first.", None),
     "IGD_NO_APP": ("library", "Instagram app not set", "Add your Meta app's Instagram App ID and secret in Settings, or connect Instagram through the Facebook page instead.", "ig_app"),
+    # --- phone / fleet health ---
+    "PHONE_REPLACED": ("server", "This phone was replaced", "A backup was restored on another phone, which now runs this address. Posting is stopped here so nothing posts twice.", None),
+    "PHONE_OFFLINE": ("server", "Phone {host} is offline", "{host} has not checked in for {mins} minutes. Its clients are on hold until it is back (plug it in, check Wi-Fi), or restore its backup on a spare phone.", None),
+    "PHONE_FULL": ("server", "Phone {host} is nearly full", "{host} holds {users} of {max} accounts. Add a phone before it fills up — new sign-ups go to phones with room.", None),
+    "PHONE_HOT": ("server", "Phone is hot", "The phone is at {temp}°C. Take it out of its case, out of the sun, or add a small fan.", None),
+    "BATTERY_LOW": ("server", "Phone battery is low", "Battery at {level}% and not charging. Plug the phone in — the server stops when it dies.", None),
+    "QUOTA_NEAR": ("library", "YouTube daily limit almost used", "{used} of {cap} uploads used today. The rest wait until midnight Pacific.", None),
+    "BACKUP_TEST_FAILED": ("server", "Backup test failed", "The latest backup in Drive could not be opened: {why}. Make a new backup now (Server page).", None),
+    "FB_GRAPH_OLD": ("library", "Meta API version retired", "Meta no longer accepts API version {ver}. Open Settings → Meta app and set a newer version (e.g. the one Meta's changelog lists as current).", "fb_app"),
     # --- YouTube ---
     "YT_AUTH_REVOKED": ("channel", "YouTube access ended", "Reconnect this channel — Google access was removed.", "reconnect_channel"),
     "YT_QUOTA": ("channel", "YouTube daily limit reached", "Posting resumes after midnight Pacific.", None),

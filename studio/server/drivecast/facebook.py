@@ -17,7 +17,7 @@ import time
 from urllib.parse import urlencode
 
 from .errors import CodedError
-from .net import AuthRevoked, Permanent, QuotaExceeded, Transient, Uncertain
+from .net import Uncertain
 
 DEFAULT_VERSION = "v21.0"
 DIALOG = "https://www.facebook.com/{v}/dialog/oauth"
@@ -69,6 +69,9 @@ def _check(r, stage):
     code, sub = err.get("code"), err.get("error_subcode")
     msg = err.get("message", "")
     detail = json.dumps(err)[:800]
+    if code == 2635 or ("version" in msg.lower() and "deprecated" in msg.lower()):
+        from . import facebook as _f
+        raise CodedError("FB_GRAPH_OLD", detail, ver=_f.version())
     if code in (190, 102, 463, 467) or sub in (458, 460, 463, 464, 467, 492):
         raise CodedError("FB_TOKEN_EXPIRED", detail)
     if code in (10, 200, 294, 299) or sub == 1363047:

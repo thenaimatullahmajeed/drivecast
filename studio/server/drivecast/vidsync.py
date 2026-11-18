@@ -554,9 +554,19 @@ def source_pass(src, now=None):
 
 def tick():
     from . import cleaner
+    if db.meta_get("superseded_by"):  # this phone was replaced: never download twice
+        return
     srcs = db.all("SELECT * FROM sources WHERE state='active' AND kind IN ('youtube','tiktok')")
     if not srcs:
         return
+    # YouTube and TikTok change often: keep the downloader fresh by itself, once a week
+    if time.time() - float(db.meta_get("ytdlp_updated_at") or 0) > 7 * 86400 \
+            and time.time() - float(db.meta_get("ytdlp_tried_at") or 0) > 6 * 3600:
+        db.meta_set("ytdlp_tried_at", str(time.time()))
+        try:
+            update_downloader()
+        except Exception as e:
+            log.warning("downloader auto-update failed: %s", e)
     if not cleaner.available():
         db.event("error", "server", err_info("FFMPEG_MISSING")["message"], None, None, "FFMPEG_MISSING")
         return

@@ -6,7 +6,7 @@ import time
 
 from . import VERSION, db, drive, insights, maintenance, scheduler, security, store, supervisor
 from .google import DRIVE_SCOPES, TokenBox, consent_url, exchange
-from .net import DriveCastError, check_group, parse_proxy, probe, session_for
+from .net import DriveCastError, parse_proxy, probe, session_for
 from .platforms import get as platform
 from .timeplan import AUDIENCES, normalize_plan
 
@@ -41,12 +41,10 @@ def need(body, *keys):
         raise HttpError(400, "Missing: " + ", ".join(missing))
 
 
-def public_base(req):
-    url = db.meta_get("public_url_override") or db.meta_get("public_url")
-    if url:
-        return url.rstrip("/")
-    proto = req.headers.get("X-Forwarded-Proto") or ("https" if req.secure else "http")
-    return f"{proto}://{req.headers.get('Host', 'localhost')}"
+def public_base(req=None):
+    """The address people see (panel, sign-in links, redirect URIs). See urls.py for the rule."""
+    from . import urls
+    return urls.public(req)
 
 
 def user_view(u):
@@ -180,7 +178,9 @@ def get_settings(req):
             "fb_app_id": ws["fb_app_id"], "has_fb_secret": bool(ws["fb_app_secret_enc"]),
             "fb_redirect_uri": public_base(req) + "/oauth/fb/callback", "fb_graph_version": db.meta_get("fb_graph_version") or _fb.DEFAULT_VERSION,
             "ig_app_id": ws.get("ig_app_id"), "has_ig_secret": bool(ws.get("ig_app_secret_enc")),
-            "ig_redirect_uri": public_base(req) + "/oauth/ig/callback"}
+            "ig_redirect_uri": public_base(req) + "/oauth/ig/callback",
+            "drive_client_id": ws.get("drive_client_id"), "has_drive_secret": bool(ws.get("drive_client_secret_enc")),
+            "drive_uses_own_app": bool(ws.get("drive_token_client") and ws.get("drive_token_client") == ws.get("drive_client_id"))}
 
 
 @route("POST", "/api/settings")
@@ -200,6 +200,10 @@ def save_settings(req):
         db.run("UPDATE workspaces SET fb_app_id=? WHERE id=?", ((b["fb_app_id"] or "").strip() or None, req.ws))
     if b.get("fb_app_secret"):
         db.run("UPDATE workspaces SET fb_app_secret_enc=? WHERE id=?", (security.seal(b["fb_app_secret"].strip()), req.ws))
+    if "drive_client_id" in b:
+        db.run("UPDATE workspaces SET drive_client_id=? WHERE id=?", ((b["drive_client_id"] or "").strip() or None, req.ws))
+    if b.get("drive_client_secret"):
+        db.run("UPDATE workspaces SET drive_client_secret_enc=? WHERE id=?", (security.seal(b["drive_client_secret"].strip()), req.ws))
     if "ig_app_id" in b:
         db.run("UPDATE workspaces SET ig_app_id=? WHERE id=?", ((b["ig_app_id"] or "").strip() or None, req.ws))
     if b.get("ig_app_secret"):
@@ -482,8 +486,10 @@ def new_link(req):
     b = req.json
     purpose = b.get("purpose")
     ws = store.workspace(req.ws)
-    if purpose in ("youtube", "drive") and not (ws["google_client_id"] and ws["google_client_secret_enc"]):
+    if purpose == "youtube" and not (ws["google_client_id"] and ws["google_client_secret_enc"]):
         raise HttpError(400, "Add your Google API app in Settings first")
+    if purpose == "drive" and not all(store.drive_app(ws)):
+        raise HttpError(400, "Add your Google API app (or the separate Drive app) in Settings first")
     gid = None
     if purpose == "youtube":
         g = _own_group(req, b.get("group_id") or 0)
@@ -548,8 +554,10 @@ def open_link(req, code):
     if l["purpose"] == "instagram":
         from . import igpost
         return 302, {"Location": igpost.consent_url(ws["ig_app_id"], public_base(req) + "/oauth/ig/callback", code)}
-    scopes = platform("youtube").SCOPES if l["purpose"] == "youtube" else DRIVE_SCOPES
-    url = consent_url(ws["google_client_id"], public_base(req) + "/oauth/callback", scopes, code)
+    if l["purpose"] == "youtube":
+        url = consent_url(ws["google_client_id"], public_base(req) + "/oauth/callback", platform("youtube").SCOPES, code)
+    else:
+        url = consent_url(store.drive_app(ws)[0], public_base(req) + "/oauth/callback", DRIVE_SCOPES, code)
     return 302, {"Location": url}
 
 
@@ -567,11 +575,13 @@ def oauth_callback(req):
     try:
         if l["purpose"] == "drive":
             s = session_for(None)
-            tok = exchange(s, cid, sec, req.query.get("code", ""), public_base(req) + "/oauth/callback")
+            dcid, dsec = store.drive_app(ws)
+            tok = exchange(s, dcid, dsec, req.query.get("code", ""), public_base(req) + "/oauth/callback")
             sealed = security.seal(json.dumps(tok))
-            box = TokenBox(sealed, cid, sec, lambda x: None)
+            box = TokenBox(sealed, dcid, dsec, lambda x: None)
             email = drive.whoami(s, box)
-            db.run("UPDATE workspaces SET drive_token_enc=?, drive_email=? WHERE id=?", (sealed, email, ws["id"]))
+            db.run("UPDATE workspaces SET drive_token_enc=?, drive_email=?, drive_token_client=? WHERE id=?",
+                   (sealed, email, dcid, ws["id"]))
             db.run("UPDATE connect_links SET used_at=?, result_json=? WHERE code=?", (time.time(), json.dumps({"email": email}), code))
             return 200, _page("Google Drive connected", f"Connected as <b>{html.escape(email or '')}</b>. You can close this tab.")
         g = store.group(l["group_id"])
@@ -1420,7 +1430,9 @@ def channel_detail(req, cid):
 
 @route("GET", "/api/settings/advanced", auth="owner")
 def adv_get(req):
-    return {"public_url_override": db.meta_get("public_url_override") or "", "tunnel_url": db.meta_get("public_url") or ""}
+    from . import urls
+    return {"public_url_override": urls.own_domain(), "tunnel_url": urls.tailscale(), "public": urls.public(req),
+            "media": urls.media(), "backup": urls.backup()}
 
 
 @route("POST", "/api/settings/advanced", auth="owner")
@@ -1601,7 +1613,7 @@ def _discover_ig_dest(ws, g, s):
     acc = db.one("SELECT * FROM fb_accounts WHERE group_id=?", (g["id"],))
     if not acc:
         return 0
-    n, now = 0, time.time()
+    n = 0
     for pg in db.all("SELECT * FROM fb_pages WHERE fb_account_id=?", (acc["id"],)):
         try:
             a = igpost.linked_account(s, pg["page_id"], security.unseal(pg["token_enc"]))
@@ -1844,6 +1856,7 @@ def live(req):
     return {"now": now, "up": round(now - _STARTED), "version": VERSION, "running": running,
             "services": services, "healthy": not stale, "stale": stale,
             "paused": bool((ws.get("paused_until") or 0) > now),
+            "replaced": bool(db.meta_get("superseded_by")),
             "mark": f"{last or 0}.{pub or 0}.{len(running)}",
             "device": db.jload(db.meta_get("device_info"), None)}
 
@@ -1970,6 +1983,9 @@ def fleet_state(req):
             "key": fleet.key() if fleet.role() == "hub" else None,
             "error": db.meta_get("fleet_error") or None, "seen": float(db.meta_get("fleet_seen") or 0) or None,
             "devices": fleet.devices() if fleet.role() == "hub" else [],
+            "totals": fleet.totals(fleet.devices()) if fleet.role() == "hub" else None,
+            "targets": [d["host"] for d in fleet.devices() if d["online"] and d["host"] != fleet.my_host()] if fleet.role() == "hub" else [],
+            "groups": db.all("SELECT id, number, outgoing_ip, moved_to FROM ip_groups WHERE workspace_id=? ORDER BY number", (req.ws,)),
             "open_signup": fleet.open_signup(), "max_users": fleet.max_users(), "users": fleet.users_count()}
 
 
@@ -1997,3 +2013,72 @@ def fleet_save(req):
     if fleet.role():
         fleet.tick()
     return fleet_state(req)
+
+
+# ---------------------------------------------------------------- alerts (panel + phone notifications)
+@route("GET", "/local/alerts", auth="local")
+def local_alerts(req):
+    return {"alerts": db.jload(db.meta_get("alerts_json"), []) or []}
+
+
+@route("GET", "/api/alerts", auth="owner")
+def owner_alerts(req):
+    from . import alerts
+    return {"alerts": alerts.tick()}
+
+
+# ---------------------------------------------------------------- updates without reinstalling
+@route("GET", "/api/update", auth="owner")
+def update_state(req):
+    from . import hotupdate
+    return hotupdate.state()
+
+
+@route("POST", "/api/update", auth="owner")
+def update_apply(req):
+    from . import hotupdate
+    b = req.json
+    if "auto" in b:
+        db.meta_set("auto_update", "1" if b["auto"] else "0")
+        return hotupdate.state()
+    if b.get("action") == "back_to_app":
+        hotupdate.back_to_app()
+        return {"ok": True, "restarting": True}
+    if db.one("SELECT 1 FROM jobs WHERE status='running'"):
+        raise HttpError(409, "A post is uploading right now. Try again in a few minutes.")
+    try:
+        return hotupdate.apply(force=bool(b.get("force")))
+    except ValueError as e:
+        raise HttpError(400, str(e))
+    except Exception as e:
+        raise HttpError(502, f"Update failed: {e}")
+
+
+# ---------------------------------------------------------------- backup test (restore drill)
+@route("POST", "/api/backup/test", auth="owner")
+def backup_test(req):
+    try:
+        return _backup.test_latest()
+    except Exception as e:
+        raise HttpError(400, str(e))
+
+
+@route("POST", "/fleet/import", auth=None)
+def fleet_import(req):
+    from . import fleet
+    if not fleet.verify(req.raw or b"", req.headers.get("X-DC-Fleet") or ""):
+        raise HttpError(403, "Bad fleet signature")
+    try:
+        return fleet.receive_group(req.raw)
+    except ValueError as e:
+        raise HttpError(409, str(e))
+
+
+@route("POST", "/api/fleet/move", auth="owner")
+def fleet_move(req):
+    from . import fleet
+    g = _own_group(req, req.json.get("group_id") or 0)
+    try:
+        return fleet.send_group(g["id"], req.json.get("host") or "")
+    except ValueError as e:
+        raise HttpError(400, str(e))
