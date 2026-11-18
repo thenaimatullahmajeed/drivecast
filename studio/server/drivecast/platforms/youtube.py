@@ -65,7 +65,8 @@ def whoami(session, box):
     thumb = (sn.get("thumbnails", {}).get("default") or {}).get("url")
     return {"external_id": it["id"], "title": sn.get("title", "YouTube channel"),
             "handle": sn.get("customUrl"), "thumbnail": thumb,
-            "subscribers": int(st.get("subscriberCount", 0) or 0), "total_views": int(st.get("viewCount", 0) or 0)}
+            "subscribers": int(st.get("subscriberCount", 0) or 0), "total_views": int(st.get("viewCount", 0) or 0),
+            "video_count": int(st.get("videoCount", 0) or 0)}
 
 
 def publish(session, box, path, title, description, on_progress=None):
@@ -176,4 +177,4 @@ def video_stats(session, box, ids):
 def channel_stats(session, box):
     me = whoami(session, box)
     return {"subscribers": me["subscribers"], "total_views": me["total_views"], "title": me["title"],
-            "handle": me["handle"], "thumbnail": me["thumbnail"]}
+            "handle": me["handle"], "thumbnail": me["thumbnail"], "video_count": me.get("video_count")}

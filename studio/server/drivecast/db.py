@@ -308,6 +308,15 @@ SCHEMA = [
         week TEXT NOT NULL, text TEXT NOT NULL, created_at REAL NOT NULL, UNIQUE (channel_id, week)
     );
     """,
+    # version 12: videos on each channel; password reset; Google sign-in
+    """
+    ALTER TABLE channels ADD COLUMN video_count INTEGER;
+    ALTER TABLE users ADD COLUMN google_sub TEXT;
+    CREATE TABLE IF NOT EXISTS password_resets (
+        token_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        created_at REAL NOT NULL, expires_at REAL NOT NULL, used_at REAL, made_by TEXT
+    );
+    """,
 ]
 
 

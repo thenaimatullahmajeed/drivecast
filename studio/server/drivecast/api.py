@@ -101,7 +101,17 @@ def _start_session(req, u):
 def session_info(req):
     owner = db.one("SELECT 1 FROM users WHERE role='owner'")
     return {"user": user_view(req.user) if req.user else None, "needs_setup": not owner, "version": VERSION,
-            "open_signup": db.meta_get("open_signup") == "1"}
+            "open_signup": db.meta_get("open_signup") == "1", "google_login": _google_login_ready(), "email_reset": _email_ready()}
+
+
+def _google_login_ready():
+    o = db.one("SELECT workspace_id FROM users WHERE role='owner' ORDER BY id LIMIT 1")
+    return bool(o and store.google_app(store.workspace(o["workspace_id"]))[0])
+
+
+def _email_ready():
+    from . import mail
+    return mail.ready()
 
 
 @route("POST", "/api/setup", auth=None)
@@ -605,6 +615,8 @@ def oauth_callback(req):
     l = db.one("SELECT * FROM connect_links WHERE code=?", (code,))
     if not l or l["used_at"] or l["expires_at"] < time.time():
         return 400, _page("Link not valid", "Start again from a new sign-in link.", False)
+    if l["purpose"].startswith(("glogin", "gsignup")):
+        return google_login_callback(req, l)
     if err:
         db.run("UPDATE connect_links SET error=? WHERE code=?", ("Google sign-in was cancelled", code))
         return 400, _page("Not connected", "Sign-in was cancelled. You can open the link again.", False)
@@ -875,7 +887,8 @@ def server(req):
     from . import config
     du = shutil.disk_usage(config.DATA_DIR)
     return {"version": VERSION, "uptime": time.time() - STARTED, "services": supervisor.HEARTBEATS,
-            "disk_free": du.free, "public_url": public_base(req), "device": db.meta_get("device_info"),
+            "disk_free": du.free, "public_url": public_base(req),
+            "device": db.meta_get("device_info") if req.user["role"] == "owner" else json.dumps(_device_for(req) or {}),
             "jobs": db.one("SELECT SUM(status='queued') queued, SUM(status='running') running FROM jobs")}
 
 
@@ -1919,7 +1932,17 @@ def live(req):
             "attention": db.one("""SELECT COUNT(*) n FROM events WHERE workspace_id=? AND resolved=0 AND level='error' AND at>?""",
                                 (ws["id"], now - 86400))["n"],
             "mark": f"{last or 0}.{pub or 0}.{len(running)}",
-            "device": db.jload(db.meta_get("device_info"), None)}
+            "device": _device_for(req)}
+
+
+def _device_for(req):
+    """Battery and heat for everyone; the phone's make and Android version only for the owner."""
+    d = db.jload(db.meta_get("device_info"), None)
+    if not d or req.user["role"] == "owner":
+        return d
+    out = {k: d.get(k) for k in ("battery", "charging", "temp") if k in d}
+    out["at"] = float(db.meta_get("device_at") or 0) or None
+    return out
 
 
 # ---------------------------------------------------------------- downloader (YouTube / TikTok sources)
@@ -1980,7 +2003,7 @@ def _fleet_body(req):
 @route("POST", "/fleet/hello", auth=None)
 def fleet_hello(req):
     fleet = _fleet_body(req)
-    return {"ok": fleet.apply("/fleet/hello", req.json)}
+    return {"ok": fleet.apply("/fleet/hello", req.json), "update_now": db.meta_get("fleet_update_now") or None}
 
 
 @route("POST", "/fleet/dir", auth=None)
@@ -2091,8 +2114,11 @@ def owner_alerts(req):
 # ---------------------------------------------------------------- updates without reinstalling
 @route("GET", "/api/update", auth="owner")
 def update_state(req):
-    from . import hotupdate
-    return hotupdate.state()
+    from . import hotupdate, fleet
+    st = hotupdate.state()
+    st["fleet_role"] = fleet.role()
+    st["phones"] = len(fleet.devices()) if fleet.role() == "hub" else 1
+    return st
 
 
 @route("POST", "/api/update", auth="owner")
@@ -2105,7 +2131,13 @@ def update_apply(req):
     if b.get("action") == "back_to_app":
         hotupdate.back_to_app()
         return {"ok": True, "restarting": True}
+    if b.get("all"):
+        from . import fleet
+        if fleet.role() == "hub":
+            fleet.push_update()  # every phone installs it at its next check-in (within 5 minutes)
     if db.one("SELECT 1 FROM jobs WHERE status='running'"):
+        if b.get("all"):
+            return {"ok": True, "message": "Other phones update within 5 minutes; this one updates when its upload ends.", "later": True}
         raise HttpError(409, "A post is uploading right now. Try again in a few minutes.")
     try:
         return hotupdate.apply(force=bool(b.get("force")))
@@ -2359,3 +2391,201 @@ def ai_preview(req):
     t = pack["texts"]
     return {"youtube": {"title": t["youtube"][0], "description": t["youtube"][1]},
             "facebook": t["facebook"][1], "instagram": t["instagram"][1]}
+
+
+# ---------------------------------------------------------------- forgotten password
+RESET_MINUTES = 30
+_forgot_hits = {}
+
+
+def _owner():
+    return db.one("SELECT * FROM users WHERE role='owner' ORDER BY id LIMIT 1")
+
+
+def _make_reset(u, made_by, minutes=RESET_MINUTES):
+    tok = security.token(24)
+    now = time.time()
+    db.run("DELETE FROM password_resets WHERE user_id=? AND used_at IS NULL", (u["id"],))
+    db.run("INSERT INTO password_resets(token_hash,user_id,created_at,expires_at,made_by) VALUES(?,?,?,?,?)",
+           (security.token_hash(tok), u["id"], now, now + minutes * 60, made_by))
+    return tok
+
+
+@route("POST", "/api/auth/forgot", auth=None)
+def forgot_password(req):
+    """Always the same answer, so nobody can test which emails have an account."""
+    from . import mail
+    email = (req.json.get("email") or "").strip()
+    if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
+        raise HttpError(400, "Enter a valid email")
+    hits = [t for t in _forgot_hits.get(req.ip, []) if t > time.time() - 900]
+    if len(hits) >= 5:
+        raise HttpError(429, "Too many requests. Wait 15 minutes.")
+    _forgot_hits[req.ip] = hits + [time.time()]
+    u = db.one("SELECT * FROM users WHERE lower(email)=lower(?)", (email,))
+    if u and u["status"] == "active":
+        if mail.ready():
+            tok = _make_reset(u, "email")
+            link = public_base(req) + "/#/reset/" + tok
+            try:
+                text, body = mail.reset_email(u["name"], link)
+                mail.send(u["email"], "Reset your DriveCast password", text, body)
+            except Exception as e:
+                o = _owner()
+                db.event("error", "account", f"The password reset email to {u['email']} could not be sent ({str(e)[:120]}). "
+                         "Check Settings → Email, or make a reset link on the Users page.", o and o["workspace_id"])
+        else:
+            o = _owner()
+            if o and u["id"] != o["id"]:
+                db.event("warn", "account", f"{u['name']} ({u['email']}) asked to reset the password. Users → open the account → "
+                         "Send reset link.", o["workspace_id"], None, "PW_RESET_ASK")
+    from . import mail as _m
+    return {"ok": True, "emailed": _m.ready()}
+
+
+@route("POST", "/api/auth/reset", auth=None)
+def reset_password(req):
+    b = req.json
+    need(b, "token", "password")
+    if len(b["password"]) < 8:
+        raise HttpError(400, "Password must be at least 8 characters")
+    r = db.one("SELECT * FROM password_resets WHERE token_hash=?", (security.token_hash(b["token"].strip()),))
+    if not r or r["used_at"] or r["expires_at"] < time.time():
+        raise HttpError(400, "This reset link is not valid any more. Ask for a new one.")
+    u = db.one("SELECT * FROM users WHERE id=?", (r["user_id"],))
+    if not u or u["status"] != "active":
+        raise HttpError(403, "This account is suspended. Contact the server owner.")
+    db.run("UPDATE users SET pw_hash=? WHERE id=?", (security.hash_password(b["password"]), u["id"]))
+    db.run("UPDATE password_resets SET used_at=? WHERE token_hash=?", (time.time(), r["token_hash"]))
+    db.run("DELETE FROM sessions WHERE user_id=?", (u["id"],))
+    db.event("info", "account", f"{u['name']} chose a new password", u["workspace_id"])
+    return _start_session(req, u)
+
+
+@route("POST", "/api/admin/users/(\\d+)/reset-link", auth="owner")
+def admin_reset_link(req, uid):
+    from . import mail
+    u = db.one("SELECT * FROM users WHERE id=?", (int(uid),))
+    if not u:
+        raise HttpError(404, "User not found")
+    tok = _make_reset(u, "owner", minutes=24 * 60)
+    link = public_base(req) + "/#/reset/" + tok
+    emailed = False
+    if mail.ready():
+        try:
+            text, body = mail.reset_email(u["name"], link)
+            mail.send(u["email"], "Reset your DriveCast password", text.replace("30 minutes", "24 hours"), body.replace("30 minutes", "24 hours"))
+            emailed = True
+        except Exception:
+            emailed = False
+    return {"url": link, "emailed": emailed, "email": u["email"]}
+
+
+@route("GET", "/api/mail", auth="owner")
+def mail_get(req):
+    from . import mail
+    return mail.view()
+
+
+@route("POST", "/api/mail", auth="owner")
+def mail_save(req):
+    from . import mail
+    return mail.save(req.json)
+
+
+@route("POST", "/api/mail/test", auth="owner")
+def mail_test(req):
+    from . import mail
+    try:
+        mail.send(req.user["email"], "DriveCast email works", "This is a test from DriveCast Studio. Password reset emails will look like they come from this address.")
+    except Exception as e:
+        raise HttpError(400, f"Could not send: {str(e)[:200]}")
+    return {"ok": True, "to": req.user["email"]}
+
+
+# ---------------------------------------------------------------- Sign in / sign up with Google
+LOGIN_SCOPES = ["openid", "email", "profile"]  # basic scopes: no Google review needed
+
+
+@route("GET", "/oauth/google", auth=None)
+def google_start(req):
+    from .google import AUTH_URL
+    from urllib.parse import urlencode
+    o = _owner()
+    if not o:
+        return 400, _page("Not ready", "This server has no owner yet.", False)
+    ws = store.workspace(o["workspace_id"])
+    cid, _sec = store.google_app(ws)
+    if not cid:
+        return 400, _page("Google sign-in is not set up yet", "Use your email and password for now.", False)
+    mode = "gsignup" if req.query.get("mode") == "signup" else "glogin"
+    inv = re.sub(r"[^A-Z0-9-]", "", (req.query.get("invite") or "").upper())[:40]
+    code = security.token(18)
+    db.run("INSERT INTO connect_links(code,workspace_id,purpose,group_id,created_at,expires_at) VALUES(?,?,?,?,?,?)",
+           (code, ws["id"], mode + (":" + inv if inv else ""), None, time.time(), time.time() + 600))
+    q = {"client_id": cid, "redirect_uri": public_base(req) + "/oauth/callback", "response_type": "code",
+         "scope": " ".join(LOGIN_SCOPES), "prompt": "select_account", "state": code}
+    hint = (req.query.get("hint") or "").strip()
+    if hint and "@" in hint:
+        q["login_hint"] = hint[:200]
+    return 302, {"Location": AUTH_URL + "?" + urlencode(q)}
+
+
+def _google_identity(req, l):
+    ws = store.workspace(l["workspace_id"])
+    cid, sec = store.google_app(ws)
+    s = session_for(None)
+    tok = exchange(s, cid, sec, req.query.get("code", ""), public_base(req) + "/oauth/callback")
+    r = s.get("https://openidconnect.googleapis.com/v1/userinfo", headers={"Authorization": "Bearer " + tok["access_token"]}, timeout=20)
+    info = r.json() if r.status_code < 400 else {}
+    return info
+
+
+def google_login_callback(req, l):
+    from . import fleet
+    db.run("UPDATE connect_links SET used_at=? WHERE code=?", (time.time(), l["code"]))
+    if req.query.get("error"):
+        return 302, {"Location": "/#/login"}
+    try:
+        info = _google_identity(req, l)
+    except Exception as e:
+        return 400, _page("Google sign-in failed", f"Try again. ({html.escape(str(e)[:160])})", False)
+    email, sub = (info.get("email") or "").strip(), info.get("sub")
+    if not email or not sub or not info.get("email_verified", False):
+        return 400, _page("Email not verified", "Google did not confirm this email address. Use another Google account.", False)
+    u = db.one("SELECT * FROM users WHERE google_sub=?", (sub,)) or db.one("SELECT * FROM users WHERE lower(email)=lower(?)", (email,))
+    if u:
+        if u["status"] != "active":
+            return 403, _page("Account suspended", "Contact the studio owner.", False)
+        if not u.get("google_sub"):
+            db.run("UPDATE users SET google_sub=? WHERE id=?", (sub, u["id"]))
+        _start_session(req, u)
+        return 302, {"Location": "/#/dashboard"}
+    mode, _, invite = l["purpose"].partition(":")
+    if fleet.role() == "hub":  # the account may live on another phone of the studio
+        host = fleet.where(email)
+        if host and host != fleet.my_host():
+            return 302, {"Location": _panel(host) + "/oauth/google?mode=login&hint=" + email}
+    # no account yet: Google sign-in also creates one, with the same rules as the Create account form
+    name = (info.get("name") or email.split("@")[0]).strip()[:80]
+    tz = "Asia/Karachi"
+    if invite:
+        inv = db.one("SELECT * FROM invites WHERE code=?", (invite,))
+        if not inv and fleet.role() == "hub":
+            host, _ = fleet.pick_for_signup(invite)  # the phone that issued this invite
+            if host and host != fleet.my_host():
+                return 302, {"Location": _panel(host) + f"/oauth/google?mode=signup&invite={invite}&hint={email}"}
+        if not inv or inv["revoked"] or inv["used_by"] or inv["expires_at"] < time.time():
+            return 403, _page("Invite not valid", "This invite code is not valid or was already used. Ask for a new one.", False)
+        u = _create_user(name, email, security.token(24), "student", tz, db.jload(inv["limits_json"], {}), invite)
+    elif fleet.open_signup() and fleet.users_count() < fleet.max_users():
+        u = _create_user(name, email, security.token(24), "student", tz, db.jload(db.meta_get("open_limits"), {}) or {"max_channels": 3}, None)
+    else:
+        if fleet.role() == "hub":
+            host, _ = fleet.pick_for_signup(None)
+            if host and host != fleet.my_host():
+                return 302, {"Location": _panel(host) + "/oauth/google?mode=signup&hint=" + email}
+        return 403, _page("No account for this email", "Sign-ups are by invite. Open Create account, enter your invite code, then use Google.", False)
+    db.run("UPDATE users SET google_sub=? WHERE id=?", (sub, u["id"]))
+    _start_session(req, u)
+    return 302, {"Location": "/#/settings"}

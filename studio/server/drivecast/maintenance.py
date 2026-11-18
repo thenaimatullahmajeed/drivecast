@@ -74,8 +74,9 @@ def sync_stats(ws_id=None, force=False):
             box = store.channel_box(ch)
             p = platform(ch["platform"])
             cs = p.channel_stats(s, box)
-            db.run("UPDATE channels SET subscribers=?, total_views=?, title=?, handle=COALESCE(?,handle), thumbnail=COALESCE(?,thumbnail), stats_at=? WHERE id=?",
-                   (cs["subscribers"], cs["total_views"], cs["title"], cs["handle"], cs["thumbnail"], time.time(), ch["id"]))
+            db.run("""UPDATE channels SET subscribers=?, total_views=?, title=?, handle=COALESCE(?,handle), thumbnail=COALESCE(?,thumbnail),
+                      video_count=COALESCE(?,video_count), stats_at=? WHERE id=?""",
+                   (cs["subscribers"], cs["total_views"], cs["title"], cs["handle"], cs["thumbnail"], cs.get("video_count"), time.time(), ch["id"]))
             db.run("INSERT OR REPLACE INTO channel_points(channel_id,day,views,subscribers) VALUES(?,?,?,?)",
                    (ch["id"], today, cs["total_views"], cs["subscribers"]))
             now = time.time()

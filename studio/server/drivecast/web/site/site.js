@@ -35,3 +35,12 @@
   }
   fleet(); setInterval(fleet, 20000);
 })();
+
+(function () {
+  const g = document.getElementById('gup');
+  if (!g) return;
+  g.addEventListener('click', () => {
+    const c = (document.getElementById('upcode').value || '').trim().toUpperCase();
+    location.href = '/oauth/google?mode=signup' + (c ? '&invite=' + encodeURIComponent(c) : '');
+  });
+})();

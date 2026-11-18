@@ -199,6 +199,25 @@ def dashboard(ws_id, tz_name, now=None, since=None):
         "stats_at": max((c["stats_at"] or 0) for c in chans) if chans else None,
     }
 
+    allpub = db.one("""SELECT COUNT(*) n, COALESCE(SUM(views),0) v, COALESCE(SUM(likes),0) l,
+                              COALESCE(SUM(CASE WHEN destination IS NULL OR destination LIKE 'youtube%' THEN 1 ELSE 0 END),0) yt
+                       FROM uploads WHERE workspace_id=? AND status='published'""", (ws_id,))
+    best = db.one("""SELECT u.title, u.views, u.external_video_id, c.title channel FROM uploads u JOIN channels c ON c.id=u.channel_id
+                     WHERE u.workspace_id=? AND u.status='published' AND u.views IS NOT NULL ORDER BY u.views DESC LIMIT 1""", (ws_id,))
+    since7 = now - 7 * 86400
+    gained = db.one("""SELECT COALESCE(SUM(t.views),0) v FROM (
+                          SELECT MAX(k.views) - COALESCE((SELECT views FROM upload_ticks x WHERE x.upload_id=k.upload_id AND x.at<? ORDER BY x.at DESC LIMIT 1),0) views
+                          FROM upload_ticks k JOIN uploads u ON u.id=k.upload_id WHERE u.workspace_id=? AND k.at>=? GROUP BY k.upload_id) t""",
+                    (since7, ws_id, since7))
+    lenses = {
+        "account": {"views_total": sum((c["total_views"] or 0) for c in chans), "subscribers": subs_total,
+                    "videos": sum((c.get("video_count") or 0) for c in chans), "views_7d": kpis["views_7d"],
+                    "channels": len(chans), "subs_7d": kpis["subs_7d"]},
+        "posted": {"posts": allpub["n"], "youtube_posts": allpub["yt"], "views": allpub["v"], "likes": allpub["l"],
+                   "views_7d": max(0, gained["v"] or 0), "avg": round(allpub["v"] / allpub["yt"]) if allpub["yt"] else None,
+                   "best": best},
+    }
+
     trend = {"days": days[-30:], "views": total_by_day[-30:], "previous": total_by_day[-60:-30],
              "total_views": sum((c["total_views"] or 0) for c in chans)}
 
@@ -249,7 +268,7 @@ def dashboard(ws_id, tz_name, now=None, since=None):
                 "views": sum(V.channel(c["id"], since, now) for c in chans),
                 "problems": db.one("SELECT COUNT(*) n FROM events WHERE workspace_id=? AND level='error' AND at>=?", (ws_id, since))["n"]}
 
-    return {"now": now, "today": today_card, "kpis": kpis, "trend": trend, "leaderboard": board[:8], "pulse": pulse,
+    return {"now": now, "today": today_card, "kpis": kpis, "lenses": lenses, "trend": trend, "leaderboard": board[:8], "pulse": pulse,
             "heatmap": heat, "heat_samples": sum(len(v) for v in cells.values()), "consistency": cons,
             "upnext": upnext, "attention": attention(ws_id, now), "recent": recent_posts, "feed": feed[:30], "away": away}
 

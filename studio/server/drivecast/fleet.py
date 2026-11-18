@@ -136,7 +136,11 @@ def _send(path, payload):
             return False
         db.meta_set("fleet_error", "")
         db.meta_set("fleet_seen", str(time.time()))
-        return True
+        try:
+            out = r.json()
+            return out if isinstance(out, dict) and out else True
+        except ValueError:
+            return True
     except Exception as e:
         db.meta_set("fleet_error", f"Hub not reachable: {e}"[:200])
         return False
@@ -145,7 +149,37 @@ def _send(path, payload):
 def hello():
     if not role() or not my_host():
         return False
-    return _send("/fleet/hello", _status())
+    res = _send("/fleet/hello", _status())
+    if isinstance(res, dict):
+        follow_update(res.get("update_now"))
+    return res
+
+
+def push_update():
+    """Hub: ask every phone of the studio to install the newest update (they do it at their next check-in)."""
+    db.meta_set("fleet_update_now", str(time.time()))
+
+
+def follow_update(ts):
+    """Phone: the hub asked for an update — install it once, when nothing is uploading."""
+    try:
+        ts = float(ts or 0)
+    except (TypeError, ValueError):
+        return
+    if not ts or ts <= float(db.meta_get("fleet_update_done") or 0):
+        return
+    if db.one("SELECT 1 FROM jobs WHERE status='running'"):
+        return  # next check-in
+    db.meta_set("fleet_update_done", str(ts))
+    from . import hotupdate
+
+    def go():
+        try:
+            hotupdate.apply()
+        except Exception as e:
+            db.meta_set("update_error", f"Update from the hub failed: {e}"[:300])
+    import threading
+    threading.Thread(target=go, daemon=True).start()
 
 
 def report(kind, value):
@@ -159,6 +193,8 @@ def tick():
     """Every few minutes: tell the hub this device is alive (and, once, every account it holds)."""
     if not role():
         return
+    if role() == "hub":
+        follow_update(db.meta_get("fleet_update_now"))  # the hub follows its own request too (e.g. it was busy)
     ok = hello()
     if ok and db.meta_get("fleet_synced") != my_host() + "|" + (hub_url() or "self"):
         for u in db.all("SELECT email FROM users"):

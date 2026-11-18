@@ -27,6 +27,7 @@ function toast(msg, bad) {
   t.className = 'toast' + (bad ? ' bad' : '');
   t.innerHTML = `<span class="ti">${ic(bad ? 'alert' : 'check', 15)}</span><span class="tm"></span><i class="tp" style="animation-duration:${ms}ms"></i>`;
   t.querySelector('.tm').textContent = msg;
+  deskin(t);
   box.appendChild(t);
   while (box.children.length > 4) box.firstChild.remove();
   setTimeout(() => { t.classList.add('out'); setTimeout(() => t.remove(), 260); }, ms);
@@ -58,6 +59,7 @@ const ICON = {
   tt: '<path d="M14 3v11.5a3.5 3.5 0 1 1-3.5-3.5"/><path d="M14 3c.4 2.6 2.2 4.4 5 4.6"/>',
   link: '<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/>',
   play: '<path d="M8 5v14l11-7z"/>',
+  eyeoff: '<path d="M3 3l18 18"/><path d="M10.6 5.1A9.8 9.8 0 0 1 12 5c6 0 9.5 7 9.5 7a17 17 0 0 1-3 3.8M6.2 6.3A16.6 16.6 0 0 0 2.5 12S6 19 12 19a9.4 9.4 0 0 0 4.3-1"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/>',
   spark: '<path d="M12 3l1.8 4.9L19 9.7l-5.2 1.8L12 16.4l-1.8-4.9L5 9.7l5.2-1.8z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/>',
   sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',
   moon: '<path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/>',
@@ -189,6 +191,7 @@ async function render() {
     S.user = S.session.user;
     if (S.user) S.tz = S.user.timezone || S.tz;
   }
+  if (r0 === 'reset' && rest[0]) return resetPage(rest[0]);
   if (!S.user) return authPage(r0 === 'register' ? 'register' : (S.session.needs_setup ? 'setup' : 'login'));
   const navd = S.lastHash !== location.hash; S.lastHash = location.hash; S.anim = navd;
   const cont = document.getElementById('content');
@@ -232,6 +235,7 @@ function mount(active, title, sub, kick, actions, content) {
   liveStart();
   paintLive();
   if (S.anim) requestAnimationFrame(() => countUp(document.getElementById('content')));
+  deskin(document.getElementById('app'));
 }
 
 // ------------------------------------------------------------------ live session: heartbeat + auto refresh
@@ -259,6 +263,7 @@ function paintLive() {
   const state = off ? 'off' : !l ? '' : l.replaced ? 'warn' : l.paused ? 'paused' : l.running.length ? 'busy' : l.healthy ? '' : 'warn';
   ['srvdot', 'mbeat'].forEach(id => { const d = document.getElementById(id); if (d) d.className = 'beat ' + state; });
   const up = document.getElementById('srvup'); if (up && l) up.textContent = off ? 'offline' : 'up ' + upTxt(l.up);
+  deskin(document.querySelector('.srv'));
   const tn = document.getElementById('tbn'); if (tn && l) { tn.textContent = l.attention > 9 ? '9+' : l.attention; tn.classList.toggle('hidden', !l.attention); }
   const ml = document.getElementById('mlive'); if (ml) ml.textContent = off ? 'Reconnecting' : l && l.running.length ? 'Posting' : 'Live';
   const box = document.getElementById('livenow');
@@ -267,7 +272,7 @@ function paintLive() {
       : `<span>${l.replaced ? '<b style="color:#F2B54A">This phone was replaced — posting stopped</b>' : l.paused ? 'Paused — nothing posts' : l.healthy ? 'All services healthy' : 'A service is slow: ' + esc(l.stale.join(', '))}</span>`;
 }
 async function loadDevice(force) {
-  if (S.user.role !== 'owner') return null;
+  if (S.user.role !== 'owner') return (S.live && S.live.device) || null;
   if (!force && S.dev && Date.now() - S.devAt < 60000) return S.dev;
   try { S.dev = await api('GET', '/api/device'); S.devAt = Date.now(); } catch (e) { /* keep last */ }
   return S.dev;
@@ -319,6 +324,7 @@ const GLOBAL_ACTS = {
   close: () => closeModal(),
   msheet: () => document.getElementById('sheet').classList.add('open'),
   palette: () => openPalette(),
+  pweye: (x, el) => { const i = el.parentElement.querySelector('input'); const show = i.type === 'password'; i.type = show ? 'text' : 'password'; el.innerHTML = ic(show ? 'eyeoff' : 'eye', 16); el.setAttribute('aria-label', show ? 'Hide password' : 'Show password'); el.title = show ? 'Hide password' : 'Show password'; },
   theme: () => { const order = ['auto', 'light', 'dark']; const n = order[(order.indexOf(themePref()) + 1) % 3]; store_('dc_theme', n); applyTheme(); toast(`Theme: ${n === 'auto' ? 'follows your device' : n}`); const b = document.querySelector('[data-act=theme]'); if (b) { b.innerHTML = ic(n === 'dark' ? 'moon' : n === 'light' ? 'sun' : 'auto', 17); b.title = 'Theme: ' + n; } },
   railmini: () => { const m = !railMini(); store_('dc_rail', m ? 'mini' : ''); document.querySelector('.app').classList.toggle('mini', m); },
 };
@@ -327,7 +333,7 @@ async function copyText(t) {
     const a = document.createElement('textarea'); a.value = t; document.body.appendChild(a); a.select(); document.execCommand('copy'); a.remove();
   }
 }
-function modal(html) { closeModal(); const d = document.createElement('div'); d.className = 'modal-bg'; d.id = 'modal'; d.innerHTML = `<div class="modal" role="dialog" aria-modal="true">${html}</div>`; d.addEventListener('click', e => { if (e.target === d) closeModal(); }); document.body.appendChild(d); const f = d.querySelector('input,select,button'); if (f) f.focus(); }
+function modal(html) { closeModal(); const d = document.createElement('div'); d.className = 'modal-bg'; d.id = 'modal'; d.innerHTML = `<div class="modal" role="dialog" aria-modal="true">${html}</div>`; d.addEventListener('click', e => { if (e.target === d) closeModal(); }); document.body.appendChild(d); deskin(d); const f = d.querySelector('input,select,button'); if (f) f.focus(); }
 function closeModal() { const m = document.getElementById('modal'); if (m) m.remove(); }
 function safe(fn, title) { try { return fn(); } catch (e) { console.error(e); return `<section class="card err-card"><h2>${esc(title || 'This card')} could not load</h2><p class="muted">${esc(e.message)}</p></section>`; } }
 const hd = (title, sub, right = '') => `<div class="hd"><div><h2>${esc(title)}</h2>${sub ? `<p>${sub}</p>` : ''}</div><div class="actions">${right}</div></div>`;
@@ -337,7 +343,11 @@ const addBtn = `<a class="btn primary" href="#/add">${ic('plus', 16)}Add client<
 function browserTz() { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Karachi'; } catch (e) { return 'Asia/Karachi'; } }
 function authPage(mode) {
   const eq = Array.from({ length: 18 }, (_, i) => `<span style="height:${[40, 86, 58, 120, 72, 150, 96, 64, 132, 48, 104, 80, 56, 140, 90, 62, 118, 70][i]}px"></span>`).join('');
-  const field = (n, l, t = 'text', ph = '', extra = '') => `<label class="f">${l}<input class="i" name="${n}" type="${t}" placeholder="${esc(ph)}" ${extra}></label>`;
+  const field = (n, l, t = 'text', ph = '', extra = '') => t === 'password'
+    ? `<label class="f">${l}<span class="pw"><input class="i" name="${n}" type="password" placeholder="${esc(ph)}" ${extra}><button type="button" class="pw-eye" data-act="pweye" aria-label="Show password" title="Show password">${ic('eye', 16)}</button></span></label>`
+    : `<label class="f">${l}<input class="i" name="${n}" type="${t}" placeholder="${esc(ph)}" ${extra}></label>`;
+  const gOn = S.session && S.session.google_login;
+  const gBtn = label => gOn ? `<a class="btn big gbtn" href="/oauth/google?mode=${mode === 'register' ? 'signup' : 'login'}${mode === 'register' ? '' : ''}" data-g="1">${GLOGO}${label}</a><div class="or"><span>or with email</span></div>` : '';
   let form;
   if (mode === 'restore') form = `<div class="tabs"><button type="button" data-act="tab-setup">New server</button><button type="button" class="on">Restore a backup</button></div>
     <div><h2 style="font-size:28px">Restore from a backup</h2><p class="muted">Brings back every account, channel, proxy, Instagram cookie and Google sign-in. Needs the setup code from the phone and your backup password.</p></div>
@@ -351,10 +361,13 @@ function authPage(mode) {
     <button class="btn primary big" type="submit">Create owner account</button>`;
   else form = `<div class="tabs"><button type="button" class="${mode === 'login' ? 'on' : ''}" data-act="tab-login">Sign in</button><button type="button" class="${mode === 'register' ? 'on' : ''}" data-act="tab-register">Create account</button></div>
     ${mode === 'login' ? `<div><h2 style="font-size:28px">Welcome back</h2><p class="muted">Sign in to your workspace on this server.</p></div>
+      ${gBtn('Continue with Google')}
       ${field('email', 'Email', 'email', 'you@example.com', 'required autocomplete="email"')}${field('password', 'Password', 'password', '', 'required autocomplete="current-password"')}
+      <div style="display:flex;justify-content:flex-end;margin-top:-6px"><button type="button" class="linkbtn" data-act="forgot">Forgot password?</button></div>
       <button class="btn primary big" type="submit">Sign in</button>`
       : `<div><h2 style="font-size:28px">Create your account</h2><p class="muted">You need an invite code from the server owner. Your workspace is private — your own proxies, Drive and channels.</p></div>
-      ${field('invite_code', 'Invite code', 'text', 'DC-XXXX-XXXX', 'required autocomplete="off"')}${field('name', 'Your name', 'text', '', 'required')}${field('email', 'Email', 'email', '', 'required autocomplete="email"')}${field('password', 'Password (8+ characters)', 'password', '', 'required minlength="8" autocomplete="new-password"')}
+      ${field('invite_code', 'Invite code', 'text', 'DC-XXXX-XXXX', 'required autocomplete="off"')}
+      ${gOn ? `<button type="button" class="btn big gbtn" data-act="gsignup">${GLOGO}Sign up with Google</button><div class="or"><span>or with email</span></div>` : ''}${field('name', 'Your name', 'text', '', 'required')}${field('email', 'Email', 'email', '', 'required autocomplete="email"')}${field('password', 'Password (8+ characters)', 'password', '', 'required minlength="8" autocomplete="new-password"')}
       <button class="btn primary big" type="submit">Create account</button>`}`;
   document.getElementById('app').innerHTML = `<div class="auth">
     <section class="hero"><div class="brand">${BRAND(true, true)}</div>
@@ -371,6 +384,15 @@ function authPage(mode) {
   }
   S.acts['tab-login'] = () => { history.replaceState(null, '', '#/login'); authPage('login'); };
   S.acts['tab-register'] = () => { history.replaceState(null, '', '#/register'); authPage('register'); };
+  S.acts.gsignup = () => { const i = document.querySelector('[name=invite_code]'); const code = (i && i.value.trim()) || ''; if (!code && !(S.session && S.session.open_signup)) { toast('Enter your invite code first', true); if (i) i.focus(); return; } location.href = '/oauth/google?mode=signup' + (code ? '&invite=' + encodeURIComponent(code) : ''); };
+  S.acts.forgot = () => {
+    const e = (document.querySelector('[name=email]') || {}).value || '';
+    modal(`<h2>Forgot your password?</h2><p class="muted" style="margin:0">Enter the email of your account. ${S.session && S.session.email_reset ? 'We send you a link to choose a new password.' : 'The studio owner gets your request and sends you a reset link.'}</p>
+      <form data-form="forgotgo" style="display:flex;flex-direction:column;gap:12px"><label class="f">Email<input class="i" name="email" type="email" required value="${esc(e)}" autocomplete="email"></label>
+      <div class="actions" style="justify-content:flex-end"><button type="button" class="btn" data-act="close">Cancel</button><button class="btn primary" type="submit">Send</button></div></form>
+      ${gOn ? `<p class="mini" style="margin:0">Tip: <b>Continue with Google</b> signs you in without a password.</p>` : ''}`);
+    S.acts.forgotgo = async v => { const r = await api('POST', '/api/auth/forgot', v); closeModal(); toast(r.emailed ? 'If that email has an account, a reset link is on its way — check your inbox and spam.' : 'Request sent. The studio owner will send you a reset link.'); };
+  };
   S.acts['tab-restore'] = () => authPage('restore');
   S.acts['tab-setup'] = () => authPage('setup');
   S.acts.auth = async v => {
@@ -552,9 +574,21 @@ function kpis(d) {
   const k = d.kpis;
   const tile = (label, icon, val, foot, extra = '', cls = '') => `<div class="kpi ${cls}"><span class="l">${ic(icon, 13)}${label}</span><div style="display:flex;align-items:flex-end;justify-content:space-between;gap:6px"><span class="v">${val}</span>${extra}</div><span class="f">${foot}</span></div>`;
   const rw = k.runway_min;
-  return `<div class="kp">
-    ${tile('Views · 7 days', 'eye', num(k.views_7d), `${delta(k.views_7d, k.views_7d_prev)}<span>vs last week</span>`, spark(k.views_series, 64, 24, '#0E1116'))}
-    ${tile('Subscribers', 'users', num(k.subscribers), k.subs_7d ? `<span class="delta ${k.subs_7d >= 0 ? 'up' : 'down'}">${k.subs_7d >= 0 ? '+' : ''}${num(k.subs_7d)}</span><span>this week</span>` : '<span>all channels</span>')}
+  const L = d.lenses;
+  const st = (label, val, foot = '') => `<div class="lst"><span class="l">${label}</span><span class="lv">${val}</span><span class="f">${foot}</span></div>`;
+  const lens = L ? `<div class="lens2">
+    <section class="lens"><div class="lens-h"><span class="lens-ic">${ic('tv', 16)}</span><div><b>Whole accounts</b><span>Everything on ${plural(L.account.channels, 'channel')} — old videos too</span></div></div>
+      <div class="lens-g">${st('All-time views', num(L.account.views_total))}${st('Views · 7 days', num(L.account.views_7d), `${delta(k.views_7d, k.views_7d_prev)}<span>vs last week</span>`)}
+      ${st('Subscribers', num(L.account.subscribers), L.account.subs_7d ? `<span class="delta ${L.account.subs_7d >= 0 ? 'up' : 'down'}">${L.account.subs_7d >= 0 ? '+' : ''}${num(L.account.subs_7d)}</span><span>this week</span>` : '<span>all channels</span>')}
+      ${st('Videos on the channels', L.account.videos ? num(L.account.videos) : '—', '<span>YouTube count</span>')}</div></section>
+    <section class="lens posted"><div class="lens-h"><span class="lens-ic">${ic('spark', 16)}</span><div><b>Posted by DriveCast</b><span>Only the posts this studio made</span></div></div>
+      <div class="lens-g">${st('Posts', num(L.posted.posts), `<span>${num(L.posted.youtube_posts)} on YouTube</span>`)}${st('Views on them', num(L.posted.views), L.posted.likes ? `<span>${num(L.posted.likes)} likes</span>` : '<span>YouTube views</span>')}
+      ${st('Gained · 7 days', num(L.posted.views_7d), '<span>on these posts</span>')}${st('Avg / post', L.posted.avg == null ? '—' : num(L.posted.avg), '<span>YouTube</span>')}</div>
+      ${L.posted.best ? `<a class="lens-best" href="${L.posted.best.external_video_id ? 'https://youtu.be/' + esc(L.posted.best.external_video_id) : '#/videos'}" ${L.posted.best.external_video_id ? 'target="_blank" rel="noopener"' : ''}><span class="kicker">Best post</span><b class="ell">${esc(L.posted.best.title)}</b><span class="mini ell">${esc(L.posted.best.channel)}</span><b class="mono">${num(L.posted.best.views)} views</b></a>` : ''}
+      <a class="lens-more" href="#/videos">Every post with its views ${ic('chev', 13)}</a></section></div>` : '';
+  return `${lens}<div class="kp" ${L ? 'style="grid-template-columns:repeat(4,minmax(0,1fr))"' : ''}>
+    ${L ? '' : tile('Views · 7 days', 'eye', num(k.views_7d), `${delta(k.views_7d, k.views_7d_prev)}<span>vs last week</span>`, spark(k.views_series, 64, 24, '#0E1116'))}
+    ${L ? '' : tile('Subscribers', 'users', num(k.subscribers), '<span>all channels</span>')}
     ${tile('Posts · 7 days', 'film', k.posts_7d, `${delta(k.posts_7d, k.posts_7d_prev)}<span>${k.published_today}/${k.planned_today} today</span>`)}
     ${tile('Avg views / post', 'bolt', k.avg_first24 != null ? num(k.avg_first24) : num(k.avg_views), k.avg_first24 != null ? '<span>after the first day</span>' : '<span>so far · last 30 days</span>')}
     ${tile('Posting health', 'check', k.health == null ? '—' : k.health + '%', '<span>on time · 7 days</span>', '', k.health != null && k.health < 80 ? 'alert' : '')}
@@ -1602,13 +1636,19 @@ async function pageSchedule() {
 async function pageVideos() {
   const { videos } = await api('GET', '/api/videos?limit=200');
   const tone = { published: 'ok', uploading: 'info', reserved: 'info', failed: 'bad', uncertain: 'bad' };
-  const VC = 'grid-template-columns:minmax(240px,2fr) minmax(150px,1.1fr) 170px 120px 150px 80px 190px';
-  const rows = videos.map(v => `<div class="tr" style="${VC}"><div style="min-width:0"><b class="ell" style="display:block">${esc(v.title)}</b><span class="muted mono" style="font-size:11px">${esc(v.file_name)}</span></div><span class="ell">${esc(v.channel_title)}</span>
-    <span style="display:flex;flex-direction:column;gap:2px"><span class="mono" style="font-size:12px">${esc(v.outgoing_ip || '—')}</span><span class="mini">${v.outgoing_ip ? `Group ${esc(v.group_number ?? '?')} proxy${v.group_ip && v.group_ip !== v.outgoing_ip ? ' (old IP)' : ''}` : 'not sent'}</span></span>
-    <span>${chip(v.status === 'published' ? (v.visibility || 'public') : v.status, tone[v.status] || 'neutral')}</span><span style="font-size:13px">${esc(tFull(v.published_at || v.reserved_at))}</span><span class="mono">${v.views == null ? '—' : num(v.views)}</span>
-    <div class="actions" style="justify-content:flex-end">${v.external_video_id ? `<a class="btn sm" href="https://youtu.be/${esc(v.external_video_id)}" target="_blank" rel="noopener">${ic('ext', 14)}YouTube</a>` : ''}${v.status === 'uncertain' ? `<button class="btn sm" data-act="unc" data-id="${v.id}">Resolve</button>` : ''}</div></div>`).join('');
-  mount('videos', 'Videos', 'Everything DriveCast published or tried to publish · every upload leaves only from its group’s proxy IP, checked right before sending', 'Workspace', '',
-    `<section class="card">${videos.length ? `<div class="tbl"><div style="min-width:1160px"><div class="tr th" style="${VC}"><span>Video</span><span>Channel</span><span title="The IP YouTube saw for this upload">Sent from IP</span><span>Status</span><span>When</span><span>Views</span><span></span></div>${rows}</div></div>` : '<div class="empty"><h3>No videos yet</h3>Published posts will appear here with their views.</div>'}</section>`);
+  const VC = 'grid-template-columns:minmax(0,2.2fr) minmax(0,1.2fr) minmax(0,1fr) 96px 44px';
+  const where = v => { const k = (v.destination || 'youtube').split(':')[0]; const kk = DST[k] ? k : 'youtube'; return { kind: kk, name: { youtube: 'YouTube', facebook: 'Facebook', instagram: 'Instagram' }[kk] }; };
+  const link = v => { const w = where(v).kind, id = v.external_video_id; if (!id) return ''; if (w === 'youtube') return `https://youtu.be/${id}`; if (w === 'facebook') return `https://www.facebook.com/${id}`; return ''; };
+  const rows = videos.map(v => { const w = where(v), href = link(v);
+    return `<div class="tr vrow" style="${VC}"><div class="vt">${dstIcon(w.kind, 14)}<div style="min-width:0"><b class="ell" style="display:block">${esc(v.title)}</b><span class="muted ell" style="display:block;font-size:11.5px">${esc(v.file_name)}</span></div></div>
+    <div style="min-width:0"><b class="ell" style="display:block;font-weight:550">${esc(v.channel_title)}</b><span class="mini ell" style="display:block" title="The IP ${esc(w.name)} saw for this post">${v.outgoing_ip ? `${esc(v.outgoing_ip)} · Group ${esc(v.group_number ?? '?')}${v.group_ip && v.group_ip !== v.outgoing_ip ? ' (old IP)' : ''}` : 'not sent'}</span></div>
+    <div style="min-width:0;display:flex;flex-direction:column;gap:3px;align-items:flex-start">${chip(v.status === 'published' ? (v.visibility || 'public') : v.status, tone[v.status] || 'neutral')}<span class="mini">${esc(tFull(v.published_at || v.reserved_at))}</span></div>
+    <div style="text-align:right"><b class="mono">${v.views == null ? (w.kind === 'youtube' && v.status === 'published' ? '<span class="mini" title="Views arrive with the next stats round (every 20 min)">soon</span>' : '—') : num(v.views)}</b>${v.likes != null ? `<span class="mini" style="display:block">${num(v.likes)} likes</span>` : ''}</div>
+    <div class="actions" style="justify-content:flex-end">${href ? `<a class="tb-btn" style="width:32px;height:32px" href="${esc(href)}" target="_blank" rel="noopener" title="Open on ${esc(w.name)}" aria-label="Open on ${esc(w.name)}">${ic('ext', 14)}</a>` : ''}${v.status === 'uncertain' ? `<button class="btn sm" data-act="unc" data-id="${v.id}">Resolve</button>` : ''}</div></div>`; }).join('');
+  const tot = videos.filter(v => v.status === 'published');
+  const sum = tot.reduce((n, v) => n + (v.views || 0), 0);
+  mount('videos', 'Videos', `${plural(tot.length, 'post')} published · ${num(sum)} views on them · every post leaves only from its group’s proxy IP`, 'Workspace', '',
+    `<section class="card">${videos.length ? `<div class="tbl"><div style="min-width:680px"><div class="tr th" style="${VC}"><span>Video</span><span>Client · sent from</span><span>Status</span><span style="text-align:right">Views</span><span></span></div>${rows}</div></div>` : '<div class="empty"><h3>No videos yet</h3>Published posts will appear here with their views.</div>'}</section>`);
   S.acts.unc = d => {
     modal(`<h2>Was it published?</h2><p class="muted">The upload ended without a clear answer, so DriveCast did not retry it. Check YouTube Studio for this channel.</p>
       <form data-form="uncok" style="display:flex;flex-direction:column;gap:12px"><label class="f">If it is on YouTube, paste the video link or ID<input class="i" name="video_id" placeholder="https://youtu.be/…"></label>
@@ -1685,7 +1725,8 @@ async function pageSettings() {
       <label class="f">Instagram app secret<input class="i" name="ig_app_secret" type="password" placeholder="${s.has_ig_secret ? 'Saved — leave empty to keep' : ''}" autocomplete="off"></label></div>
       <div class="actions"><button class="btn primary" type="submit">Save Instagram app</button>${s.ig_app_id && s.has_ig_secret ? chip('Saved', 'ok') : ''}</div></form></section></div>
     <div class="f1"><section class="card" style="margin-bottom:16px">${hd('Your timezone', 'Every time in the panel is shown in this zone.')}<form data-form="tz" class="actions"><select class="i" name="timezone" style="flex:1">${tzs.map(t => `<option ${t === s.timezone ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select><button class="btn primary" type="submit">Save</button></form></section>
-      <section class="card" style="margin-bottom:16px">${hd('Change password')}<form data-form="pw" style="display:flex;flex-direction:column;gap:12px"><input class="i" type="password" name="current_password" placeholder="Current password" autocomplete="current-password" aria-label="Current password"><input class="i" type="password" name="new_password" placeholder="New password (8+)" autocomplete="new-password" aria-label="New password"><button class="btn" type="submit">Update password</button></form></section>
+      <section class="card" style="margin-bottom:16px">${hd('Change password', 'Signed up with Google? Use “Forgot password?” on the sign-in page to set one.')}<form data-form="pw" style="display:flex;flex-direction:column;gap:12px"><span class="pw"><input class="i" type="password" name="current_password" placeholder="Current password" autocomplete="current-password" aria-label="Current password"><button type="button" class="pw-eye" data-act="pweye" aria-label="Show password">${ic('eye', 16)}</button></span><span class="pw"><input class="i" type="password" name="new_password" placeholder="New password (8+)" autocomplete="new-password" aria-label="New password (8+)"><button type="button" class="pw-eye" data-act="pweye" aria-label="Show password">${ic('eye', 16)}</button></span><button class="btn" type="submit">Update password</button></form></section>
+      ${S.user.role === 'owner' ? `<div id="mailcard"></div>` : ''}
       <section class="card">${hd('Your link')}<span class="mono" style="word-break:break-all">${esc(s.public_url)}</span>
         ${S.user.role === 'owner' ? `<details style="margin-top:12px"><summary class="muted" style="cursor:pointer;font-size:12px">Advanced · own domain</summary><form data-form="advurl" style="display:flex;flex-direction:column;gap:8px;margin-top:10px"><input class="i" name="public_url_override" placeholder="https://studio.yourdomain.com" aria-label="Own domain"><span class="help">Only if you point your own domain at this server later. Leave empty to use the built-in link. Add the new redirect URI to your Google app too.</span><button class="btn sm" type="submit">Save</button></form></details>` : ''}</section></div></div>`);
   if (S.user.role === 'owner') api('GET', '/api/settings/advanced').then(a => { const i = document.querySelector('[name=public_url_override]'); if (i) i.value = a.public_url_override || ''; }).catch(() => { });
@@ -1695,6 +1736,7 @@ async function pageSettings() {
   S.acts.igapp = async v => { if (!v.ig_app_secret) delete v.ig_app_secret; await api('POST', '/api/settings', v); toast('Instagram app saved'); render(); };
   S.acts.fbapp = async v => { if (!v.fb_app_secret) delete v.fb_app_secret; await api('POST', '/api/settings', v); toast('Facebook app saved'); render(); };
   S.acts.tz = async v => { await api('POST', '/api/settings', v); S.tz = v.timezone; S.user.timezone = v.timezone; toast('Timezone saved'); render(); };
+  if (S.user.role === 'owner') mailCard();
   S.acts.pw = async (v, f) => { await api('POST', '/api/settings', v); f.reset(); toast('Password updated'); };
 }
 
@@ -1753,10 +1795,16 @@ async function pageUserReport(id) {
      <div class="row"><div class="f2"><section class="card">${hd('Daily views', 'From this user’s workspace')}${r.trend.views.some(v => v) ? areaChart(r.trend.days, r.trend.views, null, 'Daily views') : '<div class="empty">No stats yet.</div>'}</section></div>
        <div class="f1"><section class="card" style="height:100%">${hd('Uploads per day')}${barsChart(r.daily_uploads.slice(-30), 'published', null, 110)}</section></div></div>
      <div class="row"><div class="f3"><section class="card">${hd('Channels', 'Ranked by views in this period')}<div class="tbl"><div style="min-width:760px"><div class="tr th" style="grid-template-columns:minmax(200px,1.6fr) 100px 100px 90px 150px 100px"><span>Channel</span><span>IP group</span><span>Views</span><span>Uploads</span><span>Last post</span><span>State</span></div>${chans || '<div class="empty">No channels.</div>'}</div></div></section></div>
-       <div class="f1"><section class="card">${hd('Limits & access')}<form data-form="lim" style="display:flex;flex-direction:column;gap:10px"><label class="f">Max channels<input class="i" name="max_channels" type="number" min="1" value="${esc(lim.max_channels || '')}"></label><label class="f">Max IP groups<input class="i" name="max_groups" type="number" min="1" value="${esc(lim.max_groups || '')}"></label><label class="f">Posts / day cap<input class="i" name="daily_cap" type="number" min="1" value="${esc(lim.daily_cap || '')}"></label><div class="actions"><button class="btn" type="submit">Save limits</button><button class="btn" type="button" data-act="rpw">Reset password</button><button class="btn danger" type="button" data-act="udel2">Delete</button><button class="btn ${u.status === 'active' ? 'danger' : 'primary'}" type="button" data-act="susp">${u.status === 'active' ? 'Suspend' : 'Activate'}</button></div></form></section></div></div>
+       <div class="f1"><section class="card">${hd('Limits & access')}<form data-form="lim" style="display:flex;flex-direction:column;gap:10px"><label class="f">Max channels<input class="i" name="max_channels" type="number" min="1" value="${esc(lim.max_channels || '')}"></label><label class="f">Max IP groups<input class="i" name="max_groups" type="number" min="1" value="${esc(lim.max_groups || '')}"></label><label class="f">Posts / day cap<input class="i" name="daily_cap" type="number" min="1" value="${esc(lim.daily_cap || '')}"></label><div class="actions"><button class="btn" type="submit">Save limits</button><button class="btn" type="button" data-act="rlink">Send reset link</button><button class="btn" type="button" data-act="rpw">Temporary password</button><button class="btn danger" type="button" data-act="udel2">Delete</button><button class="btn ${u.status === 'active' ? 'danger' : 'primary'}" type="button" data-act="susp">${u.status === 'active' ? 'Suspend' : 'Activate'}</button></div></form></section></div></div>
      <section class="card">${hd('Activity')}${r.events.map(e => `<div style="display:flex;gap:14px;padding:10px 0;border-top:1px solid var(--line)"><span class="mono muted" style="font-size:12px;min-width:140px">${esc(tFull(e.at))}</span><span style="font-size:13px">${esc(e.message)}</span></div>`).join('') || '<div class="empty">No activity yet.</div>'}</section>`);
   S.acts.repd = d => { S.repDays = +d.n; render(); };
   S.acts.udel2 = () => deleteUserModal(id, u.name, () => go('users'));
+  S.acts.rlink = async () => {
+    const r = await api('POST', `/api/admin/users/${id}/reset-link`);
+    modal(`<h2>Reset link · ${esc(r.email)}</h2><p class="muted" style="margin:0">${r.emailed ? 'Emailed to them. You can also send this link yourself (WhatsApp, etc.).' : 'Send this link to them (WhatsApp, email…). Set up Settings → Email to send it automatically next time.'} It works once, for 24 hours.</p>
+      <div class="linkbox"><span class="kicker">Reset link</span><div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><span class="mono" style="flex:1 1 260px;word-break:break-all">${esc(r.url)}</span><button class="btn coral" data-act="copy" data-text="${esc(r.url)}">${ic('copy', 16)}Copy</button></div></div>
+      <div class="actions" style="justify-content:flex-end"><button class="btn" data-act="close">Done</button></div>`);
+  };
   S.acts.rpw = async () => {
     if (!confirm(`Give ${u.name} a new temporary password? They will be signed out.`)) return;
     const r = await api('POST', `/api/admin/users/${id}/reset-password`);
@@ -1777,9 +1825,10 @@ async function drawUpdates() {
     <div style="display:flex;gap:24px;flex-wrap:wrap;font-size:13px;margin-bottom:12px"><div><span class="mini">Running</span><div class="mono"><b>${esc(u.version)}</b> · ${u.running_from === 'update' ? 'updated copy' : 'app copy'}</div></div><div><span class="mini">Newest</span><div class="mono"><b>${esc(lt ? lt.version : '—')}</b></div></div>${u.last ? `<div><span class="mini">Last update</span><div>${esc((JSON.parse(u.last).from || '') + ' → ' + (JSON.parse(u.last).to || ''))}</div></div>` : ''}</div>
     ${u.error ? `<div class="note warn">${ic('alert', 16)}<span>${esc(u.error)}</span></div>` : ''}
     ${needsApk && lt && lt.apk ? `<div class="note info">${ic('down', 16)}<span>Install the new app once: <a class="deep" href="${esc(lt.apk)}">download APK</a>. After that, updates come here by themselves.</span></div>` : ''}
-    <div class="actions">${toggle('upauto', u.auto, 'Install updates by themselves', 'At night, checked releases from your own GitHub only')}${u.newer && !needsApk ? `<button class="btn primary" data-act="upnow">${ic('down', 16)}Update now to ${esc(lt.version)}</button>` : ''}${u.running_from === 'update' ? '<button class="btn" data-act="upback">Use the app copy</button>' : ''}</div></section>`;
+    <div class="actions">${toggle('upauto', u.auto, 'Install updates by themselves', 'At night, checked releases from your own GitHub only')}${u.newer && !needsApk ? `<button class="btn primary" data-act="upnow">${ic('down', 16)}Update ${u.fleet_role === 'hub' ? 'this phone' : 'now'} to ${esc(lt.version)}</button>` : ''}${u.fleet_role === 'hub' && !needsApk ? `<button class="btn coral" data-act="upall">${ic('down', 16)}Update all ${u.phones} phones</button>` : ''}${u.running_from === 'update' ? '<button class="btn" data-act="upback">Use the app copy</button>' : ''}</div></section>`;
   Object.assign(S.acts, {
     upauto: async () => { await api('POST', '/api/update', { auto: !u.auto }); drawUpdates(); },
+    upall: async () => { if (!confirm(`Update every phone of the studio to the newest version? Each one restarts once (about 20 seconds), within 5 minutes, and waits if it is uploading.`)) return; try { const r = await api('POST', '/api/update', { all: true }); toast(r.later ? r.message : r.restarting ? 'Updating all phones — this panel reconnects by itself' : 'All phones are asked to update — this one is already up to date'); } catch (e) { toast(e.message, true); } },
     upnow: async () => { if (!confirm(`Update to ${lt.version}? The server restarts (about 20 seconds).`)) return; try { await api('POST', '/api/update', {}); toast('Updating — the panel reconnects by itself'); } catch (e) { toast(e.message, true); } },
     upback: async () => { if (confirm('Go back to the version inside the app?')) { await api('POST', '/api/update', { action: 'back_to_app' }); toast('Restarting…'); } },
   });
@@ -1911,12 +1960,48 @@ function applyTheme() {
 applyTheme();
 try { matchMedia('(prefers-color-scheme: dark)').addEventListener('change', applyTheme); } catch (e) { /* old browser */ }
 const railMini = () => load_('dc_rail', '') === 'mini';
+const GLOGO = '<svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="true"><path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.7 29.2 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.4-.4-3.5z"/><path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.7 15.1 19 12 24 12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 16.3 4 9.7 8.3 6.3 14.7z"/><path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.1 26.7 36 24 36c-5.2 0-9.6-3.3-11.3-7.9l-6.5 5C9.5 39.6 16.2 44 24 44z"/><path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.2-2.2 4.2-4.1 5.6l6.2 5.2C37 39.2 44 34 44 24c0-1.3-.1-2.4-.4-3.5z"/></svg>';
+async function mailCard() {
+  const box = document.getElementById('mailcard'); if (!box) return;
+  let m; try { m = await api('GET', '/api/mail'); } catch (e) { return; }
+  box.innerHTML = `<section class="card" style="margin-bottom:16px">${hd('Email for password resets', 'People who forget their password get a reset link by email, sent from your mailbox.', m.ready ? chip('Working', 'ok') : chip('Off', 'neutral'))}
+    <form data-form="mailsave" style="display:flex;flex-direction:column;gap:10px">
+      <div class="form" style="grid-template-columns:minmax(0,2fr) 90px"><label class="f">SMTP server<input class="i" name="host" value="${esc(m.host || 'smtp.gmail.com')}"></label><label class="f">Port<input class="i" name="port" type="number" value="${esc(m.port || 465)}"></label></div>
+      <label class="f">Email address<input class="i" name="user" type="email" value="${esc(m.user)}" placeholder="support@… or you@gmail.com"></label>
+      <label class="f">App password<span class="pw"><input class="i" name="password" type="password" placeholder="${m.ready ? 'Saved — leave empty to keep' : '16 letters from Google'}" autocomplete="off"><button type="button" class="pw-eye" data-act="pweye" aria-label="Show password">${ic('eye', 16)}</button></span><span class="help">Gmail: turn on 2-Step Verification, then ${deep('https://myaccount.google.com/apppasswords', 'make an app password')}. Not your normal password.</span></label>
+      <label class="f">Sender name<input class="i" name="from_name" value="${esc(m.from_name)}"></label>
+      <div class="actions"><button class="btn primary" type="submit">Save</button>${m.ready ? '<button type="button" class="btn" data-act="mailtest">Send me a test</button><button type="button" class="btn danger" data-act="mailoff">Turn off</button>' : ''}</div></form></section>`;
+  S.acts.mailsave = async v => { await api('POST', '/api/mail', v); toast('Email saved'); mailCard(); };
+  S.acts.mailtest = async () => { const r = await api('POST', '/api/mail/test'); toast('Test sent to ' + r.to); };
+  S.acts.mailoff = async () => { await api('POST', '/api/mail', { clear: true }); mailCard(); };
+}
+function resetPage(token) {
+  document.getElementById('app').innerHTML = `<div class="auth"><section class="hero"><div class="brand">${BRAND(true, true)}</div><div style="flex-grow:1"></div><h1>A fresh<br>password.</h1><p>Choose a new password for your DriveCast Studio account. Every other sign-in is closed for safety.</p><div style="flex-grow:1"></div></section>
+    <section class="side"><form data-form="resetgo"><div><h2 style="font-size:28px">Choose a new password</h2><p class="muted">At least 8 characters.</p></div>
+    <label class="f">New password<span class="pw"><input class="i" name="password" type="password" required minlength="8" autocomplete="new-password"><button type="button" class="pw-eye" data-act="pweye" aria-label="Show password">${ic('eye', 16)}</button></span></label>
+    <label class="f">Same password again<span class="pw"><input class="i" name="again" type="password" required minlength="8" autocomplete="new-password"><button type="button" class="pw-eye" data-act="pweye" aria-label="Show password">${ic('eye', 16)}</button></span></label>
+    <button class="btn primary big" type="submit">Save and sign in</button><a class="linkbtn" href="#/login" style="align-self:center">Back to sign in</a></form></section></div>`;
+  S.acts.resetgo = async v => {
+    if (v.password !== v.again) throw new Error('The two passwords are not the same');
+    const r = await api('POST', '/api/auth/reset', { token, password: v.password });
+    S.user = r.user; S.tz = r.user.timezone; S.session = { user: r.user };
+    toast('Password changed — you are signed in'); location.hash = '#/dashboard'; render();
+  };
+}
+// people who are not the owner see "server", never "phone"
+function deskin(root) {
+  if (!root || !S.user || S.user.role === 'owner') return;
+  const w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const fix = t => t.replace(/\b(P|p)hones\b/g, (m, c) => c === 'P' ? 'Servers' : 'servers').replace(/\b(P|p)hone(’s|'s)?\b/g, (m, c, p2) => (c === 'P' ? 'Server' : 'server') + (p2 || ''));
+  for (let n = w.nextNode(); n; n = w.nextNode()) { if (/[Pp]hone/.test(n.nodeValue)) n.nodeValue = fix(n.nodeValue); }
+  root.querySelectorAll('[title*="hone"],[placeholder*="hone"]').forEach(e => { if (e.title) e.title = fix(e.title); if (e.placeholder) e.placeholder = fix(e.placeholder); });
+}
 const SKELETON = `<div class="skel"><div class="sk-row">${'<i class="sk sk-kpi"></i>'.repeat(4)}</div><div class="sk-row"><i class="sk sk-big"></i><i class="sk sk-side"></i></div><div class="sk-row"><i class="sk sk-line"></i></div></div>`;
 
 // numbers count up when a page opens (not on live refreshes)
 function countUp(root) {
   if (!root || (window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches)) return;
-  root.querySelectorAll('.kpi .v, .strip strong, .stg strong, .big, .ai-n').forEach(el => {
+  root.querySelectorAll('.kpi .v, .strip strong, .stg strong, .big, .ai-n, .lv').forEach(el => {
     if (el.children.length) return;
     const m = el.textContent.match(/^(\D*?)(\d[\d,]*\.?\d*)(.*)$/);
     if (!m) return;
