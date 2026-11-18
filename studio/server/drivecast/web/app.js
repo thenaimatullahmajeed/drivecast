@@ -367,7 +367,8 @@ function authPage(mode) {
       <div style="display:flex;justify-content:flex-end;margin-top:-6px"><button type="button" class="linkbtn" data-act="forgot">Forgot password?</button></div>
       <button class="btn primary big" type="submit">Sign in</button>`
       : `<div><h2 style="font-size:28px">Create your account</h2><p class="muted">You need an invite code from the server owner. Your workspace is private — your own proxies, Drive and channels.</p></div>
-      ${field('invite_code', 'Invite code', 'text', 'DC-XXXX-XXXX', 'required autocomplete="off"')}
+      ${field('invite_code', S.session && S.session.signup_mode === 'approval' ? 'Invite code (optional)' : 'Invite code', 'text', 'DC-XXXX-XXXX', (S.session && S.session.signup_mode === 'approval' ? '' : 'required ') + 'autocomplete="off"')}
+      ${S.session && S.session.signup_mode === 'approval' ? '<span class="help" style="margin-top:-6px">No code? Sign up anyway — the studio owner approves your account, usually within a day.</span>' : ''}
       ${gOn ? `<button type="button" class="btn big gbtn" data-act="gsignup">${GLOGO}Sign up with Google</button><div class="or"><span>or with email</span></div>` : ''}${field('name', 'Your name', 'text', '', 'required')}${field('email', 'Email', 'email', '', 'required autocomplete="email"')}${field('password', 'Password (8+ characters)', 'password', '', 'required minlength="8" autocomplete="new-password"')}
       <button class="btn primary big" type="submit">Create account</button>`}`;
   document.getElementById('app').innerHTML = `<div class="auth">
@@ -385,7 +386,7 @@ function authPage(mode) {
   }
   S.acts['tab-login'] = () => { history.replaceState(null, '', '#/login'); authPage('login'); };
   S.acts['tab-register'] = () => { history.replaceState(null, '', '#/register'); authPage('register'); };
-  S.acts.gsignup = () => { const i = document.querySelector('[name=invite_code]'); const code = (i && i.value.trim()) || ''; if (!code && !(S.session && S.session.open_signup)) { toast('Enter your invite code first', true); if (i) i.focus(); return; } location.href = '/oauth/google?mode=signup' + (code ? '&invite=' + encodeURIComponent(code) : ''); };
+  S.acts.gsignup = () => { const i = document.querySelector('[name=invite_code]'); const code = (i && i.value.trim()) || ''; if (!code && !(S.session && (S.session.open_signup || S.session.signup_mode === 'approval'))) { toast('Enter your invite code first', true); if (i) i.focus(); return; } location.href = '/oauth/google?mode=signup' + (code ? '&invite=' + encodeURIComponent(code) : ''); };
   S.acts.forgot = () => {
     const e = (document.querySelector('[name=email]') || {}).value || '';
     modal(`<h2>Forgot your password?</h2><p class="muted" style="margin:0">Enter the email of your account. ${S.session && S.session.email_reset ? 'We send you a link to choose a new password.' : 'The studio owner gets your request and sends you a reset link.'}</p>
@@ -401,7 +402,11 @@ function authPage(mode) {
     v.timezone = browserTz();
     const path = mode === 'setup' ? '/api/setup' : mode === 'register' ? '/api/register' : '/api/login';
     const r = await api('POST', path, v);
-    S.user = r.user; S.tz = r.user.timezone; S.session = { user: r.user };
+    if (r.pending) {
+      document.querySelector('.auth .side').innerHTML = `<div style="display:flex;flex-direction:column;gap:14px;max-width:420px"><span class="ai-ic" style="width:48px;height:48px">${ic('cal', 22)}</span><h2 style="font-size:26px;margin:0">Waiting for approval</h2><p class="muted" style="margin:0">${esc(r.message)}</p><a class="btn" href="#/login" data-act="tab-login">Back to sign in</a></div>`;
+      return;
+    }
+    S.user = r.user; S.tz = r.user.timezone; S.session = { ...S.session, user: r.user };
     location.hash = mode === 'login' ? '#/dashboard' : '#/settings';
     render();
   };
@@ -720,7 +725,7 @@ function sourceEditor(X, group, opts = {}) {
   const accLine = !group ? '' : !acc ? `<div class="note warn">${ic('alert', 16)}<span>Pool ${group.number} has no Instagram account yet. <button type="button" class="btn sm" data-act="cookies" data-id="${group.id}">${ic('cookie', 14)}Add cookies</button></span></div>`
     : acc.status === 'needs_cookies' ? `<div class="note bad">${ic('alert', 16)}<span>Pool ${group.number}’s Instagram sign-in expired. <button type="button" class="btn sm" data-act="cookies" data-id="${group.id}">Replace cookies</button></span></div>`
       : `<span class="help">Read with Pool ${group.number}’s test account @${esc(acc.username || '')}${acc.proxy_mode === 'phone' ? ' · through the phone’s own internet' : ' · through the pool IP'}.</span>`;
-  const prof = X.profile ? `<div style="display:flex;align-items:center;gap:12px;padding:12px;border-radius:12px;background:var(--paper);flex-wrap:wrap">${avatar(X.profile.username, hashI(X.profile.username), X.profile.picture, 44)}<div style="flex:1 1 200px;display:flex;flex-direction:column;gap:2px"><b>@${esc(X.profile.username)}</b><span class="muted" style="font-size:12px">${esc(X.profile.full_name || '')}${X.profile.posts != null ? ` · ${num(X.profile.posts)} posts` : ''}${X.profile.is_private ? ' · private' : ' · public'}</span></div>${X.profile.unchecked ? chip('Will be checked', 'neutral') : X.profile.is_private && !X.profile.followed ? chip('Private — follow it from the test account', 'warn') : chip('Profile found', 'ok')}</div>` : '';
+  const prof = X.profile ? `<div style="display:flex;align-items:center;gap:12px;padding:12px;border-radius:12px;background:var(--paper);flex-wrap:wrap">${avatar(X.profile.username, hashI(X.profile.username), X.profile.picture, 44)}<div style="flex:1 1 200px;display:flex;flex-direction:column;gap:2px"><b>@${esc(X.profile.username)}</b><span class="muted" style="font-size:12px">${esc(X.profile.full_name || '')}${X.profile.posts != null ? ` · ${num(X.profile.posts)} posts` : ''}${X.profile.is_private ? ' · private' : ' · public'}</span></div>${X.profile.unchecked ? chip('Will be checked', 'neutral') : X.profile.is_private && !X.profile.followed ? chip('Private — follow it from the test account', 'warn') : chip('Profile found' + (X.profile.via ? ' · ' + X.profile.via : ''), 'ok')}</div>` : '';
   const igPart = `<div style="display:flex;flex-direction:column;gap:14px">
     <label class="f">Client’s Instagram link or @handle<div style="display:flex;gap:8px;flex-wrap:wrap"><input class="i" id="srch" style="flex:1 1 240px" placeholder="instagram.com/handle or @handle" value="${esc(X.handle)}" autocomplete="off"><button type="button" class="btn primary" data-act="srccheck" ${acc && acc.status !== 'needs_cookies' ? '' : 'disabled'}>${X.checking ? '<span class="spinner"></span>Checking…' : 'Check profile'}</button></div></label>
     ${accLine}${X.err ? `<div class="note bad">${ic('alert', 16)}<span>${esc(X.err)}${X.handle ? ` <button type="button" class="btn sm" data-act="srcskip">Continue without the check</button>` : ''}${acc && acc.proxy_mode !== 'phone' ? ` <button type="button" class="btn sm" data-act="srcphone">Read through the phone’s internet</button>` : ''}</span></div>` : ''}${prof}
@@ -753,8 +758,11 @@ function srcActs(X, redraw, getGroup) {
     srccheck: async () => {
       keep();
       const h = ($('#srch') || {}).value || X.handle; X.handle = h; X.err = null; X.profile = null; X.checking = true; redraw();
-      try { X.profile = (await api('POST', '/api/ig/lookup', { group_id: getGroup().id, handle: h })).profile; X.handle = X.profile.username; }
-      catch (e) { X.err = e.message; }
+      try {
+        const p = (await api('POST', '/api/ig/lookup', { group_id: getGroup().id, handle: h })).profile;
+        X.handle = p.username;
+        X.profile = p.pending ? { ...p, unchecked: true, full_name: p.maybe_typo ? 'Could not confirm this profile — check the spelling' : 'Instagram is busy — confirmed automatically in a few minutes' } : p;
+      } catch (e) { X.err = e.message; }
       X.checking = false; redraw();
     },
     cookies: d => cookiesModal(+d.id, async () => { const g = (await api('GET', '/api/groups')).groups; if (W.groups) W.groups = g; const gg = g.find(x => x.id === +d.id); if (getGroup() && gg) Object.assign(getGroup(), gg); redraw(); }),
@@ -1112,11 +1120,12 @@ function igCard(g) {
   const a = g.instagram;
   const st = !a ? ['Not added', 'neutral', 'No Instagram account yet — needed only for clients with an Instagram source.']
     : a.status === 'needs_cookies' ? ['Sign-in expired', 'bad', 'Paste fresh cookies to continue pulling posts.']
-      : a.status === 'resting' && a.paused_until > Date.now() / 1000 ? ['Resting', 'warn', `Instagram asked us to slow down · resumes ${rel(a.paused_until)}`]
+      : a.status === 'resting' && a.paused_until > Date.now() / 1000 ? ['Resting', 'warn', `Instagram asked this account to slow down · resumes ${rel(a.paused_until)} · meanwhile another test account reads for this pool`]
         : ['Connected', 'ok', `${a.sources} Instagram source(s) · ${a.today} action(s) today · reads via ${a.proxy_mode === 'phone' ? 'phone internet' : 'group IP'}`];
   return `<div class="igbox"><span style="width:34px;height:34px;border-radius:10px;background:#FDEBE6;color:#B83A1F;display:inline-flex;align-items:center;justify-content:center">${ic('ig', 18)}</span>
     <div style="flex:1;min-width:160px;display:flex;flex-direction:column;gap:2px"><span style="display:flex;align-items:center;gap:8px"><b style="font-size:13px">Instagram ${a && a.username ? '· @' + esc(a.username) : ''}</b>${chip(st[0], st[1])}</span><span class="muted" style="font-size:12px">${esc(st[2])}</span></div>
-    <button class="btn sm ${!a || a.status === 'needs_cookies' ? 'primary' : ''}" data-act="cookies" data-id="${g.id}">${ic('cookie', 14)}${a ? 'Replace cookies' : 'Add cookies'}</button></div>`;
+    <button class="btn sm ${!a || a.status === 'needs_cookies' ? 'primary' : ''}" data-act="cookies" data-id="${g.id}">${ic('cookie', 14)}${a ? 'Replace cookies' : 'Add cookies'}</button></div>
+    ${a && a.shared_with && a.shared_with.length ? `<div class="note warn" style="margin-top:-4px">${ic('alert', 16)}<span><b>@${esc(a.username)} is also used by Pool ${a.shared_with.join(', ')}.</b> Instagram counts one account’s requests together, so these pools slow each other down. Give each pool its own test account (vault → Use).</span></div>` : ''}`;
 }
 function fbCard(g) {
   const fb = (S.fb && S.fb.groups || []).find(x => x.group_id === g.id) || { account: null, pages: [] };
@@ -1298,7 +1307,7 @@ async function pageChannels() {
     const gdown = c.group && c.group.status === 'down';
     const routeChips = `<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap"><span class="chip ${gdown ? 'bad' : 'info'}">${ic('net', 14)}Pool ${c.group ? c.group.number : '—'}</span><span class="muted">→</span>${(c.youtube_on ? '<span class="chip neutral">' + ic('yt', 14) + 'YouTube</span>' : '') + (c.facebook ? `<span class="chip ${c.facebook.ok ? 'neutral' : 'warn'}">${ic('fb', 14)}FB</span>` : '') + (c.instagram ? `<span class="chip ${c.instagram.ok ? 'neutral' : 'warn'}">${ic('ig', 14)}IG</span>` : '')}<span class="muted">←</span>${(c.sources || []).map(sx => `<span class="chip ${sx.error_code ? 'warn' : sx.state === 'paused' ? 'neutral' : 'coralc'}" title="${esc(SRC[sx.kind] ? SRC[sx.kind][1] : sx.kind)} source">${ic(SRC[sx.kind] ? SRC[sx.kind][0] : 'ig', 14)}${esc(sx.handle.startsWith('@') ? sx.handle : '@' + sx.handle)}</span>`).join('')}${c.sources && c.sources.length ? '<span class="muted">+</span>' : ''}<span class="chip neutral" style="max-width:170px" title="${esc(c.folder_name)}">${ic('folder', 14)}<span class="ell">${esc(c.folder_name || '—')}</span></span></div>`;
     const t = c.today || {};
-    return `<div class="tr" style="${COLS}"><div class="who">${avatar(c.title, hashI(c.title), c.thumbnail, 38)}<div><a class="ell" href="#/channel/${c.id}" style="font-weight:700;color:var(--ink);text-decoration:none">${esc(c.title)}</a><span class="muted" style="font-size:12px">${handle(c.handle)} · ${c.plan.posts_per_day} / day · ${esc(c.plan.audience)}</span></div></div>
+    return `<div class="tr" style="${COLS}"><div class="who">${avatar(c.title, hashI(c.title), c.thumbnail, 38)}<div><a class="ell" href="#/channel/${c.id}" style="font-weight:700;color:var(--ink);text-decoration:none">${esc(c.title)}</a><span class="muted" style="font-size:12px">${handle(c.handle)} · ${c.plan.posts_per_day} / day · ${esc(c.plan.audience)}</span>${c.auth_email ? `<span class="mini ell" title="Google account that authorized this channel" style="display:flex;align-items:center;gap:4px">${ic('key', 11)}${esc(c.auth_email)}</span>` : c.platform === 'youtube' ? '<span class="mini" title="Reconnect YouTube once to show which Google account authorized it">authorized by — (reconnect to show)</span>' : ''}</div></div>
       <div>${routeChips}${c.state_reason ? `<div class="muted" style="font-size:12px;margin-top:6px">${esc(c.state_reason)}</div>` : ''}</div>
       <span class="mono">${t.done || 0} / ${t.total || 0}</span><span style="font-size:13px">${c.live ? liveBar(c.live) : c.next ? `<b class="mono" data-count="${c.next.due_at}" style="font-size:14px">${countdown(c.next.due_at)}</b><br><span class="muted" style="font-size:12px">${esc(tFull(c.next.due_at))}</span>` : '—'}</span>
       <span>${gdown && c.state === 'live' ? chip('Held · proxy', 'warn') : chip(names[c.state] || c.state, tones[c.state] || 'neutral')}</span>${c.series ? spark(c.series, 80, 26, '#0E1116', false) : '<span class="muted">—</span>'}
@@ -1416,7 +1425,7 @@ async function pageChannel(id) {
   const actions = `${d.sources.length ? `<button class="btn" data-act="srccheckall">${ic('refresh', 16)}Check sources now</button>` : ''}<button class="btn" data-act="routeedit">${ic('edit', 16)}Edit route</button><button class="btn primary" data-act="srcadd">${ic('plus', 16)}Add source</button>`;
   const head = `<div style="display:flex;align-items:center;gap:12px">${avatar(c.title, hashI(c.title), c.thumbnail, 44)}<span>${esc(c.title)}</span></div>`;
   const warn = d.sources.filter(s => s.error && s.error.fix).map(s => `<div class="note warn" style="margin-bottom:12px">${ic('alert', 16)}<span><b>${esc(SRC[s.kind][1])}: ${esc(s.error.title)}.</b> ${esc(s.error.message)} <button class="btn sm" data-act="srcopen" data-id="${s.id}">Open</button></span></div>`).join('');
-  mount('channels', c.title, `${d.sources.map(s => SRC[s.kind][1]).concat(c.folder_id ? ['Drive'] : []).join(' + ') || 'No source yet'} → ${d.destinations.map(x => DST[x][1]).join(' + ') || 'no destination yet'} · Pool ${c.group ? c.group.number : '—'} · ${pp}/day`, 'Client', actions,
+  mount('channels', c.title, `${d.sources.map(s => SRC[s.kind][1]).concat(c.folder_id ? ['Drive'] : []).join(' + ') || 'No source yet'} → ${d.destinations.map(x => DST[x][1]).join(' + ') || 'no destination yet'} · Pool ${c.group ? c.group.number : '—'} · ${pp}/day${c.auth_email ? ' · authorized by ' + esc(c.auth_email) : ''}`, 'Client', actions,
     `${acc && acc.error ? `<div class="note bad" style="margin-bottom:12px">${ic('alert', 16)}<span><b>${esc(acc.error.title)}.</b> ${esc(acc.error.message)} <button class="btn sm" data-act="cookies" data-id="${c.group.id}">Replace cookies</button></span></div>` : ''}${warn}
      ${routeMap(c, d)}${pipe}
      <div class="dgrid"><div class="s7">${queue}</div><div class="s5" style="display:flex;flex-direction:column;gap:12px">${encCard}${skCard}</div></div>
@@ -1760,9 +1769,9 @@ async function pageUsers(id) {
   const now = Date.now() / 1000;
   const inv = invites.map(k => { const s = k.used_by ? ['Used', 'neutral'] : k.expires_at < now ? ['Expired', 'warn'] : ['Unused', 'info']; return `<div style="display:flex;align-items:center;gap:12px;padding:12px 0;border-top:1px solid var(--line);flex-wrap:wrap"><div style="flex:1 1 200px"><b>${esc(k.label)}</b><div class="muted" style="font-size:12px">${k.used_by ? `Registered by ${esc(k.used_name)} · ${esc(tFull(k.used_at))}` : `Created ${esc(rel(k.created_at))} · expires ${esc(rel(k.expires_at))}`}</div></div><span class="mono" style="font-weight:500">${esc(k.code)}</span>${chip(s[0], s[1], false)}${!k.used_by ? `<button class="btn sm" data-act="copy" data-text="${esc(k.code)}">${ic('copy', 14)}</button><button class="btn sm danger" data-act="revoke" data-code="${esc(k.code)}">Revoke</button>` : ''}</div>`; }).join('');
   mount('users', 'Users', 'Every account, on the server that holds it — drag a card to move someone', 'Admin', `<button class="btn primary" data-act="newcode">${ic('key', 16)}New code</button>`,
-    `<div id="uboard"></div><section class="card" style="margin-bottom:16px">${hd('Accounts on this server', 'Open a student to see their 30-day report (new tab). You see usage — never their passwords or tokens.')}<div class="tbl"><div style="min-width:900px"><div class="tr th" style="${COLS}"><span>User</span><span>Role</span><span>Channels</span><span>Pools</span><span>Today</span><span>Status</span><span></span></div>${rows}</div></div></section>
+    `<div id="upend"></div><div id="uboard"></div><section class="card" style="margin-bottom:16px">${hd('Accounts on this server', 'Open a student to see their 30-day report (new tab). You see usage — never their passwords or tokens.')}<div class="tbl"><div style="min-width:900px"><div class="tr th" style="${COLS}"><span>User</span><span>Role</span><span>Channels</span><span>Pools</span><span>Today</span><span>Status</span><span></span></div>${rows}</div></div></section>
      <section class="card">${hd('Invite codes', 'One code = one account. It turns Used the moment the student registers.')}${inv || '<div class="empty">No codes yet. Press “New code”.</div>'}</section>`);
-  drawBoard();
+  drawBoard(); drawPending();
   S.acts.udel = d => deleteUserModal(d.id, d.name, () => render());
   S.acts.revoke = async d => { await api('POST', `/api/admin/invites/${d.code}/revoke`); render(); };
   S.acts.newcode = () => {
@@ -2005,6 +2014,18 @@ async function updatePill() {
   p.classList.remove('hidden');
 }
 // ------------------------------------------------------------------ Users across servers: drag and drop between servers
+async function drawPending() {
+  const box = document.getElementById('upend'); if (!box) return;
+  let d; try { d = await api('GET', '/api/admin/pending'); } catch (e) { return; }
+  const rows = d.users.map(u => `<div class="tr" style="grid-template-columns:minmax(0,2fr) 140px auto"><div class="who">${avatar(u.name, hashI(u.name), null, 30)}<div><b>${esc(u.name)}</b><span class="mini">${esc(u.email)}${u.google ? ' · Google' : ''}</span></div></div><span class="mini">${esc(rel(u.created_at))}</span>
+    <div class="actions" style="justify-content:flex-end"><button class="btn sm primary" data-act="pappr" data-id="${u.id}">${ic('check', 14)}Approve</button><button class="btn sm danger" data-act="prej" data-id="${u.id}">Reject</button></div></div>`).join('');
+  box.innerHTML = `<section class="card" style="margin-bottom:16px">${hd('Sign-ups', 'Without an invite code, a new account waits here until you approve it. With a code it works at once.',
+    `<div class="seg"><button class="${d.mode === 'approval' ? 'on' : ''}" data-act="pmode" data-v="approval">Approval</button><button class="${d.mode === 'invite' ? 'on' : ''}" data-act="pmode" data-v="invite">Invite only</button></div>`)}
+    ${d.users.length ? `<div class="tbl"><div>${rows}</div></div>` : `<div class="empty" style="padding:14px">${d.mode === 'approval' ? 'Nobody is waiting.' : 'Only invite codes can create accounts.'}</div>`}</section>`;
+  S.acts.pmode = async x => { await api('POST', '/api/admin/pending', { mode: x.v }); toast(x.v === 'approval' ? 'Sign-ups without a code now wait for your approval' : 'Only invite codes can create accounts'); drawPending(); };
+  S.acts.pappr = async x => { const r = await api('POST', `/api/admin/users/${x.id}/approve`, {}); toast(r.emailed ? 'Approved — they got an email' : 'Approved — they can sign in now'); render(); };
+  S.acts.prej = async x => { if (!confirm('Reject and delete this sign-up?')) return; await api('POST', `/api/admin/users/${x.id}/reject`); drawPending(); };
+}
 async function drawBoard() {
   const box = document.getElementById('uboard'); if (!box) return;
   let d; try { d = await api('GET', '/api/fleet/users'); } catch (e) { return; }
@@ -2285,7 +2306,7 @@ async function pageAccounts() {
   const stat = (l, v) => `<div><span class="mini">${l}</span><b class="mono">${v}</b></div>`;
   const card = a => `<a class="acc-card" href="/#/account/${tab}/${a.id}" target="_blank" rel="noopener" title="Open deep stats in a new tab">
       <div class="acc-top">${avatar(a.name, hashI(a.name), a.picture, 44)}<div style="min-width:0;flex:1"><b class="ell" style="display:block;font-size:14px">${esc(a.name)}</b>
-        <span class="mini ell" style="display:block">${a.pool ? `Pool ${esc(a.pool)}` : 'no pool'}${a.client ? ' · ' + esc(a.client) : a.handle ? ' · ' + esc(a.handle) : ''}</span></div>
+        <span class="mini ell" style="display:block">${a.pool ? `Pool ${esc(a.pool)}` : 'no pool'}${a.client ? ' · ' + esc(a.client) : a.handle ? ' · ' + esc(a.handle) : ''}</span>${a.auth_email || a.authorized_by ? `<span class="mini ell" style="display:block">${ic('key', 11)} ${esc(a.auth_email || a.authorized_by)}</span>` : ''}</div>
         ${tab === 'youtube' ? chip(a.state === 'live' ? 'Live' : a.state, a.state === 'live' ? 'ok' : a.state === 'attention' ? 'bad' : 'neutral') : tab === 'instagram' && a.status !== 'ok' ? chip('Reconnect', 'bad') : chip('Linked', 'ok')}</div>
       <div class="acc-stats">${tab === 'youtube' ? stat('Subscribers', num(a.subscribers)) + stat('All-time views', num(a.total_views)) + stat('Videos', num(a.videos)) : stat('Posts', num(a.posts)) + stat('Posts · 7 d', num(a.posts_7d)) + stat('Last post', a.last_post ? esc(rel(a.last_post)) : '—')}</div>
       <div class="acc-foot"><span>${tab === 'youtube' ? `${num(a.posts)} posts by DriveCast · ${num(a.views)} views` : a.failed_7d ? `<span style="color:var(--bad)">${a.failed_7d} failed this week</span>` : 'all fine this week'}</span><span class="acc-open">Deep stats ${ic('ext', 13)}</span></div></a>`;
@@ -2320,7 +2341,7 @@ async function pageAccount(kind, id) {
     <b class="mono" style="text-align:right">${d.has_views ? num(p.views) : '—'}</b><span class="mono mini" style="text-align:right">${d.has_views && p.first_day != null ? num(p.first_day) + ' d1' : ''}</span><span class="mono mini" style="text-align:right">${p.likes != null ? num(p.likes) + ' ♥' : ''}</span>
     <span>${p.video_id && kind === 'youtube' ? `<a class="tb-btn" style="width:30px;height:30px" href="https://youtu.be/${esc(p.video_id)}" target="_blank" rel="noopener" aria-label="Open">${ic('ext', 13)}</a>` : ''}</span></div>`).join('');
   const top = d.top.length ? `<section class="card">${hd('Top posts')}${d.top.map((t, i) => `<div class="lens-best" style="margin-bottom:8px;grid-template-columns:24px minmax(0,1fr) auto"><b class="mono">${i + 1}</b><b class="ell">${esc(t.title)}</b><b class="mono">${num(t.views)}</b></div>`).join('')}</section>` : '';
-  mount('accounts', h.name, `${DST[kind][1]}${h.handle ? ' · ' + esc(h.handle) : ''}${h.stats_at ? ' · stats ' + esc(rel(h.stats_at)) : ''}`, 'Account', `${h.url ? `<a class="btn" href="${esc(h.url)}" target="_blank" rel="noopener">${ic('ext', 15)}Open on ${DST[kind][1]}</a>` : ''}${h.client_id ? `<a class="btn" href="#/channel/${h.client_id}">${ic('tv', 15)}Client page</a>` : ''}`,
+  mount('accounts', h.name, `${DST[kind][1]}${h.handle ? ' · ' + esc(h.handle) : ''}${h.auth_email ? ' · authorized by ' + esc(h.auth_email) : ''}${h.stats_at ? ' · stats ' + esc(rel(h.stats_at)) : ''}`, 'Account', `${h.url ? `<a class="btn" href="${esc(h.url)}" target="_blank" rel="noopener">${ic('ext', 15)}Open on ${DST[kind][1]}</a>` : ''}${h.client_id ? `<a class="btn" href="#/channel/${h.client_id}">${ic('tv', 15)}Client page</a>` : ''}`,
     `<div class="kp" style="grid-template-columns:repeat(${kind === 'youtube' ? 6 : 4},minmax(0,1fr))">${kp}</div>
      ${!d.has_views ? `<div class="note info" style="margin-bottom:12px">${ic('alert', 16)}<span>${DST[kind][1]} views are not read yet — posts, timing and reliability are shown. YouTube accounts show full view stats.</span></div>` : ''}
      ${growth ? `<div class="dgrid"><div class="s8">${growth}</div><div class="s4">${top || origins}</div></div>` : ''}

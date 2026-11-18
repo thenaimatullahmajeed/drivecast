@@ -15,6 +15,7 @@ TOKEN_URL = "https://oauth2.googleapis.com/token"
 YOUTUBE_SCOPES = [
     "https://www.googleapis.com/auth/youtube.upload",
     "https://www.googleapis.com/auth/youtube.readonly",
+    "https://www.googleapis.com/auth/userinfo.email",  # basic scope: shows which Google account authorized the channel
 ]
 DRIVE_SCOPES = [
     "https://www.googleapis.com/auth/drive",

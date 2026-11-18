@@ -326,6 +326,11 @@ SCHEMA = [
     ALTER TABLE workspaces ADD COLUMN moved_to TEXT;
     ALTER TABLE fleet_devices ADD COLUMN users_json TEXT;
     """,
+    # version 15: which Google account authorized each YouTube channel
+    """
+    ALTER TABLE channels ADD COLUMN auth_email TEXT;
+    ALTER TABLE users ADD COLUMN approval TEXT;
+    """,
 ]
 
 

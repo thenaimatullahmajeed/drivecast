@@ -320,3 +320,52 @@ def best_video_plan(item):
         return {"mode": "dash", "video": dash["video"]["url"], "audio": (dash.get("audio") or {}).get("url"),
                 "short": dash["video"].get("height") or 0}
     return None
+
+
+# ------------------------------------------------------------------ profile without signing in (public page)
+def public_profile(session, handle):
+    """A public profile, read like a visitor who is not signed in. Used when every test account is resting.
+    1) the web profile endpoint without cookies, 2) the profile page's own meta tags."""
+    handle = clean_handle(handle)
+    hdr = {"User-Agent": UA, "X-IG-App-ID": APP_ID, "Accept": "*/*", "Accept-Language": "en-US,en;q=0.9",
+           "Referer": f"{BASE}/{handle}/", "X-Requested-With": "XMLHttpRequest"}
+    try:
+        r = session.get(BASE + "/api/v1/users/web_profile_info/", params={"username": handle}, headers=hdr,
+                        timeout=(15, 30), allow_redirects=False)
+        if r.status_code == 200 and "json" in r.headers.get("Content-Type", ""):
+            u = ((r.json() or {}).get("data") or {}).get("user")
+            if u:
+                return {"id": str(u.get("id")), "username": u.get("username") or handle, "full_name": u.get("full_name"),
+                        "picture": u.get("profile_pic_url"), "is_private": bool(u.get("is_private")), "followed": False,
+                        "posts": (u.get("edge_owner_to_timeline_media") or {}).get("count")}
+        if r.status_code == 404:
+            raise CodedError("IG_PROFILE_NOT_FOUND", "public 404", handle=handle)
+    except CodedError:
+        raise
+    except Exception:
+        pass
+    try:
+        r = session.get(f"{BASE}/{handle}/", timeout=(15, 30), allow_redirects=True,
+                        headers={"User-Agent": UA, "Accept": "text/html,application/xhtml+xml", "Accept-Language": "en-US,en;q=0.9"})
+    except Exception as e:
+        raise CodedError("IG_UNKNOWN", f"public page: {e}", handle=handle)
+    if r.status_code == 404:
+        raise CodedError("IG_PROFILE_NOT_FOUND", "public page 404", handle=handle)
+    if r.status_code == 429:
+        raise CodedError("IG_RATE_LIMIT", "public page 429")
+    html = r.text or ""
+    desc = re.search(r'<meta[^>]+property="og:description"[^>]+content="([^"]+)"', html) or \
+        re.search(r'<meta[^>]+content="([^"]+)"[^>]+property="og:description"', html)
+    if not desc:
+        if "Page Not Found" in html or "isn't available" in html:
+            raise CodedError("IG_PROFILE_NOT_FOUND", "public page not found", handle=handle)
+        raise CodedError("IG_UNKNOWN", "public page without profile data", handle=handle)
+    import html as _h
+    d = _h.unescape(desc.group(1))
+    img = re.search(r'<meta[^>]+property="og:image"[^>]+content="([^"]+)"', html)
+    name = re.search(r"from (.+?) \(@", d)
+    posts = re.search(r"([\d.,]+[KkMm]?) Posts", d)
+    pid = re.search(r'"profile_id":"(\d+)"', html) or re.search(r'"profilePage_(\d+)"', html) or re.search(r'"user_id":"(\d+)"', html)
+    return {"id": pid.group(1) if pid else None, "username": handle, "full_name": _h.unescape(name.group(1)) if name else None,
+            "picture": _h.unescape(img.group(1)) if img else None, "is_private": "This account is private" in html,
+            "followed": False, "posts": posts.group(1) if posts else None}

@@ -101,7 +101,8 @@ def _start_session(req, u):
 def session_info(req):
     owner = db.one("SELECT 1 FROM users WHERE role='owner'")
     return {"user": user_view(req.user) if req.user else None, "needs_setup": not owner, "version": VERSION,
-            "open_signup": db.meta_get("open_signup") == "1", "google_login": _google_login_ready(), "email_reset": _email_ready()}
+            "open_signup": db.meta_get("open_signup") == "1", "google_login": _google_login_ready(), "email_reset": _email_ready(),
+            "signup_mode": signup_mode()}
 
 
 def _google_login_ready():
@@ -139,6 +140,8 @@ def login(req):
         _login_fail[key] = fails + [time.time()]
         raise HttpError(401, "Email or password is wrong")
     _moved_check(u)
+    if u.get("approval") == "pending":
+        raise HttpError(403, PENDING_MSG)
     if u["status"] != "active":
         raise HttpError(403, "This account is suspended. Contact the server owner.")
     _login_fail.pop(key, None)
@@ -157,10 +160,16 @@ def register(req):
     b = req.json
     from . import fleet
     if not (b.get("invite_code") or "").strip():
+        need(b, "name", "email", "password")
+        if not fleet.open_signup() and signup_mode() == "approval":
+            # no invite: the account waits until the owner approves it
+            u = _create_user(b["name"], b["email"], b["password"], "student", b.get("timezone"),
+                             db.jload(db.meta_get("open_limits"), {}) or {"max_channels": 3}, None)
+            _mark_pending(u)
+            return {"pending": True, "message": PENDING_MSG}
         # open sign-ups on this phone (owner's choice, with a cap)
         if not fleet.open_signup():
             raise HttpError(403, "You need an invite code from the owner")
-        need(b, "name", "email", "password")
         if fleet.users_count() >= fleet.max_users():
             raise HttpError(403, "This studio is full right now. Try again later or ask for an invite.")
         lim = db.jload(db.meta_get("open_limits"), {}) or {"max_channels": 3}
@@ -327,6 +336,10 @@ def _group_out(g):
         "proxy_mode": acc.get("proxy_mode") or "group",
         "checked_at": acc["checked_at"], "paused_until": acc["paused_until"], "today": acc["day_count"] if acc["day"] == time.strftime("%Y-%m-%d", time.gmtime()) else 0,
         "sources": db.one("SELECT COUNT(*) n FROM sources s JOIN channels c ON c.id=s.channel_id WHERE c.group_id=? AND s.state='active'", (g["id"],))["n"],
+        "shared_with": [r["number"] for r in db.all("""SELECT g2.number FROM ig_accounts a JOIN ip_groups g2 ON g2.id=a.group_id
+                        WHERE a.id!=? AND a.workspace_id=? AND ((a.ig_user_id=? AND a.ig_user_id IS NOT NULL) OR
+                        (a.username=? AND a.username IS NOT NULL)) ORDER BY g2.number""",
+                        (acc["id"], acc["workspace_id"], acc["ig_user_id"], acc["username"]))],
     }
     lat = out.get("latency_ms")
     out["health"] = "down" if g["status"] == "down" else ("slow" if lat and lat > 2500 else "good" if lat else "unknown")
@@ -642,20 +655,26 @@ def oauth_callback(req):
         sealed = security.seal(json.dumps(tok))
         p = platform("youtube")
         me = p.whoami(s, TokenBox(sealed, cid, sec, lambda x: None))
+        auth_email = None
+        try:
+            ur = s.get("https://www.googleapis.com/oauth2/v2/userinfo", headers={"Authorization": "Bearer " + tok["access_token"]}, timeout=20)
+            auth_email = (ur.json() or {}).get("email") if ur.status_code < 400 else None
+        except Exception:
+            auth_email = None
         existing = db.one("SELECT * FROM channels WHERE workspace_id=? AND platform='youtube' AND external_id=?",
                           (ws["id"], me["external_id"]))
         if existing:
             db.run("""UPDATE channels SET token_enc=?, token_client=?, title=?, handle=?, thumbnail=?, subscribers=?, total_views=?,
                       state=CASE WHEN state='attention' THEN 'live' ELSE state END, state_reason=NULL,
-                      consecutive_failures=0, paused_until=NULL, yt_scope=? WHERE id=?""",
+                      consecutive_failures=0, paused_until=NULL, yt_scope=?, auth_email=COALESCE(?,auth_email) WHERE id=?""",
                    (sealed, cid, me["title"], me["handle"], me["thumbnail"], me["subscribers"], me["total_views"],
-                    tok.get("scope"), existing["id"]))
+                    tok.get("scope"), auth_email, existing["id"]))
             chid = existing["id"]
         else:
             chid = db.run("""INSERT INTO channels(workspace_id,platform,external_id,title,handle,thumbnail,token_enc,group_id,
-                             subscribers,total_views,state,created_at,token_client,yt_scope) VALUES(?,?,?,?,?,?,?,?,?,?,'setup',?,?,?)""",
+                             subscribers,total_views,state,created_at,token_client,yt_scope,auth_email) VALUES(?,?,?,?,?,?,?,?,?,?,'setup',?,?,?,?)""",
                           (ws["id"], "youtube", me["external_id"], me["title"], me["handle"], me["thumbnail"], sealed, g["id"],
-                           me["subscribers"], me["total_views"], time.time(), cid, tok.get("scope")))
+                           me["subscribers"], me["total_views"], time.time(), cid, tok.get("scope"), auth_email))
         db.run("UPDATE connect_links SET used_at=?, result_json=? WHERE code=?", (time.time(), json.dumps({"channel_id": chid}), code))
         return 200, _page("Channel connected", f"<b>{html.escape(me['title'])}</b> is connected. You can close this tab.")
     except DriveCastError as e:
@@ -1198,24 +1217,17 @@ def del_ig_account(req, gid):
 
 @route("POST", "/api/ig/lookup")
 def ig_lookup(req):
+    """Check a client's profile: every test account in turn, then the public page. Instagram being busy never
+    stops the wizard — the client is accepted and checked automatically as soon as Instagram answers."""
     b = req.json
     need(b, "group_id", "handle")
     g = _own_group(req, b["group_id"])
-    acc = db.one("SELECT * FROM ig_accounts WHERE group_id=?", (g["id"],))
-    if not acc:
-        raise HttpError(400, f"Pool {g['number']} has no Instagram account yet. Add its cookies on the Pools page.")
     try:
-        handle = _ig.clean_handle(b["handle"])
-        cl = igsync.client_for(acc, g)
-        cl.min_gap = (1, 2)
-        p = cl.profile(handle)
+        p = igsync.lookup(req.ws, g, b["handle"])
+    except ValueError as e:
+        raise HttpError(400, str(e))
     except Exception as e:
         raise _ig_error(e, handle=b.get("handle"), group=g["number"])
-    finally:
-        try:
-            cl.min_gap = (7, 14)
-        except Exception:
-            pass
     return {"profile": p}
 
 
@@ -2567,6 +2579,10 @@ def google_login_callback(req, l):
         w = store.workspace(u["workspace_id"])
         if w and w.get("moved_to"):
             return 302, {"Location": _panel(w["moved_to"]) + "/oauth/google?mode=login&hint=" + email}
+        if u.get("approval") == "pending":
+            if not u.get("google_sub"):
+                db.run("UPDATE users SET google_sub=? WHERE id=?", (sub, u["id"]))
+            return 200, _page("Waiting for approval", PENDING_MSG, False)
         if u["status"] != "active":
             return 403, _page("Account suspended", "Contact the studio owner.", False)
         if not u.get("google_sub"):
@@ -2597,7 +2613,12 @@ def google_login_callback(req, l):
             host, _ = fleet.pick_for_signup(None)
             if host and host != fleet.my_host():
                 return 302, {"Location": _panel(host) + "/oauth/google?mode=signup&hint=" + email}
-        return 403, _page("No account for this email", "Sign-ups are by invite. Open Create account, enter your invite code, then use Google.", False)
+        if signup_mode() != "approval":
+            return 403, _page("No account for this email", "Sign-ups are by invite. Open Create account, enter your invite code, then use Google.", False)
+        u = _create_user(name, email, security.token(24), "student", tz, db.jload(db.meta_get("open_limits"), {}) or {"max_channels": 3}, None)
+        db.run("UPDATE users SET google_sub=? WHERE id=?", (sub, u["id"]))
+        _mark_pending(u)
+        return 200, _page("Waiting for approval", PENDING_MSG, False)
     db.run("UPDATE users SET google_sub=? WHERE id=?", (sub, u["id"]))
     _start_session(req, u)
     return 302, {"Location": "/#/settings"}
@@ -2778,3 +2799,80 @@ def fleet_users_move(req):
         return usermove.move(b["email"], b["from"], b["to"])
     except ValueError as e:
         raise HttpError(400, str(e))
+
+
+# ---------------------------------------------------------------- sign-ups that wait for the owner's approval
+PENDING_MSG = ("Your account is waiting for the studio owner's approval. You will be able to sign in as soon as it is approved — "
+               "usually within a day.")
+
+
+def signup_mode():
+    """invite = only with a code · approval = without a code the account waits for the owner · open (fleet setting)."""
+    return db.meta_get("signup_mode") or "approval"
+
+
+def _mark_pending(u):
+    db.run("UPDATE users SET approval='pending' WHERE id=?", (u["id"],))
+    db.run("DELETE FROM sessions WHERE user_id=?", (u["id"],))
+    o = _owner()
+    msg = f"New sign-up waiting for your approval: {u['name']} ({u['email']}). Users → Waiting for approval."
+    db.event("warn", "account", msg, o and o["workspace_id"], None, "SIGNUP_PENDING")
+    try:
+        from . import notify
+        notify.alert(f"su:{u['id']}", msg)
+    except Exception:
+        pass
+
+
+@route("GET", "/api/admin/pending", auth="owner")
+def pending_list(req):
+    return {"mode": signup_mode(), "users": [dict(id=u["id"], name=u["name"], email=u["email"], created_at=u["created_at"],
+                                                  google=bool(u.get("google_sub")))
+                                             for u in db.all("SELECT * FROM users WHERE approval='pending' ORDER BY created_at")]}
+
+
+@route("POST", "/api/admin/pending", auth="owner")
+def pending_mode(req):
+    m = req.json.get("mode")
+    if m not in ("invite", "approval"):
+        raise HttpError(400, "Choose invite or approval")
+    db.meta_set("signup_mode", m)
+    return {"mode": m}
+
+
+@route("POST", "/api/admin/users/(\\d+)/approve", auth="owner")
+def approve_user(req, uid):
+    from . import mail
+    u = db.one("SELECT * FROM users WHERE id=?", (int(uid),))
+    if not u or u.get("approval") != "pending":
+        raise HttpError(404, "No waiting sign-up with this id")
+    lim = req.json.get("limits") if isinstance(req.json.get("limits"), dict) else None
+    db.run("UPDATE users SET approval=NULL, status='active' WHERE id=?", (u["id"],))
+    if lim:
+        db.run("UPDATE users SET limits_json=? WHERE id=?", (json.dumps({k: int(v) for k, v in lim.items() if str(v).isdigit()}), u["id"]))
+    db.run("UPDATE events SET resolved=1 WHERE code='SIGNUP_PENDING' AND message LIKE ?", (f"%{u['email']}%",))
+    try:
+        from . import notify
+        notify.alert(f"su:{u['id']}", f"Approved: {u['name']} ({u['email']})", solved=True)
+    except Exception:
+        pass
+    emailed = False
+    if mail.ready():
+        try:
+            link = public_base(req)
+            mail.send(u["email"], "Your DriveCast account is ready",
+                      f"Hi {u['name']},\n\nYour DriveCast Studio account was approved. Sign in here:\n{link}\n\nDriveCast Studio")
+            emailed = True
+        except Exception:
+            emailed = False
+    return {"ok": True, "emailed": emailed}
+
+
+@route("POST", "/api/admin/users/(\\d+)/reject", auth="owner")
+def reject_user(req, uid):
+    u = db.one("SELECT * FROM users WHERE id=?", (int(uid),))
+    if not u or u.get("approval") != "pending":
+        raise HttpError(404, "No waiting sign-up with this id")
+    delete_workspace_data(u)
+    db.run("UPDATE events SET resolved=1 WHERE code='SIGNUP_PENDING' AND message LIKE ?", (f"%{u['email']}%",))
+    return {"ok": True}

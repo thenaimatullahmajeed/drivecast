@@ -122,6 +122,7 @@ def _account_problem(acc, e, group):
         until = now + min(12 * 3600, 1800 * (2 ** (n - 1)))
         db.run("UPDATE ig_accounts SET status='resting', paused_until=?, backoff=?, error_code=?, error_detail=?, updated_at=? WHERE id=?",
                (until, n, e.code, e.detail, now, acc["id"]))
+        _rest_same_account(acc, until)
         msg = err_info(e.code, group=group["number"], until=time.strftime("%H:%M UTC", time.gmtime(until)))
         db.event("warn", "instagram", msg["message"], acc["workspace_id"], None, e.code, e.detail)
     elif e.code == "IG_FEEDBACK":
@@ -324,9 +325,12 @@ def _next_item(src, lane):
                       AND IFNULL(next_try,0)<=? ORDER BY {order} LIMIT 1""", (src["id"], lane, time.time()))
 
 
-def account_pass(acc, now=None):
+def account_pass(acc, now=None, serve=None):
+    """One step for one test account. serve = another pool whose own account cannot read right now (resting,
+    expired or missing): this account reads for it meanwhile. Posting is never affected — reading only."""
     now = now or time.time()
     g = store.group(acc["group_id"])
+    sg = serve or g
     if not g or (g["status"] == "down" and acc.get("proxy_mode") != "phone") or acc["status"] == "needs_cookies":
         return "blocked"
     if (acc["paused_until"] or 0) > now or _next_action.get(acc["id"], 0) > now:
@@ -337,7 +341,7 @@ def account_pass(acc, now=None):
     sources = db.all("""SELECT s.*, c.id cid FROM sources s JOIN channels c ON c.id=s.channel_id
                         JOIN workspaces w ON w.id=c.workspace_id
                         WHERE s.state='active' AND s.kind='instagram' AND c.group_id=? AND c.state!='setup'
-                          AND NOT (IFNULL(w.paused_until,0)>? AND w.pause_collect=0)""", (g["id"], now))
+                          AND NOT (IFNULL(w.paused_until,0)>? AND w.pause_collect=0)""", (sg["id"], now))
     if not sources:
         return "idle"
     try:
@@ -377,7 +381,7 @@ def account_pass(acc, now=None):
             continue
         m = _next_item(s, "fresh")
         if m:
-            return act("fresh", s, lambda s, ch, m=m: process(m, s, ch, cl, g))
+            return act("fresh", s, lambda s, ch, m=m: process(m, s, ch, cl, sg))
     # 3/4. older posts, only while the channel's ready buffer is low
     for s in sorted(sources, key=lambda s: ready_count(s["channel_id"])):
         ch = store.channel(s["channel_id"])
@@ -389,7 +393,7 @@ def account_pass(acc, now=None):
         m = _next_item(s, "backfill")
         if m:
             db.run("UPDATE sources SET day_count=day_count+1 WHERE id=?", (s["id"],))
-            return act("backfill", s, lambda s, ch, m=m: process(m, s, ch, cl, g))
+            return act("backfill", s, lambda s, ch, m=m: process(m, s, ch, cl, sg))
         if s["ig_user_id"] and not s["backfill_done"]:
             return act("discover", s, lambda s, ch: discover_older(s, ch, cl))
     return "idle"
@@ -402,12 +406,35 @@ def tick():
         if db.one("SELECT 1 FROM sources WHERE state='active'"):
             db.event("error", "server", err_info("FFMPEG_MISSING")["message"], None, None, "FFMPEG_MISSING")
         return
+    busy = {}
     for acc in db.all("SELECT * FROM ig_accounts"):
         try:
-            account_pass(acc)
+            busy[acc["group_id"]] = account_pass(acc)
         except Exception:  # one account can never stop the others
             log.exception("instagram account %s pass failed", acc["id"])
+    try:
+        borrow(busy)
+    except Exception:
+        log.exception("instagram borrow pass failed")
     cleanup_local()
+
+
+def borrow(results, now=None):
+    """Pools whose own test account cannot read (resting, expired, none) are read by another free account
+    of the same workspace — so a busy account never stops a client's new posts."""
+    now = now or time.time()
+    for g in db.all("""SELECT DISTINCT g.* FROM ip_groups g JOIN channels c ON c.group_id=g.id JOIN sources s ON s.channel_id=c.id
+                       WHERE s.kind='instagram' AND s.state='active' AND g.moved_to IS NULL"""):
+        own = account_for_group(g["id"])
+        if own and _usable(own, now) and results.get(g["id"]) not in ("blocked",):
+            continue
+        for kind, a in readers(g["workspace_id"], g, now):
+            if kind != "acc" or a["group_id"] == g["id"] or results.get(a["group_id"]) not in ("idle", None):
+                continue
+            if _next_action.get(a["id"], 0) > now:
+                continue
+            results[a["group_id"]] = account_pass(a, now, serve=g)
+            break
 
 
 def cleanup_local(now=None):
@@ -504,3 +531,97 @@ def _inbox_channel(ch, g):
             raise
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
+
+
+# ------------------------------------------------------------------ profile check that never dead-ends
+PROFILE_CACHE = 6 * 3600
+VAULT_REST = 1800
+
+
+def _usable(a, now):
+    return a.get("status") != "needs_cookies" and (a.get("paused_until") or 0) <= now
+
+
+def readers(ws_id, g, now=None):
+    """Who can read Instagram for this pool, best first: the pool's own test account, then the workspace's
+    other test accounts, then the vault. The same Instagram account is listed once (two pools can share it)."""
+    now = now or time.time()
+    out, seen = [], set()
+    own = account_for_group(g["id"]) if g else None
+    rows = ([own] if own else []) + db.all("SELECT * FROM ig_accounts WHERE workspace_id=? ORDER BY IFNULL(last_request,0)", (ws_id,))
+    for a in rows:
+        k = str(a.get("ig_user_id") or a.get("username") or f"#{a['id']}")
+        if k in seen:
+            continue
+        seen.add(k)
+        if _usable(a, now):
+            out.append(("acc", a))
+    for v in db.all("SELECT * FROM ig_vault WHERE workspace_id=? AND status IN ('ok','unchecked') ORDER BY IFNULL(checked_at,0)", (ws_id,)):
+        k = str(v.get("ig_user_id") or v.get("username") or f"v{v['id']}")
+        if k in seen or float(db.meta_get(f"igv_rest:{v['id']}") or 0) > now:
+            continue
+        seen.add(k)
+        out.append(("vault", v))
+    return out
+
+
+def _vault_client(v, g):
+    from . import security
+    cookies = ig.parse_cookies(security.unseal(v["cookies_enc"]))
+    return ig.Client(session_for(None), cookies, user_agent=v.get("user_agent"), language=v.get("language") or lang_for(g))
+
+
+def _rest_same_account(a, until):
+    """Instagram limits the account, not the pool: every pool row of the same account rests together."""
+    if a.get("ig_user_id"):
+        db.run("UPDATE ig_accounts SET status='resting', paused_until=MAX(IFNULL(paused_until,0),?) WHERE ig_user_id=? AND id!=?",
+               (until, a["ig_user_id"], a["id"]))
+
+
+def lookup(ws_id, g, raw):
+    """Check a client's Instagram profile. Tries every reader in turn, then the public page; if Instagram is busy
+    for all of them, the client is still accepted ('pending') and checked automatically later. Never a dead end."""
+    handle = ig.clean_handle(raw)  # ValueError for a bad link
+    cached = db.jload(db.meta_get("igp:" + handle), None)
+    if cached and time.time() - cached.get("at", 0) < PROFILE_CACHE:
+        return dict(cached["p"], via=cached["p"].get("via", "recent check"))
+    tried, not_found = [], False
+    for kind, a in readers(ws_id, g)[:4]:
+        ag = store.group(a.get("group_id")) if a.get("group_id") else g
+        try:
+            cl = client_for(a, ag or g) if kind == "acc" else _vault_client(a, ag or g)
+            old = cl.min_gap
+            cl.min_gap = (1, 2)
+            try:
+                p = cl.profile(handle)
+            finally:
+                cl.min_gap = old
+            p["via"] = "@" + (a.get("username") or "test account")
+            db.meta_set("igp:" + handle, __import__("json").dumps({"at": time.time(), "p": p}))
+            return p
+        except CodedError as e:
+            tried.append(e.code)
+            if e.code == "IG_PROFILE_NOT_FOUND":
+                not_found = True
+                break  # confirm with the public page below
+            if kind == "acc" and e.scope in ("ig", "group"):
+                _account_problem(a, e, ag or g)
+                if e.code == "IG_RATE_LIMIT":
+                    _rest_same_account(a, db.one("SELECT paused_until FROM ig_accounts WHERE id=?", (a["id"],))["paused_until"])
+            elif kind == "vault":
+                db.meta_set(f"igv_rest:{a['id']}", str(time.time() + VAULT_REST))
+        except Exception as e:
+            tried.append(str(e)[:80])
+    try:
+        p = ig.public_profile(session_for(None), handle)
+        p["via"] = "public page"
+        db.meta_set("igp:" + handle, __import__("json").dumps({"at": time.time(), "p": p}))
+        return p
+    except CodedError as e:
+        if e.code == "IG_PROFILE_NOT_FOUND":
+            raise
+        tried.append(e.code)
+    except Exception as e:
+        tried.append(str(e)[:80])
+    return {"username": handle, "id": None, "full_name": None, "picture": None, "is_private": False, "followed": False,
+            "posts": None, "pending": True, "maybe_typo": not_found, "tried": tried[-3:]}

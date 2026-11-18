@@ -412,14 +412,15 @@ def accounts(ws_id):
         p["failed_7d"] = posts("destination=?", (f"youtube:{c['external_id']}",))["failed_7d"]
         yt.append({"id": c["id"], "name": c["title"], "handle": c["handle"], "picture": c["thumbnail"], "pool": c["pool"],
                    "state": c["state"], "subscribers": c["subscribers"], "total_views": c["total_views"],
-                   "videos": c.get("video_count"), "youtube_on": c.get("youtube_on", 1), **p,
+                   "videos": c.get("video_count"), "youtube_on": c.get("youtube_on", 1), "auth_email": c.get("auth_email"), **p,
                    "url": f"https://www.youtube.com/channel/{c['external_id']}"})
     fb = []
-    for pg in db.all("""SELECT p.*, c.title client, g.number pool FROM fb_pages p JOIN fb_accounts a ON a.id=p.fb_account_id
+    for pg in db.all("""SELECT p.*, c.title client, g.number pool, a.name fb_name FROM fb_pages p JOIN fb_accounts a ON a.id=p.fb_account_id
                         LEFT JOIN channels c ON c.id=p.channel_id LEFT JOIN ip_groups g ON g.id=a.group_id
                         WHERE p.workspace_id=? ORDER BY p.name""", (ws_id,)):
         p = posts("destination=? AND status='published'", (f"facebook:{pg['page_id']}",))
         fb.append({"id": pg["id"], "name": pg["name"], "picture": pg["picture"], "pool": pg["pool"], "client": pg["client"],
+                   "authorized_by": pg.get("fb_name"),
                    "client_id": pg["channel_id"], "category": pg["category"], **p, "url": f"https://www.facebook.com/{pg['page_id']}"})
     ig = []
     for d in db.all("""SELECT d.*, c.title client, g.number pool FROM ig_dest d LEFT JOIN channels c ON c.id=d.channel_id
@@ -440,7 +441,7 @@ def account_deep(ws_id, kind, aid, tz_name):
         if not c:
             return None
         dest = f"youtube:{c['external_id']}"
-        head = {"name": c["title"], "picture": c["thumbnail"], "handle": c["handle"], "subscribers": c["subscribers"],
+        head = {"name": c["title"], "picture": c["thumbnail"], "handle": c["handle"], "subscribers": c["subscribers"], "auth_email": c.get("auth_email"),
                 "total_views": c["total_views"], "videos": c.get("video_count"), "client_id": c["id"],
                 "url": f"https://www.youtube.com/channel/{c['external_id']}", "stats_at": c["stats_at"]}
         pts = db.all("SELECT day, views, subscribers FROM channel_points WHERE channel_id=? ORDER BY day DESC LIMIT 91", (c["id"],))[::-1]

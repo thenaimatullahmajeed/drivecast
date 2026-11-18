@@ -86,6 +86,7 @@ class Accounts(unittest.TestCase):
     def test_google_unverified_or_closed_signup(self):
         (st, _), _ = self._google(info={"email": "z@x.com", "sub": "g-2", "email_verified": False})
         self.assertEqual(st, 400)
+        db.meta_set("signup_mode", "invite")
         (st, _), _ = self._google(mode="signup", info={"email": "new@x.com", "sub": "g-3", "email_verified": True})
         self.assertEqual(st, 403)  # invite-only and no invite
         self.assertIsNone(db.one("SELECT 1 FROM users WHERE email='new@x.com'"))
@@ -121,3 +122,35 @@ class Accounts(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Approval(unittest.TestCase):
+    def setUp(self):
+        self.dir = fresh_db()
+        self.owner = api._create_user("Owner", "owner@x.com", "password1", "owner", "UTC")
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def test_no_invite_waits_for_the_owner(self):
+        out = api.register(R(body={"name": "Sara", "email": "sara@x.com", "password": "password1"}))
+        self.assertTrue(out["pending"])
+        with self.assertRaises(api.HttpError) as e:
+            api.login(R(body={"email": "sara@x.com", "password": "password1"}))
+        self.assertIn("approval", str(e.exception.args))
+        self.assertEqual(db.one("SELECT COUNT(*) n FROM events WHERE code='SIGNUP_PENDING'")["n"], 1)
+        uid = api.pending_list(R(user=self.owner))["users"][0]["id"]
+        api.approve_user(R(user=self.owner, body={}), str(uid))
+        out = api.login(R(body={"email": "sara@x.com", "password": "password1"}))
+        self.assertEqual(out["user"]["email"], "sara@x.com")
+
+    def test_invite_only_mode(self):
+        api.pending_mode(R(user=self.owner, body={"mode": "invite"}))
+        with self.assertRaises(api.HttpError):
+            api.register(R(body={"name": "Sara", "email": "sara@x.com", "password": "password1"}))
+
+    def test_reject_deletes(self):
+        api.register(R(body={"name": "Sara", "email": "sara@x.com", "password": "password1"}))
+        uid = db.one("SELECT id FROM users WHERE email='sara@x.com'")["id"]
+        api.reject_user(R(user=self.owner), str(uid))
+        self.assertIsNone(db.one("SELECT 1 FROM users WHERE email='sara@x.com'"))

@@ -179,3 +179,98 @@ class BootPicksNewest(unittest.TestCase):
             mk("2.0.31")
             self.assertTrue(dcboot._pick(d))  # a newer update still wins
         shutil.rmtree(d, ignore_errors=True)
+
+
+class InstagramCheckNeverDeadEnds(unittest.TestCase):
+    def setUp(self):
+        from drivecast import igsync
+        self.ig = igsync
+        self.dir = fresh_db()
+        self.ws, self.g, self.ch = make_world()
+        self.g2 = db.run("INSERT INTO ip_groups(workspace_id,number,host,port,status,outgoing_ip,created_at) VALUES(?,2,'h2',1080,'ok','5.6.7.8',?)",
+                         (self.ws, time.time()))
+        now = time.time()
+        for gid, user, uid in ((self.g, "thekhanbhaii", "111"), (self.g2, "thekhanbhaii", "111")):
+            db.run("INSERT INTO ig_accounts(workspace_id,group_id,username,ig_user_id,cookies_enc,created_at,updated_at,status) VALUES(?,?,?,?,?,?,?,'ok')",
+                   (self.ws, gid, user, uid, security.seal("sessionid=x; ds_user_id=111; csrftoken=c"), now, now))
+        db.run("INSERT INTO ig_vault(workspace_id,label,username,ig_user_id,cookies_enc,status,created_at) VALUES(?,?,?,?,?,'ok',?)",
+               (self.ws, "spare", "spare_acc", "222", security.seal("sessionid=y; ds_user_id=222; csrftoken=c"), now))
+        self.calls = []
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def fake(self, behaviour):
+        from drivecast.errors import CodedError
+        test = self
+
+        class C:
+            min_gap = (7, 14)
+
+            def __init__(self, who):
+                self.who = who
+
+            def profile(self, h):
+                test.calls.append(self.who)
+                b = behaviour.get(self.who, "limit")
+                if b == "limit":
+                    raise CodedError("IG_RATE_LIMIT", "429")
+                if b == "missing":
+                    raise CodedError("IG_PROFILE_NOT_FOUND", "", handle=h)
+                return {"id": "9", "username": h, "full_name": "Ok", "picture": None, "is_private": False, "followed": False, "posts": 5}
+        return (mock.patch.object(self.ig, "client_for", lambda a, g: C(a["username"])),
+                mock.patch.object(self.ig, "_vault_client", lambda v, g: C(v["username"])))
+
+    def run_lookup(self, behaviour, public="limit"):
+        from drivecast import instagram
+        from drivecast.errors import CodedError
+        p1, p2 = self.fake(behaviour)
+
+        def pub(s, h):
+            self.calls.append("public")
+            if public == "ok":
+                return {"id": None, "username": h, "full_name": "Public", "picture": None, "is_private": False, "followed": False, "posts": "12"}
+            raise CodedError("IG_PROFILE_NOT_FOUND" if public == "missing" else "IG_RATE_LIMIT", "x", handle=h)
+        with p1, p2, mock.patch.object(instagram, "public_profile", pub):
+            return self.ig.lookup(self.ws, store.group(self.g2), "https://www.instagram.com/YourFavBostonMom/")
+
+    def test_busy_account_then_the_vault_account_reads(self):
+        p = self.run_lookup({"thekhanbhaii": "limit", "spare_acc": "ok"})
+        self.assertEqual(p["via"], "@spare_acc")
+        self.assertEqual(self.calls, ["thekhanbhaii", "spare_acc"])  # the shared account is asked once, not twice
+        # Instagram limits the account, not the pool: both pools' rows rest together
+        self.assertEqual({r["status"] for r in db.all("SELECT status FROM ig_accounts")}, {"resting"})
+
+    def test_everyone_busy_then_the_public_page(self):
+        p = self.run_lookup({}, public="ok")
+        self.assertEqual((p["full_name"], p["via"]), ("Public", "public page"))
+
+    def test_all_busy_is_never_a_dead_end(self):
+        p = self.run_lookup({}, public="limit")
+        self.assertTrue(p["pending"])
+        self.assertEqual(p["username"], "yourfavbostonmom")
+
+    def test_a_real_typo_is_reported(self):
+        from drivecast.errors import CodedError
+        with self.assertRaises(CodedError):
+            self.run_lookup({"thekhanbhaii": "missing"}, public="missing")
+
+    def test_cached_for_a_while(self):
+        self.run_lookup({"thekhanbhaii": "ok"})
+        self.calls.clear()
+        p = self.run_lookup({})
+        self.assertEqual(self.calls, [])
+        self.assertEqual(p["username"], "yourfavbostonmom")
+
+    def test_a_resting_pool_is_read_by_another_account(self):
+        db.run("UPDATE ig_accounts SET status='resting', paused_until=? WHERE group_id=?", (time.time() + 3600, self.g2))
+        db.run("UPDATE ig_accounts SET username='other', ig_user_id='333' WHERE group_id=?", (self.g,))
+        served = []
+        with mock.patch.object(self.ig, "account_pass", lambda a, now=None, serve=None: served.append((a["group_id"], serve and serve["id"])) or "idle"):
+            db.run("INSERT INTO channels(workspace_id,platform,external_id,title,group_id,state,created_at) VALUES(?,?,?,?,?,'live',?)",
+                   (self.ws, "route", "r2", "C2", self.g2, time.time()))
+            c2 = db.one("SELECT id FROM channels WHERE external_id='r2'")["id"]
+            db.run("INSERT INTO sources(channel_id,kind,handle,state,started_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
+                   (c2, "instagram", "x", "active", time.time(), time.time(), time.time()))
+            self.ig.borrow({self.g: "idle", self.g2: "waiting"})
+        self.assertIn((self.g, self.g2), served)

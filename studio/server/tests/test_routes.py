@@ -448,7 +448,8 @@ class FleetTests(unittest.TestCase):
             api.fleet_hello(self.R(json.loads(body), {"X-DC-Fleet": "bad"}, body))
         api.fleet_hello(self.R(json.loads(body), {"X-DC-Fleet": f.sign(body)}, body))
         self.assertTrue(db.one("SELECT 1 FROM fleet_devices WHERE host='s9.drivecast.site'"))
-        with self.assertRaises(api.HttpError):  # invite-only by default
+        db.meta_set("signup_mode", "invite")
+        with self.assertRaises(api.HttpError):  # invite-only when chosen
             api.register(self.R({"name": "A", "email": "a@x.com", "password": "password1"}))
         db.meta_set("open_signup", "1")
         db.meta_set("max_users", "1")
