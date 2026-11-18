@@ -76,6 +76,8 @@ CATALOG = {
     "BACKUP_TEST_FAILED": ("server", "Backup test failed", "The latest backup in Drive could not be opened: {why}. Make a new backup now (Server page).", None),
     "FB_GRAPH_OLD": ("library", "Meta API version retired", "Meta no longer accepts API version {ver}. Open Settings → Meta app and set a newer version (e.g. the one Meta's changelog lists as current).", "fb_app"),
     # --- AI (Groq) ---
+    "YT_REMOVED": ("channel", "YouTube rejected a post", "YouTube rejected or removed a post. Open Videos to see which one and why.", None),
+    "VID_DUPLICATE": ("post", "Same video already posted", "This video was already posted on this channel, so it was skipped.", None),
     "AI_HOLD": ("post", "Held by the AI check", "The AI check stopped this post: {why}. It is in Failed — move it back into the client's folder to post it anyway.", None),
     "AI_KEY_BAD": ("library", "AI key not accepted", "Groq refused the AI key. Posts go out with their normal text until you paste a new key (Settings or Pool → Apps).", "ai_key"),
     # --- YouTube ---

@@ -331,6 +331,12 @@ SCHEMA = [
     ALTER TABLE channels ADD COLUMN auth_email TEXT;
     ALTER TABLE users ADD COLUMN approval TEXT;
     """,
+    # version 16: what YouTube really did with each upload; never the same video twice on a channel
+    """
+    ALTER TABLE uploads ADD COLUMN file_md5 TEXT;
+    ALTER TABLE uploads ADD COLUMN yt_state TEXT;
+    ALTER TABLE uploads ADD COLUMN yt_reason TEXT;
+    """,
 ]
 
 

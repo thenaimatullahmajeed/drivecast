@@ -176,19 +176,35 @@ def run(job, adapters=None):
             if not targets:
                 continue
             primary = targets[0]
+            md5 = f.get("md5Checksum")
+            twin = md5 and db.one("""SELECT title, published_at FROM uploads WHERE channel_id=? AND file_md5=? AND status='published'
+                                     ORDER BY id LIMIT 1""", (ch["id"], md5))
+            if twin:
+                # the very same video is already on this channel: YouTube would reject or remove a second copy
+                try:
+                    db.run("""INSERT INTO uploads(workspace_id,channel_id,destination,file_id,file_name,title,status,reserved_at,
+                              error,file_md5) VALUES(?,?,?,?,?,?,'failed',?,?,?)""",
+                           (ws["id"], ch["id"], primary["key"], f["id"], f["name"], _plain_title(f["name"]), now,
+                            f"Duplicate of “{twin['title']}” already posted", md5))
+                    db.event("warn", "duplicate", f"{ch['title']}: skipped “{f['name']}” — the same video was already posted as "
+                             f"“{twin['title']}”. YouTube removes a second copy, so it is never sent twice.", ws["id"], ch["id"], "VID_DUPLICATE")
+                except Exception:
+                    pass
+                continue
             try:
                 with db.tx() as c:
                     cur = c.execute("""INSERT INTO uploads(workspace_id,channel_id,destination,file_id,file_name,title,
-                                       status,reserved_at,outgoing_ip,media_id) VALUES(?,?,?,?,?,?,'reserved',?,?,?)""",
+                                       status,reserved_at,outgoing_ip,media_id,file_md5) VALUES(?,?,?,?,?,?,'reserved',?,?,?,?)""",
                                     (ws["id"], ch["id"], primary["key"], f["id"], f["name"], _plain_title(f["name"]),
-                                     now, ip, mid))
+                                     now, ip, mid, md5))
                     upload_id = cur.lastrowid
                 chosen, m = f, fm
                 break
             except Exception:  # UNIQUE(file_id,destination): already handled before
                 continue
         if not chosen and ch.get("encore", 1):
-            vd = [d for d in dests if d["video"]]
+            # Encore never re-uploads to YouTube: YouTube rejects or removes the same video a second time
+            vd = [d for d in dests if d["video"] and d.get("kind") != "youtube"]
             encore = encore_pick(ch, vd[0]["key"], now) if vd else None
             if encore:
                 m = db.one("SELECT * FROM media WHERE id=?", (encore["media_id"],)) if encore.get("media_id") else None

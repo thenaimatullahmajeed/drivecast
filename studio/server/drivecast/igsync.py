@@ -333,7 +333,7 @@ def account_pass(acc, now=None, serve=None):
     sg = serve or g
     if not g or (g["status"] == "down" and acc.get("proxy_mode") != "phone") or acc["status"] == "needs_cookies":
         return "blocked"
-    if (acc["paused_until"] or 0) > now or _next_action.get(acc["id"], 0) > now:
+    if (acc["paused_until"] or 0) > now or _next_action.get(acc["id"], 0) > now or route_resting(route_of(acc), now):
         return "waiting"
     acc = _bump_day("ig_accounts", acc)
     if acc["day_count"] >= ACCOUNT_DAILY:
@@ -359,6 +359,8 @@ def account_pass(acc, now=None, serve=None):
             db.resolve("IG_COOKIES_EXPIRED", acc["workspace_id"])
             db.resolve("IG_CHALLENGE", acc["workspace_id"])
         except CodedError as e:
+            if e.code == "IG_RATE_LIMIT":
+                rest_route(route_of(acc))  # every account on this network waits too, instead of being limited one by one
             if e.scope in ("ig", "group"):
                 _account_problem(acc, e, g)
             elif e.scope == "source":
@@ -431,6 +433,8 @@ def borrow(results, now=None):
         for kind, a in readers(g["workspace_id"], g, now):
             if kind != "acc" or a["group_id"] == g["id"] or results.get(a["group_id"]) not in ("idle", None):
                 continue
+            if own and route_of(a) == route_of(own):
+                continue  # same network as the resting account: it would be limited too
             if _next_action.get(a["id"], 0) > now:
                 continue
             results[a["group_id"]] = account_pass(a, now, serve=g)
@@ -538,8 +542,26 @@ PROFILE_CACHE = 6 * 3600
 VAULT_REST = 1800
 
 
+ROUTE_REST = 1800
+
+
+def route_of(a):
+    """The network a reader uses. Instagram also limits by IP: every account on the phone's own internet shares one."""
+    if a.get("proxy_mode") == "phone" or "label" in a and "proxy_mode" not in a:  # vault rows read via the phone
+        return "phone"
+    return f"g{a.get('group_id')}"
+
+
+def route_resting(route, now=None):
+    return float(db.meta_get("ig_route_rest:" + route) or 0) > (now or time.time())
+
+
+def rest_route(route, secs=ROUTE_REST):
+    db.meta_set("ig_route_rest:" + route, str(time.time() + secs))
+
+
 def _usable(a, now):
-    return a.get("status") != "needs_cookies" and (a.get("paused_until") or 0) <= now
+    return a.get("status") != "needs_cookies" and (a.get("paused_until") or 0) <= now and not route_resting(route_of(a), now)
 
 
 def readers(ws_id, g, now=None):
@@ -558,7 +580,7 @@ def readers(ws_id, g, now=None):
             out.append(("acc", a))
     for v in db.all("SELECT * FROM ig_vault WHERE workspace_id=? AND status IN ('ok','unchecked') ORDER BY IFNULL(checked_at,0)", (ws_id,)):
         k = str(v.get("ig_user_id") or v.get("username") or f"v{v['id']}")
-        if k in seen or float(db.meta_get(f"igv_rest:{v['id']}") or 0) > now:
+        if k in seen or float(db.meta_get(f"igv_rest:{v['id']}") or 0) > now or route_resting("phone", now):
             continue
         seen.add(k)
         out.append(("vault", v))
@@ -585,9 +607,12 @@ def lookup(ws_id, g, raw):
     cached = db.jload(db.meta_get("igp:" + handle), None)
     if cached and time.time() - cached.get("at", 0) < PROFILE_CACHE:
         return dict(cached["p"], via=cached["p"].get("via", "recent check"))
-    tried, not_found = [], False
+    tried, not_found, limited = [], False, set()
     for kind, a in readers(ws_id, g)[:4]:
         ag = store.group(a.get("group_id")) if a.get("group_id") else g
+        route = route_of(a) if kind == "acc" else "phone"
+        if route in limited or route_resting(route):
+            continue  # this network was just told to slow down: asking with another account only makes it worse
         try:
             cl = client_for(a, ag or g) if kind == "acc" else _vault_client(a, ag or g)
             old = cl.min_gap
@@ -604,6 +629,9 @@ def lookup(ws_id, g, raw):
             if e.code == "IG_PROFILE_NOT_FOUND":
                 not_found = True
                 break  # confirm with the public page below
+            if e.code == "IG_RATE_LIMIT":
+                limited.add(route)
+                rest_route(route)
             if kind == "acc" and e.scope in ("ig", "group"):
                 _account_problem(a, e, ag or g)
                 if e.code == "IG_RATE_LIMIT":
@@ -613,6 +641,8 @@ def lookup(ws_id, g, raw):
         except Exception as e:
             tried.append(str(e)[:80])
     try:
+        if "phone" in limited or route_resting("phone"):
+            raise CodedError("IG_RATE_LIMIT", "phone network resting")
         p = ig.public_profile(session_for(None), handle)
         p["via"] = "public page"
         db.meta_set("igp:" + handle, __import__("json").dumps({"at": time.time(), "p": p}))

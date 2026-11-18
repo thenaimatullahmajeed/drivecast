@@ -163,14 +163,16 @@ def video_stats(session, box, ids):
     out = {}
     for i in range(0, len(ids), 50):
         r = authed(session, box, "GET", API + "/videos",
-                   params={"part": "statistics,status", "id": ",".join(ids[i:i + 50])})
+                   params={"part": "statistics,status,processingDetails", "id": ",".join(ids[i:i + 50])})
         if r.status_code >= 400:
             _raise_for(r, "stats")
         for it in r.json().get("items", []):
             st = it.get("statistics", {})
             out[it["id"]] = {"views": int(st.get("viewCount", 0) or 0), "likes": int(st.get("likeCount", 0) or 0),
                              "comments": int(st.get("commentCount", 0) or 0),
-                             "visibility": it.get("status", {}).get("privacyStatus")}
+                             "visibility": it.get("status", {}).get("privacyStatus"),
+                             "upload": it.get("status", {}).get("uploadStatus"),
+                             "reason": it.get("status", {}).get("rejectionReason") or it.get("status", {}).get("failureReason")}
     return out
 
 

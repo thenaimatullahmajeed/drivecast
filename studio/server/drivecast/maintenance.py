@@ -128,14 +128,21 @@ def sync_stats(ws_id=None, force=False):
             now = time.time()
             db.run("INSERT INTO channel_ticks(channel_id,at,views,subscribers) VALUES(?,?,?,?)",
                    (ch["id"], now, cs["total_views"], cs["subscribers"]))
-            ups = db.all("SELECT id, external_video_id FROM uploads WHERE channel_id=? AND status='published' AND published_at>?",
+            ups = db.all("SELECT id, external_video_id, title, yt_state FROM uploads WHERE channel_id=? AND status='published' AND published_at>?",
                          (ch["id"], time.time() - 90 * 86400))
             ids = [u["external_video_id"] for u in ups if u["external_video_id"]]
             stats = p.video_stats(s, box, ids) if ids else {}
             for u in ups:
                 v = stats.get(u["external_video_id"])
+                if u["external_video_id"] and not v and ids:
+                    _yt_gone(ch, u, "removed", None)  # YouTube no longer has it (removed or deleted)
+                    continue
                 if not v:
                     continue
+                if v.get("upload") in ("rejected", "failed", "deleted"):
+                    _yt_gone(ch, u, "rejected", v.get("reason") or v.get("upload"))
+                elif u.get("yt_state") != "ok" and v.get("upload") in ("processed", "uploaded"):
+                    db.run("UPDATE uploads SET yt_state=? WHERE id=?", ("ok" if v.get("upload") == "processed" else "processing", u["id"]))
                 db.run("UPDATE uploads SET views=?, likes=?, comments=?, visibility=COALESCE(?,visibility), stats_at=? WHERE id=?",
                        (v["views"], v["likes"], v["comments"], v["visibility"], time.time(), u["id"]))
                 db.run("INSERT OR REPLACE INTO stat_points(upload_id,day,views) VALUES(?,?,?)", (u["id"], today, v["views"]))
@@ -167,3 +174,22 @@ def cleanup(tmp_dir):
                     shutil.rmtree(p, ignore_errors=True)
             except OSError:
                 pass
+
+
+YT_REASONS = {"duplicate": "YouTube found the same video already on this channel", "copyright": "a copyright claim",
+              "inappropriate": "YouTube's content rules", "termsOfUse": "YouTube's terms of use", "trademark": "a trademark complaint",
+              "length": "the video is too long for this channel", "legal": "a legal complaint", "uploaderAccountClosed": "the channel was closed",
+              "uploaderAccountSuspended": "the channel was suspended", "claim": "a copyright claim",
+              "codec": "YouTube could not read the video file", "conversion": "YouTube could not convert the video",
+              "emptyFile": "the file was empty", "invalidFile": "the file was not a valid video", "tooSmall": "the file was too small"}
+
+
+def _yt_gone(ch, u, state, reason):
+    """YouTube rejected or removed a post: say so clearly, once."""
+    if u.get("yt_state") == state:
+        return
+    db.run("UPDATE uploads SET yt_state=?, yt_reason=? WHERE id=?", (state, reason, u["id"]))
+    why = YT_REASONS.get(reason or "", reason)
+    msg = (f"{ch['title']}: YouTube rejected “{u['title']}”" + (f" — {why}." if why else ".") if state == "rejected"
+           else f"{ch['title']}: “{u['title']}” is no longer on YouTube (removed or deleted).")
+    db.event("error", "youtube", msg + " It is marked on the Videos page and not counted as posted.", ch["workspace_id"], ch["id"], "YT_REMOVED")

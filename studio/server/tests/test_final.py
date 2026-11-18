@@ -242,6 +242,7 @@ class InstagramCheckNeverDeadEnds(unittest.TestCase):
         self.assertEqual({r["status"] for r in db.all("SELECT status FROM ig_accounts")}, {"resting"})
 
     def test_everyone_busy_then_the_public_page(self):
+        db.run("DELETE FROM ig_vault")
         p = self.run_lookup({}, public="ok")
         self.assertEqual((p["full_name"], p["via"]), ("Public", "public page"))
 
@@ -274,3 +275,83 @@ class InstagramCheckNeverDeadEnds(unittest.TestCase):
                    (c2, "instagram", "x", "active", time.time(), time.time(), time.time()))
             self.ig.borrow({self.g: "idle", self.g2: "waiting"})
         self.assertIn((self.g, self.g2), served)
+
+
+class NoCascadeAndYouTubeTruth(unittest.TestCase):
+    def setUp(self):
+        from drivecast import igsync
+        self.ig = igsync
+        self.dir = fresh_db()
+        self.ws, self.g, self.ch = make_world()
+        self.calls = []
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def test_one_limit_on_the_phone_network_does_not_burn_every_account(self):
+        from drivecast.errors import CodedError
+        g2 = db.run("INSERT INTO ip_groups(workspace_id,number,host,port,status,outgoing_ip,created_at) VALUES(?,2,'h2',1080,'ok','5.6.7.8',?)",
+                    (self.ws, time.time()))
+        for gid, user, uid in ((self.g, "a1", "1"), (g2, "a2", "2")):
+            db.run("INSERT INTO ig_accounts(workspace_id,group_id,username,ig_user_id,cookies_enc,created_at,updated_at,status,proxy_mode) "
+                   "VALUES(?,?,?,?,?,?,?,'ok','phone')", (self.ws, gid, user, uid, security.seal("sessionid=x"), time.time(), time.time()))
+        test = self
+
+        class C:
+            min_gap = (1, 2)
+
+            def __init__(self, who):
+                self.who = who
+
+            def profile(self, h):
+                test.calls.append(self.who)
+                raise CodedError("IG_RATE_LIMIT", "429")
+        from drivecast import instagram
+        with mock.patch.object(self.ig, "client_for", lambda a, g: C(a["username"])), \
+                mock.patch.object(instagram, "public_profile", lambda s, h: test.calls.append("public")):
+            p = self.ig.lookup(self.ws, store.group(g2), "someone")
+        self.assertTrue(p["pending"])
+        self.assertEqual(len(self.calls), 1)  # the second account and the public page were not asked on the same network
+        self.assertEqual(db.one("SELECT status FROM ig_accounts WHERE username='a1'")["status"], "ok")
+        self.assertTrue(self.ig.route_resting("phone"))
+
+    def test_youtube_removed_or_rejected_is_shown(self):
+        from drivecast import maintenance
+        ch = store.channel(self.ch)
+        db.run("INSERT INTO uploads(workspace_id,channel_id,destination,file_id,file_name,title,status,reserved_at,published_at,external_video_id) "
+               "VALUES(?,?,?,?,?,?,'published',?,?,?)", (self.ws, self.ch, "youtube:x", "f1", "a.mp4", "A", time.time(), time.time(), "VID1"))
+        u = db.one("SELECT * FROM uploads WHERE file_id='f1'")
+        maintenance._yt_gone(ch, u, "rejected", "duplicate")
+        u2 = db.one("SELECT * FROM uploads WHERE file_id='f1'")
+        self.assertEqual((u2["yt_state"], u2["yt_reason"]), ("rejected", "duplicate"))
+        ev = db.one("SELECT * FROM events WHERE code='YT_REMOVED'")
+        self.assertIn("same video already on this channel", ev["message"])
+        maintenance._yt_gone(ch, u2, "rejected", "duplicate")
+        self.assertEqual(db.one("SELECT COUNT(*) n FROM events WHERE code='YT_REMOVED'")["n"], 1)
+
+
+class NeverTheSameVideoTwice(unittest.TestCase):
+    def setUp(self):
+        from drivecast import worker
+        self.w = worker
+        self.dir = fresh_db()
+        self.ws, self.g, self.ch, self.dest = route_world()
+        worker.CLEAN_BEFORE_PUBLISH = False
+
+    def tearDown(self):
+        self.w.CLEAN_BEFORE_PUBLISH = True
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def test_a_second_copy_in_drive_is_skipped(self):
+        from test_core import FakeDrive, adapters, job_for
+        from test_routes import FakeFB, FakeIGPost
+        files = [{"id": "a", "name": "Alexa.mp4", "md5Checksum": "same"}, {"id": "b", "name": "Alexa (2).mp4", "md5Checksum": "same"}]
+        for _ in range(2):
+            job, _ = job_for(self.ch)
+            a = adapters(FakeDrive(list(files)), None)
+            a.pop("platform", None)
+            a["facebook"], a["igpost"] = FakeFB(), FakeIGPost()
+            self.w.run(job, a)
+        pub = db.all("SELECT file_id FROM uploads WHERE status='published' AND destination LIKE 'facebook%'")
+        self.assertEqual([r["file_id"] for r in pub], ["a"])
+        self.assertTrue(db.one("SELECT 1 FROM events WHERE code='VID_DUPLICATE'"))

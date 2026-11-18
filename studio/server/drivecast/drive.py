@@ -66,7 +66,7 @@ def videos(session, box, folder_id, limit=200):
     """Videos directly inside the folder, oldest first."""
     return _list(session, box,
                  f"'{folder_id}' in parents and trashed=false and mimeType contains 'video/'",
-                 "id,name,size,mimeType,createdTime,appProperties", order="createdTime", limit=limit)
+                 "id,name,size,mimeType,createdTime,appProperties,md5Checksum", order="createdTime", limit=limit)
 
 
 def files(session, box, folder_id, limit=200):
