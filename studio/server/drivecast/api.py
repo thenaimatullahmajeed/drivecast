@@ -2544,7 +2544,7 @@ def _google_identity(req, l):
     ws = store.workspace(l["workspace_id"])
     cid, sec = store.google_app(ws)
     s = session_for(None)
-    tok = exchange(s, cid, sec, req.query.get("code", ""), public_base(req) + "/oauth/callback")
+    tok = exchange(s, cid, sec, req.query.get("code", ""), public_base(req) + "/oauth/callback", offline=False)
     r = s.get("https://openidconnect.googleapis.com/v1/userinfo", headers={"Authorization": "Bearer " + tok["access_token"]}, timeout=20)
     info = r.json() if r.status_code < 400 else {}
     return info

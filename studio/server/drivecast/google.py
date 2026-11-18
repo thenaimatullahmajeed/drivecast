@@ -51,12 +51,13 @@ def _token_request(session, data):
     return r.json()
 
 
-def exchange(session, client_id, client_secret, code, redirect_uri):
+def exchange(session, client_id, client_secret, code, redirect_uri, offline=True):
+    """offline=False for sign-in only: we just need to know who it is, no lasting access."""
     tok = _token_request(session, {
         "code": code, "client_id": client_id, "client_secret": client_secret,
         "redirect_uri": redirect_uri, "grant_type": "authorization_code",
     })
-    if not tok.get("refresh_token"):
+    if offline and not tok.get("refresh_token"):
         raise AuthRevoked("Google did not return offline access. Remove the app from the Google account and try again.")
     tok["expires_at"] = time.time() + int(tok.get("expires_in", 3600))
     return tok
