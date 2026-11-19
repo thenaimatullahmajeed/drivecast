@@ -669,3 +669,8 @@ svg text{font-family:var(--mono);font-size:10px}
 .ub-stats b{color:var(--ink)}
 .ub-act{display:flex;gap:12px;font-size:12px}
 .ub-empty{border:1.5px dashed var(--line);border-radius:12px;padding:18px;text-align:center;color:var(--muted);font-size:12.5px}
+
+.rwrap{position:relative;display:flex;flex-direction:column}
+.rwrap .rnode{width:100%;padding-right:78px}
+.rdel{position:absolute;right:38px;top:50%;transform:translateY(-50%);width:28px;height:28px;border-radius:8px;border:1px solid var(--rail-line);background:transparent;color:#C9CDD6;display:inline-flex;align-items:center;justify-content:center;cursor:pointer}
+.rdel:hover{background:#3A1E1B;color:#FF9B85;border-color:#6B2E26}

@@ -479,6 +479,8 @@ def edit_group(req, gid):
         db.run("UPDATE ip_groups SET max_channels=? WHERE id=?", (max(1, int(b["max_channels"])), g["id"]))
     if b.get("priority") in ("high", "normal", "low"):
         db.run("UPDATE ip_groups SET priority=? WHERE id=?", (b["priority"], g["id"]))
+    if "label" in b:
+        db.run("UPDATE ip_groups SET label=? WHERE id=?", ((b["label"] or "").strip()[:40] or None, g["id"]))
     if b.get("password"):
         db.run("UPDATE ip_groups SET password_enc=? WHERE id=?", (security.seal(b["password"]), g["id"]))
     return {"group": _group_out(store.group(g["id"]))}
@@ -782,8 +784,14 @@ def set_route(req, cid):
     if b.get("folder_id"):
         db.run("UPDATE channels SET folder_id=?, folder_name=? WHERE id=?", (b["folder_id"], folders[b["folder_id"]]["name"], c["id"]))
     c = store.channel(c["id"])
+    rerouting = c["state"] != "setup"
     for sb in srcs:
         configure_source(store.channel(c["id"]), sb)
+    if rerouting:  # starting the route again: sources not chosen this time stop (their ledger stays); sign-ins are untouched
+        chosen = {x.get("kind", "instagram") for x in srcs}
+        for old in db.all("SELECT id, kind FROM sources WHERE channel_id=? AND state!='removed'", (c["id"],)):
+            if old["kind"] not in chosen:
+                db.run("UPDATE sources SET state='removed', updated_at=? WHERE id=?", (time.time(), old["id"]))
     if not c["folder_id"] or (not srcs and b.get("inbox")):
         _ensure_folder(c, (c["folder_name"] or c["title"]).strip())  # Drive folder named after the client
     c = store.channel(c["id"])
@@ -802,6 +810,8 @@ def set_route(req, cid):
         scheduler.replan_future(c)
         if any(x.get("kind", "instagram") == "instagram" for x in srcs):
             igsync.kick(c["id"])  # recent video → Drive straight away, with a live bar
+        if any(x.get("kind") in ("youtube", "tiktok") for x in srcs):
+            vidsync.kick(c["id"])  # about a week of videos → Drive straight away
     return {"channel": _channel_out(c)}
 
 
@@ -854,10 +864,11 @@ def channel_action(req, cid, action):
         if c["state"] != "live":
             raise HttpError(400, "Resume the channel first")
         ready = (c.get("queue_count") or 0) > 0 or db.one("SELECT 1 FROM media WHERE channel_id=? AND state='in_drive'", (c["id"],))
-        fetching = db.one("SELECT 1 FROM sources WHERE channel_id=? AND state='active' AND kind='instagram'", (c["id"],))
+        fetching = db.one("SELECT 1 FROM sources WHERE channel_id=? AND state='active' AND kind IN ('instagram','youtube','tiktok')", (c["id"],))
         if not ready and fetching:
             igsync.want_post(c["id"])
             igsync.kick(c["id"])
+            vidsync.kick(c["id"])
             return {"channel": _channel_out(store.channel(c["id"])), "waiting": True}
         if not scheduler.post_now(c):
             raise HttpError(409, "Today's posts are all done — nothing left to bring forward")
@@ -1145,7 +1156,7 @@ def phone_page(req):
 
 # ---------------------------------------------------------------- Instagram source (v2)
 from . import errors as _errors  # noqa: E402
-from . import igsync, instagram as _ig  # noqa: E402
+from . import igsync, vidsync, instagram as _ig  # noqa: E402
 
 
 def _ig_error(e, **ctx):

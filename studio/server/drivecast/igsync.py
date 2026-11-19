@@ -112,8 +112,9 @@ def _ready_target(ch):
 
 
 def ready_count(ch_id):
+    """Videos really kept ready (downloaded or in Drive). Items only *found* on the profile are not ready yet."""
     return db.one("""SELECT COUNT(*) n FROM media WHERE channel_id=? AND kind='video'
-                     AND state IN ('found','downloading','cleaned','in_drive')""", (ch_id,))["n"]
+                     AND state IN ('downloading','cleaned','in_drive')""", (ch_id,))["n"]
 
 
 # ------------------------------------------------------------------ error handling (scopes)

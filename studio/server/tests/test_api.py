@@ -224,6 +224,12 @@ class SourceApiTests(unittest.TestCase):
             self.assertEqual((d["source"]["handle"], d["source"]["state"], d["has_inbox"]), ("inkepoch", "active", True))
             sid = d["source"]["id"]
             db.run("INSERT INTO media(workspace_id,channel_id,source_id,origin,ext_id,state,created_at) VALUES(?,?,?,'instagram','1','in_drive',?)", (ws, ch, sid, now))
+            # starting the route again: a source that is not chosen this time stops, the chosen one stays
+            tt = db.run("INSERT INTO sources(channel_id,kind,handle,url,started_at,created_at) VALUES(?,?,?,?,?,?)", (ch, "tiktok", "@x", "https://www.tiktok.com/@x", now, now))
+            st, r = c.call("POST", f"/api/channels/{ch}/route", {"group_id": g, "instagram": {"handle": "inkepoch", "content_type": "videos"}, "plan": {"posts_per_day": 3}})
+            self.assertEqual(st, 200, r)
+            self.assertEqual(db.one("SELECT state FROM sources WHERE id=?", (tt,))["state"], "removed")
+            self.assertEqual(db.one("SELECT state FROM sources WHERE id=?", (sid,))["state"], "active")
             # change content type + pause
             st, d = c.call("PUT", f"/api/channels/{ch}/source", {"content_type": "mix"})
             self.assertEqual(d["source"]["content_type"], "mix")

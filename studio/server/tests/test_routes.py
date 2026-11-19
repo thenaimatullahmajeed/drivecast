@@ -314,6 +314,32 @@ class VideoSourceTests(unittest.TestCase):
             out.append(vidsync.source_pass(db.one("SELECT * FROM sources WHERE id=?", (self.src,))))
         return out
 
+    def test_found_videos_do_not_count_as_ready(self):
+        """15 videos only *found* on the profile must not stop the downloads (the TikTok bug)."""
+        self.passes(1)  # first check
+        for i in range(15):
+            vidsync._insert(db.one("SELECT * FROM sources WHERE id=?", (self.src,)), store.channel(self.ch), f"X{i:08d}A", "backfill", self.now - 9 * 86400 - i)
+        self.assertEqual(igsync.ready_count(self.ch), 0)
+        steps = self.passes(6)
+        self.assertTrue({"fresh", "backfill"} & set(steps), steps)
+        self.assertTrue(self.fd.uploaded)
+
+    def test_fast_pass_ignores_daily_cap_and_waits(self):
+        db.run("UPDATE sources SET day_count=99, day=? WHERE id=?", (igsync._today(), self.src))
+        src = lambda: db.one("SELECT * FROM sources WHERE id=?", (self.src,))  # noqa: E731
+        self.assertEqual(vidsync.source_pass(src(), fast=True), "check")
+        vidsync._next[self.src] = time.time() + 999  # slow mode would wait; fast does not
+        out = [vidsync.source_pass(src(), fast=True) for _ in range(3)]
+        self.assertNotIn("waiting", out)
+        self.assertTrue(self.fd.uploaded)
+
+    def test_only_new_still_starts_with_the_latest_video(self):
+        db.run("UPDATE sources SET include_old=0, started_at=? WHERE id=?", (self.now + 10, self.src))
+        self.passes(2)
+        top = db.one("SELECT * FROM media WHERE ext_id='NEWVIDEO001'")
+        self.assertEqual(top["lane"], "fresh")
+        self.assertEqual(top["state"], "in_drive")
+
     def test_fresh_first_then_buffer_then_ledger(self):
         steps = self.passes(4)
         self.assertEqual(steps[:2], ["check", "fresh"])

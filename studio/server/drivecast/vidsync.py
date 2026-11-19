@@ -42,6 +42,7 @@ GAP = {"youtube": (40, 120), "tiktok": (90, 240)}
 PAGE = 30                      # older videos listed per discovery step
 SOURCE_DAILY = 12              # older-video downloads per source per day
 _next = {}                     # source id -> next action time
+_pass_lock = threading.Lock()
 _lock = threading.Lock()
 YTDLP_URL = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp"
 
@@ -338,6 +339,7 @@ def check_source(src, ch, tmpdir):
                    (info.get("uploader") or info.get("title"), info.get("uploader_id") or info.get("id"), src["id"]))
         items = [{"id": e.get("id"), "taken_at": _ts(e), "title": e.get("title"), "caption": e.get("description")}
                  for e in info.get("entries") or []]
+    first = not db.one("SELECT 1 FROM media WHERE source_id=?", (src["id"],))
     for it in items:
         if not it.get("id"):
             continue
@@ -347,6 +349,14 @@ def check_source(src, ch, tmpdir):
         elif src["include_old"]:
             _insert(src, ch, it["id"], "backfill", t, it.get("title"), it.get("caption"))
         newest = max(newest, t or 0)
+    if first and not fresh and not src["include_old"]:
+        # "only new" still starts with the latest video, so Drive is never empty on day one
+        dated = [it for it in items if it.get("id")]
+        if dated:
+            top = max(dated, key=lambda it: it.get("taken_at") or 0)
+            _insert(src, ch, top["id"], "fresh", top.get("taken_at"), top.get("title"), top.get("caption"))
+            db.run("UPDATE media SET lane='fresh' WHERE source_id=? AND ext_id=? AND state='found'", (src["id"], top["id"]))
+            fresh += 1
     db.run("""UPDATE sources SET newest_seen=?, last_check=?, error_code=NULL, error_detail=NULL, next_check=?,
               total_found=(SELECT COUNT(*) FROM media WHERE source_id=?), updated_at=? WHERE id=?""",
            (newest, now, now + random.uniform(*CHECK[src["kind"]]), src["id"], now, src["id"]))
@@ -480,6 +490,8 @@ def process(m, src, ch, group, progress=None):
         return False
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
+        if progress:
+            igsync.sync_clear(ch["id"])
 
 
 # ------------------------------------------------------------------ the pass
@@ -501,10 +513,20 @@ def _problem(src, ch, e):
              ch["workspace_id"], None if e.scope == "server" else ch["id"], e.code, e.detail)
 
 
-def source_pass(src, now=None):
+def source_pass(src, now=None, fast=False):
+    """fast = a brand-new source: no waiting between steps and no daily cap until about a week is ready."""
+    if not _pass_lock.acquire(blocking=fast):
+        return "busy"
+    try:
+        return _source_pass(src, now, fast)
+    finally:
+        _pass_lock.release()
+
+
+def _source_pass(src, now=None, fast=False):
     from . import igsync
     now = now or time.time()
-    if _next.get(src["id"], 0) > now:
+    if not fast and _next.get(src["id"], 0) > now:
         return "waiting"
     ch = store.channel(src["channel_id"])
     if not ch or ch["state"] == "setup":
@@ -527,19 +549,19 @@ def source_pass(src, now=None):
             m = igsync._next_item(src, "fresh")
             if m:
                 kind = "fresh"
-                process(m, src, ch, g)
+                process(m, src, ch, g, igsync.sync_progress(ch["id"], "First video" if fast else "New video"))
             elif src["include_old"] and igsync.ready_count(ch["id"]) < _ready_target(ch):
                 src = igsync._bump_day("sources", src)
                 m = igsync._next_item(src, "backfill")
-                if m and src["day_count"] < min(src["daily_cap"] or SOURCE_DAILY, SOURCE_DAILY):
+                if m and (fast or src["day_count"] < min(src["daily_cap"] or SOURCE_DAILY, SOURCE_DAILY)):
                     kind = "backfill"
                     db.run("UPDATE sources SET day_count=day_count+1 WHERE id=?", (src["id"],))
-                    process(m, src, ch, g)
+                    process(m, src, ch, g, igsync.sync_progress(ch["id"], "Week of backup"))
                 elif not m and not src["backfill_done"]:
                     kind = "discover"
                     discover_older(src, ch, tmpdir)
         if kind:
-            _next[src["id"]] = time.time() + random.uniform(*GAP[src["kind"]])
+            _next[src["id"]] = time.time() + random.uniform(*((2, 6) if fast else GAP[src["kind"]]))
         return kind or "idle"
     except CodedError as e:
         if e.scope in ("source", "server", "group", "ig"):
@@ -550,6 +572,43 @@ def source_pass(src, now=None):
         return "error"
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def kick(ch_id):
+    """A new YouTube / TikTok source: check it now and download about a week of videos straight away."""
+    if os.environ.get("DC_NO_KICK"):
+        return
+    ids = [r["id"] for r in db.all("SELECT id FROM sources WHERE channel_id=? AND state='active' AND kind IN ('youtube','tiktok')", (ch_id,))]
+    if not ids:
+        return
+    for i in ids:
+        _next.pop(i, None)
+        db.run("UPDATE sources SET next_check=0, error_code=NULL WHERE id=?", (i,))
+
+    def run():
+        end = time.time() + 2 * 3600
+        while time.time() < end:
+            did = False
+            for i in ids:
+                s = db.one("SELECT * FROM sources WHERE id=? AND state='active'", (i,))
+                if not s:
+                    continue
+                try:
+                    r = source_pass(s, fast=True)
+                except Exception:
+                    log.exception("video source kick failed")
+                    return
+                if r == "error":
+                    return
+                if r in ("check", "fresh", "backfill", "discover"):
+                    did = True
+                elif r in ("busy", "waiting"):
+                    time.sleep(15)
+                    did = True
+            if not did:
+                return
+            time.sleep(random.uniform(2, 6))
+    threading.Thread(target=run, name="vid-kick", daemon=True).start()
 
 
 def tick():

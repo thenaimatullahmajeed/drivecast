@@ -837,6 +837,8 @@ document.addEventListener('change', async e => {
 });
 
 // ------------------------------------------------------------------ add a client (route wizard)
+const poolName = g => g.label || g.city || '';
+const poolT = g => `Pool ${g.number}${poolName(g) ? ' · ' + poolName(g) : ''}`;
 const W = {};
 async function pageAdd(preselect) {
   Object.assign(W, { step: 0, group: null, mode: null, name: '', link: null, channel: null, folder: null, src: newSrc(), dest: { youtube: true, fb: null, ig: null }, plan: { posts_per_day: 2, audience: 'US+UK', min_gap_min: 240, jitter_min: 30 }, poll: null });
@@ -845,7 +847,16 @@ async function pageAdd(preselect) {
   W.groups = g.groups; W.drive = dr; W.pending = ch.channels.filter(c => c.state === 'setup'); W.settings = st; W.fb = fb; W.igd = igd.destinations;
   if (preselect) {
     const c = ch.channels.find(x => String(x.id) === String(preselect));
-    if (c) { W.channel = c; W.mode = c.platform === 'youtube' ? 'yt' : 'none'; W.group = W.groups.find(x => x.id === c.group_id) || null; W.step = W.group ? 2 : 0; }
+    if (c) {
+      W.channel = c; W.mode = c.platform === 'youtube' ? 'yt' : 'none'; W.group = W.groups.find(x => x.id === c.group_id) || null; W.step = W.group ? 2 : 0;
+      if (c.state !== 'setup') {  // starting the route again: sign-ins stay, sources start empty, the plan keeps its current values
+        W.plan = Object.assign({}, W.plan, c.plan || {});
+        W.dest.youtube = c.platform === 'youtube' ? !!c.youtube_on : false;
+        const fbG = ((W.fb.groups || []).find(x => x.group_id === c.group_id) || { pages: [] });
+        const pg = fbG.pages.find(q => q.channel && q.channel.id === c.id); W.dest.fb = pg ? pg.id : null;
+        const dg = (W.igd || []).find(q => q.channel_id === c.id); W.dest.ig = dg ? dg.id : null;
+      }
+    }
   }
   drawWizard();
 }
@@ -878,7 +889,7 @@ function wGroup() {
     const note = g.status === 'down' ? ['Not responding', 'var(--bad)'] : g.channel_count >= g.max_channels ? [`Full — above ${g.max_channels} is not recommended`, 'var(--warn)'] : [`Healthy · ${g.latency_ms ?? '—'} ms`, 'var(--ok)'];
     return `<button class="pick ${W.group && W.group.id === g.id ? 'sel' : ''}" data-act="wgroup" data-id="${g.id}" ${g.status === 'down' ? 'disabled' : ''}>
       <span style="display:flex;justify-content:space-between;width:100%"><strong style="font-family:var(--disp);font-size:17px">Pool ${g.number}</strong><span class="mono" style="font-size:12px">${g.channel_count}/${g.max_channels}</span></span>
-      ${g.label ? `<span style="font-size:12.5px;font-weight:600">${esc(g.label)}</span>` : ''}<span class="mono muted" style="font-size:12px">${esc(g.outgoing_ip || g.host)}${g.readiness ? ` · ready ${g.readiness.score}/${g.readiness.of}` : ''}${g.apps && g.apps.google ? ' · own Google app' : ''}</span><span class="meter" style="width:100%"><span style="width:${pct}%;background:${g.channel_count > g.max_channels ? '#C27A12' : '#0E1116'}"></span></span>
+      ${poolName(g) ? `<span style="font-size:12.5px;font-weight:600">${esc(poolName(g))}</span>` : ''}<span class="mono muted" style="font-size:12px">${esc(g.outgoing_ip || g.host)}${g.readiness ? ` · ready ${g.readiness.score}/${g.readiness.of}` : ''}${g.apps && g.apps.google ? ' · own Google app' : ''}</span><span class="meter" style="width:100%"><span style="width:${pct}%;background:${g.channel_count > g.max_channels ? '#C27A12' : '#0E1116'}"></span></span>
       <span style="font-size:12px;font-weight:600;color:${note[1]}">${esc(note[0])}</span></button>`;
   }).join('');
   return wHead(1, 'Choose a pool', 'Every post for this client leaves from this pool’s static IP — never from the phone.') +
@@ -1215,7 +1226,7 @@ async function pageGroups() {
     const chans = g.channels.map((c, i) => `<div style="display:flex;align-items:center;gap:10px;padding:9px 0;border-top:1px solid var(--line)">${avatar(c.title, hashI(c.title), c.thumbnail, 28)}<div style="display:flex;flex-direction:column;min-width:0;flex:1"><span class="ell" style="font-weight:600;font-size:13px">${esc(c.title)}</span>${handle(c.handle)}</div>${chip(c.state, c.state === 'live' ? 'ok' : 'neutral', false)}</div>`).join('');
     const ipChanged = down && (g.last_error || '').includes('changed');
     return `<section class="card" id="grp-${g.id}"><div style="display:flex;flex-direction:column;gap:14px">
-      <div style="display:flex;align-items:center;gap:16px">${ring(g.channel_count, g.max_channels, color)}<div style="display:flex;flex-direction:column;gap:6px;flex:1;min-width:0"><div style="display:flex;justify-content:space-between;gap:8px;align-items:center"><strong style="font-family:var(--disp);font-size:22px">Pool ${g.number}${g.label ? `<span class="muted" style="font:600 14px var(--font)"> · ${esc(g.label)}</span>` : ''}</strong>${g.moved_to ? chip('Moved to ' + g.moved_to, 'neutral') : down ? chip('Not responding', 'bad') : chip('Healthy', 'ok')}</div><span class="mono" style="font-size:13px;font-weight:500">${esc(g.outgoing_ip || '—')}</span>${where(g) ? `<span style="font-size:13px;font-weight:600">${esc(where(g))}${g.isp ? `<span class="muted" style="font-weight:400"> · ${esc(g.isp)}</span>` : ''}</span>` : ''}<span class="muted" style="font-size:12px">SOCKS5 · ${esc(g.host)}:${g.port} · ${esc(g.priority)} priority</span></div></div>
+      <div style="display:flex;align-items:center;gap:16px">${ring(g.channel_count, g.max_channels, color)}<div style="display:flex;flex-direction:column;gap:6px;flex:1;min-width:0"><div style="display:flex;justify-content:space-between;gap:8px;align-items:center"><strong style="font-family:var(--disp);font-size:22px">Pool ${g.number}${poolName(g) ? `<span class="muted" style="font:600 14px var(--font)"> · ${esc(poolName(g))}</span>` : ''}</strong>${g.moved_to ? chip('Moved to ' + g.moved_to, 'neutral') : down ? chip('Not responding', 'bad') : chip('Healthy', 'ok')}</div><span class="mono" style="font-size:13px;font-weight:500">${esc(g.outgoing_ip || '—')}</span>${where(g) ? `<span style="font-size:13px;font-weight:600">${esc(where(g))}${g.isp ? `<span class="muted" style="font-weight:400"> · ${esc(g.isp)}</span>` : ''}</span>` : ''}<span class="muted" style="font-size:12px">SOCKS5 · ${esc(g.host)}:${g.port} · ${esc(g.priority)} priority</span></div></div>
       <div><div style="display:flex;justify-content:space-between;font-size:12px" class="muted"><span>Latency · last checks</span><span class="mono" style="color:var(--ink)">${down ? 'timeout' : (g.latency_ms ?? '—') + ' ms'}</span></div><div style="display:flex;align-items:flex-end;gap:3px;height:34px;margin-top:6px">${lat.map(v => `<span style="flex:1;height:${Math.max(3, Math.round(v / mx * 34))}px;border-radius:2px;background:${v ? '#0E1116' : '#F2B8AD'}"></span>`).join('')}</div></div>
       ${down ? `<div class="note bad">${ic('alert', 16)}<span>${esc(g.last_error || 'Proxy is not responding')}. Posts wait — never sent from another IP. Still testing every 5 minutes; it resumes by itself when the proxy answers.</span><button class="btn sm" data-act="gtest" data-id="${g.id}">${ic('bolt', 14)}Test now</button></div>` : ''}
       ${g.status === 'unstable' ? `<div class="note warn">${ic('refresh', 16)}<span><b>Retrying.</b> The proxy missed ${g.fail_count || 1} check(s) — DriveCast keeps trying and only calls it down after 10 minutes without an answer. Posts still go when it answers.</span></div>` : ''}
@@ -1225,7 +1236,7 @@ async function pageGroups() {
       ${igDestCard(g)}
       ${appsCard(g)}
       <div>${chans || '<span class="muted" style="font-size:13px">No channels yet.</span>'}</div>
-      <div class="actions">${ipChanged ? `<button class="btn primary" data-act="acceptip" data-id="${g.id}">Accept new IP</button>` : ''}<button class="btn" data-act="gtest" data-id="${g.id}">${ic('bolt', 16)}Test now</button><a class="btn" href="#/add">${ic('plus', 16)}Add client</a><button class="btn" data-act="gedit" data-id="${g.id}">Edit</button>${g.channel_count ? '' : `<button class="btn danger" data-act="gdel" data-id="${g.id}">Delete</button>`}</div></div></section>`;
+      <div class="actions">${ipChanged ? `<button class="btn primary" data-act="acceptip" data-id="${g.id}">Accept new IP</button>` : ''}<button class="btn" data-act="gtest" data-id="${g.id}">${ic('bolt', 16)}Test now</button><a class="btn" href="#/add">${ic('plus', 16)}Add client</a><button class="btn" data-act="grename" data-id="${g.id}">Rename</button><button class="btn" data-act="gedit" data-id="${g.id}">Edit</button>${g.channel_count ? '' : `<button class="btn danger" data-act="gdel" data-id="${g.id}">Delete</button>`}</div></div></section>`;
   }).join('');
   const nextN = groups.reduce((m, g) => Math.max(m, g.number), 0) + 1;
   mount('groups', 'Pools', 'One static SOCKS5 IP per pool · 1–5 channels recommended', 'Workspace', `<button class="btn" data-act="testall">${ic('bolt', 16)}Test all</button>`,
@@ -1241,6 +1252,7 @@ async function pageGroups() {
   Object.assign(S.acts, GROUP_FORM_ACTS, {
     cookies: d => cookiesModal(+d.id, render),
     gapps: d => groupAppsModal(+d.id),
+    grename: async d => { const g = groups.find(x => x.id === +d.id); const n = prompt(`Name for Pool ${g.number} (shown after the number)`, g.label || ''); if (n === null) return; try { await api('PATCH', `/api/groups/${g.id}`, { label: n }); toast('Pool renamed'); } catch (e) { toast(e.message, true); } render(); },
     vadd: async v => { try { await api('POST', '/api/ig/vault', { cookies: v.cookies, label: v.label, user_agent: navigator.userAgent }); toast('Added to the vault'); } catch (e) { toast(e.message, true); } render(); },
     vcheck: async d => { await api('POST', `/api/ig/vault/${d.id}/check`); render(); },
     vdel: async d => { if (confirm('Remove this account from the vault? A group that uses it keeps working.')) { await api('DELETE', `/api/ig/vault/${d.id}`); render(); } },
@@ -1371,7 +1383,7 @@ function routeMap(c, d) {
   if (c.folder_id) srcs.push(`<a class="rnode" href="https://drive.google.com/drive/folders/${esc(c.folder_id)}" target="_blank" rel="noopener">${srcIcon('drive')}<span class="rt"><b>${esc(c.folder_name || 'Drive folder')}</b><span>${d.has_inbox ? 'your files + client Inbox' : 'your files'} · ${c.queue_count ?? 0} waiting</span></span>${ic('ext', 14)}</a>`);
   for (const sx of d.sources) {
     const st = srcStatus(sx, acc);
-    srcs.push(node('srcopen', sx.id, srcIcon(sx.kind), `${SRC[sx.kind][1]} · ${sx.handle.startsWith('@') || sx.kind !== 'instagram' ? sx.handle : '@' + sx.handle}`, `${st[0]} · ${num(sx.total_found)} found`, st[1], sx.state === 'paused'));
+    srcs.push(`<div class="rwrap">${node('srcopen', sx.id, srcIcon(sx.kind), `${SRC[sx.kind][1]} · ${sx.handle.startsWith('@') || sx.kind !== 'instagram' ? sx.handle : '@' + sx.handle}`, `${st[0]} · ${num(sx.total_found)} found`, st[1], sx.state === 'paused')}<button type="button" class="rdel" data-act="srcdel" data-id="${sx.id}" title="Delete this source" aria-label="Delete this source">${ic('trash', 14)}</button></div>`);
   }
   srcs.push(`<button type="button" class="rnode add" data-act="srcadd">${ic('plus', 16)}Add a source</button>`);
   const dst = [];
@@ -1435,6 +1447,12 @@ async function pageChannel(id) {
   every(c.live ? 6000 : 30000, () => { if (!document.getElementById('modal')) render(); });
   if (S.openReauth === c.id) { S.openReauth = null; setTimeout(() => ytLinkModal(c, !!(d.ai && d.ai.settings.subtitles)), 120); }
   Object.assign(S.acts, srcActs({}, () => { }, () => c.group), d.ai ? aiActs(c, d.ai) : {}, {
+    srcdel: async x => {
+      const sx = d.sources.find(q => q.id === +x.id); if (!sx) return;
+      if (!confirm(`Delete the ${SRC[sx.kind][1]} source ${sx.handle}? It stops pulling videos. Files already in Drive still post; nothing is deleted from Drive.`)) return;
+      try { await api('PUT', `/api/channels/${c.id}/source`, { kind: sx.kind, enabled: false }); toast('Source deleted'); } catch (e) { toast(e.message, true); }
+      render();
+    },
     srccheckall: async () => { await api('POST', `/api/channels/${c.id}/source/check`); toast('Checking every source within a minute'); render(); },
     encset: async () => { await api('PUT', `/api/channels/${c.id}/settings`, { encore: !d.encore_on }); render(); },
     mretry: async x => { await api('POST', `/api/media/${x.id}/retry`); toast('Will try again'); render(); },
@@ -1457,7 +1475,8 @@ async function routeEditModal(c, d) {
   const p = Object.assign({ posts_per_day: 2, audience: 'US+UK', min_gap_min: 240, jitter_min: 30 }, c.plan || {});
   const sel = (name, opts, val) => `<select class="i" name="${name}">${opts.map(([v, t]) => `<option value="${esc(v)}" ${String(v) === String(val) ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select>`;
   const live = c.state === 'live';
-  modal(`<h2>Edit route · ${esc(c.title)}</h2><p class="muted" style="margin:0">Sources and destinations are edited on the route map (tap any box). Here: name, plan, folder, Pool and sign-ins.</p>
+  modal(`<h2>Edit route · ${esc(c.title)}</h2><p class="muted" style="margin:0">Name, plan, folder, Pool and sign-ins. To choose the sources and posting plan again from the start, use “Start the route again” — YouTube and Meta sign-ins are kept.</p>
+    <div class="actions"><a class="btn primary" href="#/add/${c.id}" data-act="close">${ic('refresh', 14)}Start the route again</a></div>
     <form data-form="routesave" style="display:flex;flex-direction:column;gap:14px">
       <label class="f">Client name<input class="i" name="title" value="${esc(c.title)}"></label>
       <div class="form" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px">
@@ -1466,7 +1485,7 @@ async function routeEditModal(c, d) {
         <label class="f">Minimum gap${sel('gap', [[120, '2 hours'], [180, '3 hours'], [240, '4 hours'], [360, '6 hours']], p.min_gap_min)}</label>
         <label class="f">Natural timing${sel('jitter', [[0, 'exact'], [15, '±15 min'], [30, '±30 min'], [45, '±45 min'], [60, '±60 min']], p.jitter_min)}</label></div>
       <label class="f">Drive folder${sel('folder_id', [['', c.folder_name || '—']].concat((dr.folders || []).filter(f => !f.used || f.id === c.folder_id).map(f => [f.id, f.path])), c.folder_id || '')}</label>
-      <label class="f">Pool${sel('group_id', groups.filter(g => !g.moved_to).map(g => [g.id, `Pool ${g.number}${g.label ? ' · ' + g.label : ''} · ${g.outgoing_ip || g.host}`]), c.group ? c.group.id : '')}<span class="help">${live ? 'Pause the client first to move it. ' : ''}Moving unlinks its Facebook page and Instagram account — they belong to the old pool’s identity.</span></label>
+      <label class="f">Pool${sel('group_id', groups.filter(g => !g.moved_to).map(g => [g.id, `${poolT(g)} · ${g.outgoing_ip || g.host}`]), c.group ? c.group.id : '')}<span class="help">${live ? 'Pause the client first to move it. ' : ''}Moving unlinks its Facebook page and Instagram account — they belong to the old pool’s identity.</span></label>
       <div class="actions" style="justify-content:flex-end"><button type="button" class="btn" data-act="close">Cancel</button><button class="btn primary" type="submit">Save</button></div></form>
     <div style="border-top:1px solid var(--line);padding-top:12px;display:flex;flex-direction:column;gap:8px"><b style="font-size:13px">Sign-ins</b>
       <div class="actions">${c.platform === 'youtube' ? `<button class="btn sm" data-act="reauthyt">${ic('key', 14)}Reconnect YouTube</button>` : ''}<button class="btn sm" data-act="fblink">${ic('fb', 14)}Facebook page</button><button class="btn sm" data-act="iglink">${ic('ig', 14)}Instagram posting</button></div>
@@ -2146,7 +2165,7 @@ async function paletteItems() {
     S.pal = { at: Date.now(), ch: ch.channels || [], gr: gr.groups || [] };
   }
   S.pal.ch.forEach(c => items.push({ icon: 'tv', label: c.title, hint: 'Client', run: () => go('channel/' + c.id), kw: (c.handle || '') + ' client route', img: c.thumbnail }));
-  S.pal.gr.forEach(g => items.push({ icon: 'net', label: `Pool ${g.number}${g.label ? ' · ' + g.label : ''}`, hint: 'Pool', run: () => go('groups'), kw: `${g.outgoing_ip || ''} ${g.host || ''} proxy` }));
+  S.pal.gr.forEach(g => items.push({ icon: 'net', label: poolT(g), hint: 'Pool', run: () => go('groups'), kw: `${g.outgoing_ip || ''} ${g.host || ''} proxy` }));
   return items;
 }
 function fuzzy(q, t) {
