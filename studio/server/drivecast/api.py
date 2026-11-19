@@ -1394,6 +1394,7 @@ def source_check_now(req, cid):
     acc = db.one("SELECT id FROM ig_accounts WHERE group_id=?", (c["group_id"],))
     if acc:
         igsync._next_action.pop(acc["id"], None)
+    vidsync.kick(c["id"])  # YouTube / TikTok: check now and fill the week of backup without waiting
     return {"ok": True}
 
 
