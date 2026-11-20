@@ -314,6 +314,14 @@ class VideoSourceTests(unittest.TestCase):
             out.append(vidsync.source_pass(db.one("SELECT * FROM sources WHERE id=?", (self.src,))))
         return out
 
+    def test_whole_account_is_listed_before_downloads(self):
+        steps = self.passes(4)
+        self.assertEqual(steps[0], "check")
+        self.assertIn("discover", steps[:3], steps)
+        self.assertEqual(db.one("SELECT backfill_done FROM sources WHERE id=?", (self.src,))["backfill_done"], 1)
+        self.assertEqual(db.one("SELECT total_found FROM sources WHERE id=?", (self.src,))["total_found"],
+                         db.one("SELECT COUNT(*) n FROM media WHERE source_id=?", (self.src,))["n"])
+
     def test_found_videos_do_not_count_as_ready(self):
         """15 videos only *found* on the profile must not stop the downloads (the TikTok bug)."""
         self.passes(1)  # first check
@@ -485,3 +493,15 @@ class FleetTests(unittest.TestCase):
             self.assertEqual(api.register(req)["user"], "a@x.com")
             with self.assertRaises(api.HttpError):  # the limit is reached
                 api.register(self.R({"name": "B", "email": "b@x.com", "password": "password1"}))
+
+
+class FacebookScopeTests(unittest.TestCase):
+    def test_login_url_has_no_publish_video_scope(self):
+        from drivecast import facebook
+        with mock.patch.object(facebook, "version", return_value="v21.0"):
+            url = facebook.consent_url("123", "https://s1.drivecast.site/oauth/fb/callback", "state1")
+        scope = url.split("scope=")[1].split("&")[0].replace("%2C", ",")
+        self.assertNotIn("publish_video", scope)
+        for kept in ("pages_show_list", "pages_read_engagement", "pages_manage_posts", "pages_manage_engagement",
+                     "pages_read_user_content", "business_management", "instagram_basic", "instagram_content_publish"):
+            self.assertIn(kept, scope.split(","))

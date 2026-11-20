@@ -67,3 +67,77 @@ class Onboarding(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SafeQueueTests(unittest.TestCase):
+    setUp = ti.PipelineTests.setUp
+    tearDown = ti.PipelineTests.tearDown
+    run_passes = ti.PipelineTests.run_passes
+
+    def _media(self, ext, dur, text, state="in_drive", origin="tiktok"):
+        now = time.time()
+        return db.run("""INSERT INTO media(workspace_id,channel_id,source_id,origin,ext_id,kind,lane,duration,caption,state,created_at,updated_at)
+                         VALUES(?,?,?,?,?,'video','backfill',?,?,?,?,?)""", (self.ws, self.ch, self.src, origin, ext, dur, text, state, now, now))
+
+    def test_same_video_on_another_site_is_a_twin(self):
+        self._media("T1", 31.4, "Easy chalk paint for old furniture #diy @someone")
+        # Instagram copy: same length (±1 s) and nearly the same words
+        self.assertIsNotNone(igsync.twin_of(self.ch, 31.9, "Easy chalk paint for old furniture ✨ link in bio"))
+        # same length but a different video
+        self.assertIsNone(igsync.twin_of(self.ch, 31.4, "Summer tomato harvest and canning tips"))
+        # no caption to compare: never skipped on length alone
+        self.assertIsNone(igsync.twin_of(self.ch, 31.4, ""))
+        # a different length
+        self.assertIsNone(igsync.twin_of(self.ch, 45.0, "Easy chalk paint for old furniture"))
+
+    def test_found_only_items_are_not_twins(self):
+        self._media("T2", 20.0, "Salted maple syrup marshmallows recipe", state="found")
+        self.assertIsNone(igsync.twin_of(self.ch, 20.0, "Salted maple syrup marshmallows recipe"))
+
+    def test_twin_is_skipped_with_a_plain_reason(self):
+        self._media("T3", 12.0, "Homemade fruit juice gummies for kids")
+        mid = self._media("T4", 12.3, "Homemade fruit juice gummies for kids", state="found", origin="instagram")
+        m = db.one("SELECT * FROM media WHERE id=?", (mid,))
+        igsync.skip_twin(m, igsync.twin_of(self.ch, 12.3, m["caption"], mid))
+        row = db.one("SELECT state, skip_reason FROM media WHERE id=?", (mid,))
+        self.assertEqual(row["state"], "skipped")
+        self.assertIn("TikTok", row["skip_reason"])
+
+    def test_pasted_instagram_links_join_the_queue_in_order(self):
+        src = db.one("SELECT * FROM sources WHERE id=?", (self.src,))
+        ch = store.channel(self.ch)
+        links = ["https://www.instagram.com/reel/CxAbCdEfGhI/?igsh=x", "https://www.instagram.com/p/CyZzZzZzZzZ/", "not a link",
+                 "https://www.instagram.com/reel/CxAbCdEfGhI/"]
+        added, known = igsync.add_links(src, ch, links)
+        self.assertEqual((added, known), (2, 1))
+        rows = db.all("SELECT ext_id, lane, state FROM media WHERE code IN ('CxAbCdEfGhI','CyZzZzZzZzZ') ORDER BY taken_at")
+        self.assertEqual([r["lane"] for r in rows], ["fresh", "fresh"])
+        self.assertEqual(igsync.shortcode_pk("AAAAAAAAAAB"), "1")
+        self.assertEqual(igsync.shortcode_pk("AAAAAAAAABA"), "64")
+
+    def test_keep_ahead_sets_the_target(self):
+        ch = {"plan_json": db.jdump({"posts_per_day": 3})} if hasattr(db, "jdump") else {"plan_json": '{"posts_per_day": 3}'}
+        self.assertEqual(igsync._ready_target(ch, {"keep_days": 14}), 42)
+        self.assertEqual(igsync._ready_target(ch, {"keep_days": 90}), 270)
+        self.assertGreater(igsync._ready_target(ch, {"keep_days": 0}), 10 ** 5)
+        self.assertEqual(igsync._ready_target(ch, {}), 21)
+
+    def test_cooling_is_explained_and_runway_counts_days(self):
+        from drivecast import api
+        db.run("UPDATE channels SET state='live', plan_json=? WHERE id=?", ('{"posts_per_day": 2}', self.ch))
+        for i in range(6):
+            self._media(f"R{i}", 10 + i * 5, f"video number {i} unique words{i}", state="in_drive")
+        for i in range(4):
+            self._media(f"W{i}", 90 + i * 7, f"waiting item {i} other{i}", state="found")
+        igsync.rest_route(igsync.route_of(db.one("SELECT * FROM ig_accounts LIMIT 1")), 900)
+        q = api._queue_row(store.channel(self.ch), time.time())
+        self.assertEqual(q["state"], "cooling")
+        self.assertTrue(q["until"])
+        self.assertEqual((q["ready"], q["waiting"], q["runway_days"], q["ready_days"]), (6, 4, 5, 3))
+
+    def test_instagram_health_says_resting_with_a_time(self):
+        acc = db.one("SELECT * FROM ig_accounts LIMIT 1")
+        igsync.rest_route(igsync.route_of(acc), 600)
+        h = igsync.health(acc)
+        self.assertEqual(h["state"], "resting")
+        self.assertTrue(h["rest_until"])

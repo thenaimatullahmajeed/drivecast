@@ -267,6 +267,7 @@ function paintLive() {
   deskin(document.querySelector('.srv'));
   const tn = document.getElementById('tbn'); if (tn && l) { tn.textContent = l.attention > 9 ? '9+' : l.attention; tn.classList.toggle('hidden', !l.attention); }
   const ml = document.getElementById('mlive'); if (ml) ml.textContent = off ? 'Reconnecting' : l && l.running.length ? 'Posting' : 'Live';
+  const qb = document.getElementById('queuebox'); if (qb && l && l.queue) qb.innerHTML = queueRows(l.queue);
   const box = document.getElementById('livenow');
   if (box) box.innerHTML = off ? '<span style="color:#FF9B85">Phone not answering — retrying…</span>'
     : !l ? '' : l.running.length ? l.running.map(r => `<div class="ln"><b class="ell">${esc(r.client)}</b><span class="ell">${esc(r.stage || 'Working')}</span><span class="lbar"><i style="width:${r.pct ?? 8}%"></i></span></div>`).join('')
@@ -504,6 +505,22 @@ function pauseModal() {
 }
 
 // ------------------------------------------------------------------ dashboard
+function queueRows(list) {
+  return list.map(q => {
+    const tot = Math.max(1, q.ready + q.waiting), pc = q.state === 'downloading' && q.pct != null ? Math.round(q.pct * 100) : Math.round(q.ready * 100 / tot);
+    const chipT = { cooling: ['Cooling down', 'warn'], downloading: [q.stage || 'Downloading', 'ok'], scanning: ['Scanning the account', 'neutral'], full: ['Kept ahead', 'ok'], queued: ['In queue', 'neutral'] }[q.state] || ['In queue', 'neutral'];
+    return `<a class="qdash" href="#/channel/${q.id}" data-qid="${q.id}" style="display:grid;grid-template-columns:minmax(120px,1.2fr) 2fr auto;gap:14px;align-items:center;padding:12px 0;border-top:1px solid var(--line);text-decoration:none;color:inherit">
+      <span style="min-width:0"><b class="ell" style="display:block;font-size:13.5px">${esc(q.title)}</b><span class="mini">${q.runway_days} day${q.runway_days === 1 ? '' : 's'} of posting · ${q.ready} ready · ${q.waiting} waiting</span></span>
+      <span style="display:flex;flex-direction:column;gap:6px"><span class="qbar" style="height:6px;border-radius:99px;background:var(--line);overflow:hidden"><i data-qfill style="display:block;height:100%;width:${pc}%;background:${q.state === 'cooling' ? 'var(--warn,#F2B54A)' : 'var(--ok)'};transition:width .6s"></i></span>
+        <span class="mini" data-qtxt>${q.state === 'cooling' && q.until ? esc(coolTxt(q)) : q.state === 'downloading' ? esc((q.stage || 'Working') + ' · ' + pc + '%') : `${q.today}/${q.daily || 0} downloaded today`}</span></span>
+      <span data-qchip>${chip(chipT[0], chipT[1])}</span></a>`;
+  }).join('');
+}
+function queueCard() {
+  const list = (S.live && S.live.queue) || [];
+  if (!list.length) return '';
+  return `<section class="card" style="padding:16px 18px"><div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;flex-wrap:wrap"><h2 style="font-size:16px">Download queue</h2><span class="mono" style="font-size:11px;color:#8E94A0">a few videos a day, safely · live</span></div><div id="queuebox">${queueRows(list)}</div></section>`;
+}
 async function pageDashboard() {
   let last = 0; try { last = +localStorage.getItem('dc_seen') || 0; } catch (e) { /* private mode */ }
   const d = await api('GET', `/api/dashboard${last ? '?since=' + last : ''}`);
@@ -517,6 +534,7 @@ async function pageDashboard() {
     safe(() => todayCard(d), 'Today'),
     safe(() => kpis(d), 'Numbers'),
     `<div class="dgrid"><div class="s8">${safe(() => trendCard(d), 'Views')}</div><div class="s4">${safe(() => postsCard(d), 'Latest posts')}</div></div>`,
+    `<div class="dgrid"><div class="s12">${safe(() => queueCard(), 'Download queue')}</div></div>`,
     `<div class="dgrid"><div class="s12">${safe(() => pulseCard(d), 'Channels')}</div></div>`,
     `<div class="dgrid"><div class="s4">${safe(() => upnextCard(d), 'Up next')}</div><div class="s4">${safe(() => feedCard(d), 'Activity')}</div><div class="s4">${safe(() => attentionCard(d), 'Needs you')}</div></div>`,
     `<div class="dgrid"><div class="s8">${safe(() => heatCard(d), 'Best hours')}</div><div class="s4">${safe(() => consCard(d), 'Consistency')}</div></div>`,
@@ -717,7 +735,7 @@ function originChip(o, dark) {
 }
 function srcIcon(k, s = 16) { const m = SRC[k]; return `<span class="ri" style="background:${m[3]};color:${m[4]}">${ic(m[0], s)}</span>`; }
 function dstIcon(k, s = 16) { const m = DST[k]; return `<span class="ri" style="background:${m[2]};color:${m[3]}">${ic(m[0], s)}</span>`; }
-function newSrc(prev) { return Object.assign({ drive: true, ig: false, yt: false, tt: false, handle: '', profile: null, ctype: 'videos', include_old: true, cap: 6, ytLink: '', ttLink: '', encore: true, inbox: true, checking: false, err: null }, prev || {}); }
+function newSrc(prev) { return Object.assign({ drive: true, ig: false, yt: false, tt: false, handle: '', profile: null, ctype: 'videos', include_old: true, cap: 6, keep_days: 7, ytLink: '', ttLink: '', encore: true, inbox: true, checking: false, err: null }, prev || {}); }
 // Instagram part of a source (profile check, content type, older posts)
 function sourceEditor(X, group, opts = {}) {
   const pick = (act, val, on, t, d) => `<button type="button" class="pick ${on ? 'sel' : ''}" data-act="${act}" data-v="${val}"><b style="font-size:14px">${t}</b><span class="muted" style="font-size:12px">${d}</span></button>`;
@@ -736,10 +754,31 @@ function sourceEditor(X, group, opts = {}) {
     ${toggle('srcinbox', X.inbox, 'Client Inbox folder', 'The client can upload to Drive himself; files are cleaned before they post')}</div>`;
   return igPart + toggles;
 }
+const KEEP = [[7, '1 week'], [14, '2 weeks'], [30, '1 month'], [90, '3 months'], [0, 'Whole account']];
+function keepAhead(X) {
+  const k = X.keep_days == null ? 7 : X.keep_days;
+  return `<div style="margin-top:14px;display:flex;flex-direction:column;gap:8px"><b style="font-size:13px">Keep ahead</b><div class="actions">${KEEP.map(([v, l]) => `<button type="button" class="btn sm ${k === v ? 'primary' : ''}" data-act="srckeep" data-v="${v}">${l}</button>`).join('')}</div><span class="help">${k === 0 ? 'The whole account goes to Drive, a few videos a day — never all at once. Needs Drive space.' : 'Videos for this many days of posting stay ready in Drive, downloaded slowly each day.'}</span></div>`;
+}
+function linkMsg(r) {
+  return `${r.added} added to the queue${r.already ? ` · ${r.already} already known` : ''}${r.missing && r.missing.length ? ` · add a ${r.missing.join(' / ')} source first for those links` : ''}`;
+}
+function linkBox(note) {
+  return `<details open><summary style="cursor:pointer;font-weight:600;font-size:13px">${ic('link', 14)} Paste links the client sent</summary><p class="muted" style="font-size:12.5px;margin:8px 0">${note} One link per line, as many as you like — Instagram and TikTok links both work. They join the queue and download slowly and safely, never all at once. A video that is already on this client is skipped.</p><textarea class="i mono" id="vlinks" rows="5" style="height:auto;padding:10px;font-size:12px" placeholder="https://www.instagram.com/reel/…&#10;https://www.tiktok.com/@name/video/…"></textarea><button type="button" class="btn sm" data-act="iaddlinks" style="margin-top:8px">Add to queue</button></details>`;
+}
+function coolTxt(q) { return `Cooling down — a short safe pause so the account stays healthy. Back ${rel(q.until)}. Nothing is lost, it carries on by itself.`; }
+function runwayStrip(q) {
+  const tot = Math.max(1, q.ready + q.waiting), pc = Math.round(q.ready * 100 / tot);
+  const scan = q.scan_done ? 'whole account scanned' : 'still scanning the account — this grows';
+  return `<div class="runway" style="margin-top:14px;padding:14px;border-radius:12px;background:rgba(255,255,255,.05)">
+    <div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:baseline"><b style="font-size:14px">Runway · about ${q.runway_days} day${q.runway_days === 1 ? '' : 's'} of posting</b><span class="mono" style="font-size:11px;color:#8E94A0">${q.ready + q.waiting} videos at ${q.ppd}/day · ${scan}</span></div>
+    <div class="lbar" style="margin-top:10px"><i style="width:${pc}%"></i></div>
+    <div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-top:8px;font-size:12px;color:#C9CDD6"><span>${q.ready_days} day${q.ready_days === 1 ? '' : 's'} already in Drive (${q.ready} videos)</span><span>${q.waiting} more waiting · ${q.today}/${q.daily || 0} downloaded today</span></div>
+    ${q.state === 'cooling' && q.until ? `<div class="note warn" style="margin-top:10px">${ic('alert', 16)}<span>${esc(coolTxt(q))}</span></div>` : ''}</div>`;
+}
 function oldPosts(X, word = 'posts') {
   return `<div style="margin-top:14px;display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px">
       <div style="display:flex;flex-direction:column;gap:8px"><b style="font-size:13px">Older ${word}</b><div class="actions"><button type="button" class="btn sm ${X.include_old ? 'primary' : ''}" data-act="srcold" data-v="1">Include older</button><button type="button" class="btn sm ${X.include_old ? '' : 'primary'}" data-act="srcold" data-v="0">Only new from today</button></div><span class="help">${X.include_old ? 'Newest first, about a week always kept ready.' : 'Nothing from before today is downloaded.'}</span></div>
-      <div style="display:flex;flex-direction:column;gap:8px"><b style="font-size:13px">Older ${word} per day</b><div class="stepper"><button type="button" data-act="srccap" data-d="-1" aria-label="Fewer">−</button><strong>${X.cap}</strong><button type="button" data-act="srccap" data-d="1" aria-label="More">+</button></div><span class="help">New ones are always taken right away.</span></div></div>`;
+      <div style="display:flex;flex-direction:column;gap:8px"><b style="font-size:13px">Older ${word} per day</b><div class="stepper"><button type="button" data-act="srccap" data-d="-1" aria-label="Fewer">−</button><strong>${X.cap}</strong><button type="button" data-act="srccap" data-d="1" aria-label="More">+</button></div><span class="help">New ones are always taken right away. At most 12 a day, to stay safe.</span></div></div>${X.include_old ? keepAhead(X) : ''}`;
 }
 function toggle(act, on, title, help) {
   return `<button type="button" class="tgl ${on ? 'on' : ''}" data-act="${act}" aria-pressed="${on}"><span class="sw"><i></i></span><span style="display:flex;flex-direction:column;gap:2px;text-align:left"><b style="font-size:13px">${title}</b><span class="muted" style="font-size:12px">${help}</span></span></button>`;
@@ -751,6 +790,7 @@ function srcActs(X, redraw, getGroup) {
     srctype: d => { keep(); X.ctype = d.v; redraw(); },
     srcold: d => { keep(); X.include_old = d.v === '1'; redraw(); },
     srccap: d => { keep(); X.cap = Math.max(1, Math.min(30, X.cap + +d.d)); redraw(); },
+    srckeep: d => { keep(); X.keep_days = +d.v; redraw(); },
     srcenc: () => { keep(); X.encore = !X.encore; redraw(); },
     srcinbox: () => { keep(); X.inbox = !X.inbox; redraw(); },
     srcskip: () => { keep(); const h = String(X.handle || '').trim().replace(/^.*instagram\.com\//, '').replace(/[/?#].*$/, '').replace(/^@/, ''); if (!h) return; X.profile = { username: h, full_name: 'Not checked yet — checked automatically', picture: null, id: null, is_private: false, unchecked: true }; X.handle = h; X.err = null; redraw(); },
@@ -777,12 +817,12 @@ document.addEventListener('input', e => {
 });
 function srcPayload(X) {
   if (!X.ig) return null;
-  return { handle: X.handle, content_type: X.ctype, include_old: X.include_old, daily_cap: X.cap, ig_user_id: X.profile && X.profile.id, full_name: X.profile && !X.profile.unchecked ? X.profile.full_name : null, picture: X.profile && X.profile.picture };
+  return { handle: X.handle, content_type: X.ctype, include_old: X.include_old, daily_cap: X.cap, keep_days: X.keep_days, ig_user_id: X.profile && X.profile.id, full_name: X.profile && !X.profile.unchecked ? X.profile.full_name : null, picture: X.profile && X.profile.picture };
 }
 function vidSources(X) {
   const out = [];
-  if (X.yt && X.ytLink.trim()) out.push({ kind: 'youtube', link: X.ytLink.trim(), include_old: X.include_old, daily_cap: X.cap });
-  if (X.tt && X.ttLink.trim()) out.push({ kind: 'tiktok', link: X.ttLink.trim(), include_old: X.include_old, daily_cap: X.cap });
+  if (X.yt && X.ytLink.trim()) out.push({ kind: 'youtube', link: X.ytLink.trim(), include_old: X.include_old, daily_cap: X.cap, keep_days: X.keep_days });
+  if (X.tt && X.ttLink.trim()) out.push({ kind: 'tiktok', link: X.ttLink.trim(), include_old: X.include_old, daily_cap: X.cap, keep_days: X.keep_days });
   return out;
 }
 
@@ -1132,9 +1172,11 @@ function igCard(g) {
   const st = !a ? ['Not added', 'neutral', 'No Instagram account yet — needed only for clients with an Instagram source.']
     : a.status === 'needs_cookies' ? ['Sign-in expired', 'bad', 'Paste fresh cookies to continue pulling posts.']
       : a.status === 'resting' && a.paused_until > Date.now() / 1000 ? ['Resting', 'warn', `Instagram asked this account to slow down · resumes ${rel(a.paused_until)} · meanwhile another test account reads for this pool`]
-        : ['Connected', 'ok', `${a.sources} Instagram source(s) · ${a.today} action(s) today · reads via ${a.proxy_mode === 'phone' ? 'phone internet' : 'group IP'}`];
+        : ['Healthy', 'ok', `${a.sources} Instagram source(s) · ${a.today}/${(a.health && a.health.daily) || 160} used today · reads via ${a.proxy_mode === 'phone' ? 'phone internet' : 'group IP'}${a.checked_at ? ' · checked ' + rel(a.checked_at) : ''}`];
+  if (a && a.health && a.health.state === 'resting' && a.health.rest_until) { st[0] = 'Cooling down'; st[1] = 'warn'; st[2] = `Instagram asked for a short pause — safe, nothing is lost. Back ${rel(a.health.rest_until)}. Today ${a.today}/${a.health.daily} used.`; }
   return `<div class="igbox"><span style="width:34px;height:34px;border-radius:10px;background:#FDEBE6;color:#B83A1F;display:inline-flex;align-items:center;justify-content:center">${ic('ig', 18)}</span>
     <div style="flex:1;min-width:160px;display:flex;flex-direction:column;gap:2px"><span style="display:flex;align-items:center;gap:8px"><b style="font-size:13px">Instagram ${a && a.username ? '· @' + esc(a.username) : ''}</b>${chip(st[0], st[1])}</span><span class="muted" style="font-size:12px">${esc(st[2])}</span></div>
+    ${a ? `<button class="btn sm" data-act="igtest" data-id="${g.id}">${ic('check', 14)}Test</button>` : ''}
     <button class="btn sm ${!a || a.status === 'needs_cookies' ? 'primary' : ''}" data-act="cookies" data-id="${g.id}">${ic('cookie', 14)}${a ? 'Replace cookies' : 'Add cookies'}</button></div>
     ${a && a.shared_with && a.shared_with.length ? `<div class="note warn" style="margin-top:-4px">${ic('alert', 16)}<span><b>@${esc(a.username)} is also used by Pool ${a.shared_with.join(', ')}.</b> Instagram counts one account’s requests together, so these pools slow each other down. Give each pool its own test account (vault → Use).</span></div>` : ''}`;
 }
@@ -1252,6 +1294,14 @@ async function pageGroups() {
   Object.assign(S.acts, GROUP_FORM_ACTS, {
     cookies: d => cookiesModal(+d.id, render),
     gapps: d => groupAppsModal(+d.id),
+    igtest: async d => {
+      toast('Testing the Instagram cookies…');
+      try { const r = await api('POST', `/api/groups/${d.id}/instagram/test`);
+        if (r.ok) toast(`Cookies work${r.username ? ' · @' + r.username : ''} · answered in ${r.ms} ms`);
+        else toast(r.message || 'The test did not pass', true);
+      } catch (e) { toast(e.message, true); }
+      render();
+    },
     grename: async d => { const g = groups.find(x => x.id === +d.id); const n = prompt(`Name for Pool ${g.number} (shown after the number)`, g.label || ''); if (n === null) return; try { await api('PATCH', `/api/groups/${g.id}`, { label: n }); toast('Pool renamed'); } catch (e) { toast(e.message, true); } render(); },
     vadd: async v => { try { await api('POST', '/api/ig/vault', { cookies: v.cookies, label: v.label, user_agent: navigator.userAgent }); toast('Added to the vault'); } catch (e) { toast(e.message, true); } render(); },
     vcheck: async d => { await api('POST', `/api/ig/vault/${d.id}/check`); render(); },
@@ -1405,6 +1455,7 @@ async function pageChannel(id) {
   const stage = (k, n, sub, col) => `<div class="stg"><span>${k}</span><strong style="color:${col}">${num(n)}</strong><em>${sub}</em></div>`;
   const pipe = `<section class="today" style="padding:16px 18px"><div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;flex-wrap:wrap"><h2 style="font-size:16px">Pipeline</h2><span class="mono" style="font-size:11px;color:#8E94A0">every post of this client, by stage · one ledger</span></div>
     <div class="stgs">${stage('Waiting', p.waiting, 'to download', '#C9CDD6')}${stage('Downloading', p.downloading, 'right now', '#FF9B85')}${stage('Ready in Drive', p.ready, `target ~${d.ready_target}`, '#3DDC97')}${stage('Published', p.published, d.destinations.join(' · ') || 'no destination', '#FFFFFF')}${stage('Photo posts', p.photos, 'for Facebook / Instagram', '#9B8CFF')}${stage('Skipped', p.skipped, 'see below', '#F2B54A')}</div>
+    ${d.runway ? runwayStrip(d.runway) : ''}
     ${c.live ? `<div style="margin-top:12px">${liveBar(c.live, true)}</div>` : ''}</section>`;
   const slots = d.slots.slice();
   const qrows = d.queue.map((m, i) => {
@@ -1516,7 +1567,7 @@ function addSourceModal(c, d) {
 }
 function editSourceModal(c, src, d) {
   const X = newSrc({ ig: true, handle: src ? src.handle : '', profile: src ? { username: src.handle, full_name: src.full_name, picture: src.picture, id: null } : null,
-    ctype: src ? src.content_type : 'videos', include_old: src ? !!src.include_old : true, cap: src ? src.daily_cap : 6, encore: d.encore_on, inbox: d.has_inbox });
+    ctype: src ? src.content_type : 'videos', include_old: src ? !!src.include_old : true, cap: src ? src.daily_cap : 6, keep_days: src ? src.keep_days : 7, encore: d.encore_on, inbox: d.has_inbox });
   S.srcX = X;
   const draw = async () => {
     const gr = (await api('GET', '/api/groups')).groups.find(g => g.id === c.group.id);
@@ -1524,6 +1575,7 @@ function editSourceModal(c, src, d) {
     modal(`<h2 style="display:flex;align-items:center;gap:10px">${srcIcon('instagram')}${src ? 'Instagram source' : 'Connect Instagram'}</h2><p class="muted" style="margin:0">Changes apply right away. Nothing already posted is posted again — switching back to a handle resumes where it left off.</p>
       <div>${sourceEditor(X, gr)}</div>
       ${acc ? `<div style="display:flex;align-items:center;gap:10px;padding:12px;border-radius:12px;background:var(--paper);flex-wrap:wrap"><b style="font-size:13px;flex:1 1 200px">Read Instagram through</b><span class="actions"><button type="button" class="btn sm ${acc.proxy_mode === 'phone' ? '' : 'primary'}" data-act="igpx" data-v="group">Pool ${gr.number} IP</button><button type="button" class="btn sm ${acc.proxy_mode === 'phone' ? 'primary' : ''}" data-act="igpx" data-v="phone">Phone’s own internet</button></span><span class="help" style="flex-basis:100%">Reading only. Posting always uses the pool IP.</span></div>` : ''}
+      ${src ? linkBox('For clients who send you single videos.') : ''}
       <div class="actions" style="justify-content:space-between;margin-top:6px">${src ? `<span class="actions"><button class="btn" data-act="srcpause">${ic(src.state === 'paused' ? 'play' : 'pause', 14)}${src.state === 'paused' ? 'Resume' : 'Pause'}</button><button class="btn danger" data-act="srcremove">${ic('trash', 14)}Remove</button></span>` : '<span></span>'}<span class="actions"><button class="btn" data-act="close">Cancel</button><button class="btn primary" data-act="srcsave" ${X.profile ? '' : 'disabled'}>Save</button></span></div>`);
     Object.assign(S.acts, srcActs(X, draw, () => gr), {
       srcsave: async () => {
@@ -1532,6 +1584,7 @@ function editSourceModal(c, src, d) {
         await api('POST', `/api/channels/${c.id}/inbox`, { enabled: X.inbox });
         closeModal(); toast('Source saved'); render();
       },
+      iaddlinks: async () => { const r = await api('POST', `/api/channels/${c.id}/source/${src.id}/links`, { links: ($('#vlinks').value || '').split(/\s+/).filter(Boolean) }); toast(linkMsg(r)); closeModal(); render(); },
       igpx: async v => { await api('POST', `/api/groups/${gr.id}/instagram/proxy`, { proxy_mode: v.v }); toast(v.v === 'phone' ? 'Reading through the phone’s internet' : `Reading through Pool ${gr.number}`); draw(); },
       srcpause: async () => { await api('PUT', `/api/channels/${c.id}/source`, { kind: 'instagram', paused: src.state !== 'paused' }); closeModal(); render(); },
       srcremove: async () => { if (!confirm('Stop pulling from Instagram? Files already in Drive still post; nothing is deleted.')) return; await api('PUT', `/api/channels/${c.id}/source`, { kind: 'instagram', enabled: false }); closeModal(); render(); },
@@ -1540,7 +1593,7 @@ function editSourceModal(c, src, d) {
   draw();
 }
 function videoSourceModal(c, src, kind, d) {
-  const X = { link: src ? src.url : '', include_old: src ? !!src.include_old : true, cap: src ? src.daily_cap : 6, mode: src ? src.proxy_mode : 'phone' };
+  const X = { link: src ? src.url : '', include_old: src ? !!src.include_old : true, cap: src ? src.daily_cap : 6, keep_days: src ? src.keep_days : 7, mode: src ? src.proxy_mode : 'phone' };
   const site = SRC[kind][1];
   const draw = () => {
     modal(`<h2 style="display:flex;align-items:center;gap:10px">${srcIcon(kind)}${site} source</h2>
@@ -1553,22 +1606,23 @@ function videoSourceModal(c, src, kind, d) {
         <p class="muted" style="font-size:12.5px;margin:8px 0">Only if ${site} asks for sign-in. Use a <b>test account</b>, never the client’s. Export with “Get cookies.txt LOCALLY” on ${kind === 'youtube' ? 'youtube.com' : 'tiktok.com'}.</p>
         <textarea class="i mono" id="vck" rows="4" style="height:auto;padding:10px;font-size:12px" placeholder="# Netscape HTTP Cookie File"></textarea>
         ${src && src.has_cookies ? '<button type="button" class="btn sm" data-act="vckclear" style="margin-top:8px">Remove saved cookies</button>' : ''}</details>
-      ${src ? `<details><summary style="cursor:pointer;font-weight:600;font-size:13px">${ic('link', 14)} Paste video links by hand</summary><p class="muted" style="font-size:12.5px;margin:8px 0">Fallback if listing the profile is blocked. One link per line — they join the queue as fresh.</p><textarea class="i mono" id="vlinks" rows="4" style="height:auto;padding:10px;font-size:12px"></textarea><button type="button" class="btn sm" data-act="vaddlinks" style="margin-top:8px">Add links</button></details>` : ''}
+      ${src ? linkBox('For clients who send you single videos, or if listing the profile is blocked.') : ''}
       <div class="actions" style="justify-content:space-between;margin-top:6px">${src ? `<span class="actions"><button class="btn" data-act="vpause">${ic(src.state === 'paused' ? 'play' : 'pause', 14)}${src.state === 'paused' ? 'Resume' : 'Pause'}</button><button class="btn danger" data-act="vremove">${ic('trash', 14)}Remove</button></span>` : '<span></span>'}<span class="actions"><button class="btn" data-act="close">Cancel</button><button class="btn primary" data-act="vsave">Save</button></span></div>`);
   };
   const keep = () => { const l = $('#vlink'); if (l) X.link = l.value; };
   Object.assign(S.acts, {
     srcold: v => { keep(); X.include_old = v.v === '1'; draw(); },
     srccap: v => { keep(); X.cap = Math.max(1, Math.min(30, X.cap + +v.d)); draw(); },
+    srckeep: v => { keep(); X.keep_days = +v.v; draw(); },
     vpx: v => { keep(); X.mode = v.v; draw(); },
     vsave: async () => {
       keep();
       const ck = ($('#vck') || {}).value || '';
-      await api('PUT', `/api/channels/${c.id}/source`, { kind, link: X.link, include_old: X.include_old, daily_cap: X.cap, proxy_mode: X.mode, cookies: ck.trim() || undefined });
+      await api('PUT', `/api/channels/${c.id}/source`, { kind, link: X.link, include_old: X.include_old, daily_cap: X.cap, keep_days: X.keep_days, proxy_mode: X.mode, cookies: ck.trim() || undefined });
       closeModal(); toast(`${site} source saved — first check within a minute`); render();
     },
     vckclear: async () => { await api('PUT', `/api/channels/${c.id}/source`, { kind, clear_cookies: true }); closeModal(); toast('Cookies removed'); render(); },
-    vaddlinks: async () => { const r = await api('POST', `/api/channels/${c.id}/source/${src.id}/links`, { links: ($('#vlinks').value || '').split(/\s+/) }); toast(`${r.added} video(s) added`); closeModal(); render(); },
+    iaddlinks: async () => { const r = await api('POST', `/api/channels/${c.id}/source/${src.id}/links`, { links: ($('#vlinks').value || '').split(/\s+/).filter(Boolean) }); toast(linkMsg(r)); closeModal(); render(); },
     vpause: async () => { await api('PUT', `/api/channels/${c.id}/source`, { kind, paused: src.state !== 'paused' }); closeModal(); render(); },
     vremove: async () => { if (!confirm(`Stop pulling from ${site}? Files already in Drive still post; nothing is deleted.`)) return; await api('PUT', `/api/channels/${c.id}/source`, { kind, enabled: false }); closeModal(); render(); },
   });

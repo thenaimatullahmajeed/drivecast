@@ -337,6 +337,10 @@ SCHEMA = [
     ALTER TABLE uploads ADD COLUMN yt_state TEXT;
     ALTER TABLE uploads ADD COLUMN yt_reason TEXT;
     """,
+    # version 17: how far ahead (in days of posting) each source keeps videos ready; 0 = the whole account, a few a day
+    """
+    ALTER TABLE sources ADD COLUMN keep_days INTEGER NOT NULL DEFAULT 7;
+    """,
 ]
 
 

@@ -106,9 +106,14 @@ def forget_client(acc_id):
     _clients.pop(acc_id, None)
 
 
-def _ready_target(ch):
+def _ready_target(ch, src=None):
+    """How many videos to keep ready: posts/day × the source's "keep ahead" days (default a week; 0 = whole account)."""
     plan = db.jload(ch["plan_json"], {})
-    return min(24, max(4, int(plan.get("posts_per_day") or 2) * 6))
+    ppd = max(1, int(plan.get("posts_per_day") or 2))
+    kd = (src or {}).get("keep_days")
+    if kd == 0:
+        return 10 ** 6
+    return min(2000, max(4, ppd * (kd or 7)))
 
 
 def ready_count(ch_id):
@@ -242,6 +247,106 @@ def discover_older(src, ch, cl):
            (cursor or "", 0 if cursor else 1, src["id"], time.time(), src["id"]))
 
 
+# ------------------------------------------------------------------ the same video, even from another site
+_WORD = re.compile(r"[^\W_]{3,}", re.U)
+
+
+def _words(text):
+    t = re.sub(r"https?://\S+|[#@]\S+", " ", (text or "").lower())
+    return set(_WORD.findall(t))
+
+
+def twin_of(ch_id, duration, text, exclude_id=None):
+    """A video this client already has, even if it came from another site (Instagram ↔ TikTok): the same length
+    (within a second) AND mostly the same words in the caption. Gentle on purpose — with no caption on either side,
+    or different words, nothing is skipped."""
+    if not duration:
+        return None
+    mine = _words(text)
+    if not mine:
+        return None
+    rows = db.all("""SELECT id, origin, caption, title FROM media WHERE channel_id=? AND id!=? AND duration IS NOT NULL
+                     AND ABS(duration-?)<=1.0 AND state IN ('downloading','cleaned','in_drive','published','waiting_facebook')""",
+                  (ch_id, exclude_id or 0, float(duration)))
+    for r in rows:
+        theirs = _words(r["caption"] or r["title"])
+        if theirs and len(mine & theirs) / len(mine | theirs) >= 0.5:
+            return r
+    return None
+
+
+def skip_twin(m, twin):
+    label = {"instagram": "Instagram", "tiktok": "TikTok", "youtube": "YouTube"}.get(twin["origin"], twin["origin"])
+    what = (twin["title"] or twin["caption"] or "").strip().replace("\n", " ")[:50]
+    db.run("""UPDATE media SET state='skipped', skip_reason=?, error_code='VID_DUPLICATE', updated_at=? WHERE id=?""",
+           (f"Same video already on this client ({label}){': ' + what if what else ''}", time.time(), m["id"]))
+
+
+# ------------------------------------------------------------------ pasted Instagram links → the queue
+_B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+_LINK = re.compile(r"instagram\.com/(?:[^/\s?#]+/)?(?:reels?|p|tv)/([A-Za-z0-9_-]{5,})", re.I)
+
+
+def shortcode_pk(code):
+    n = 0
+    for c in code[:11]:
+        n = n * 64 + _B64.index(c)
+    return str(n)
+
+
+def add_links(src, ch, links):
+    """Links the client sent: each joins the queue (fresh, in the order pasted). Returns (added, already_known)."""
+    now = time.time()
+    added = known = 0
+    for i, raw in enumerate(links):
+        m = _LINK.search(str(raw))
+        if not m:
+            continue
+        code = m.group(1)
+        try:
+            pk = shortcode_pk(code)
+        except ValueError:
+            continue
+        try:
+            with db.tx() as c:
+                c.execute("""INSERT INTO media(workspace_id,channel_id,source_id,origin,ext_id,code,kind,lane,taken_at,
+                             state,created_at,updated_at) VALUES(?,?,?,?,?,?,'video','fresh',?,'found',?,?)""",
+                          (ch["workspace_id"], ch["id"], src["id"], "instagram", pk, code, now + i * 0.001, now, now))
+            added += 1
+        except Exception:
+            known += 1
+    return added, known
+
+
+# ------------------------------------------------------------------ account health (the Test button)
+def test_account(acc, group):
+    """One real, light request with the saved cookies. Returns what the person should see."""
+    t0 = time.time()
+    out = {"ok": False, "code": None, "ms": None}
+    try:
+        who = client_for(acc, group).whoami()
+        out.update(ok=True, ms=int((time.time() - t0) * 1000), username=who.get("username"))
+        db.run("""UPDATE ig_accounts SET status='ok', error_code=NULL, error_detail=NULL, checked_at=?, username=COALESCE(?,username)
+                  WHERE id=?""", (time.time(), who.get("username"), acc["id"]))
+    except CodedError as e:
+        out["code"] = e.code
+        if e.code in ("IG_COOKIES_EXPIRED", "IG_CHALLENGE"):
+            db.run("UPDATE ig_accounts SET status='needs_cookies', error_code=?, checked_at=? WHERE id=?", (e.code, time.time(), acc["id"]))
+        out["detail"] = e.detail
+    return out
+
+
+def health(acc, now=None):
+    """Healthy / resting / needs cookies, plus what was used today."""
+    now = now or time.time()
+    rest = float(db.meta_get("ig_route_rest:" + route_of(acc)) or 0)
+    until = max(rest, acc.get("paused_until") or 0)
+    today = acc["day_count"] if acc.get("day") == time.strftime("%Y-%m-%d", time.gmtime()) else 0
+    state = "cookies" if acc["status"] == "needs_cookies" else ("resting" if until > now else "healthy")
+    return {"state": state, "rest_until": until if until > now else None, "today": today, "daily": ACCOUNT_DAILY,
+            "last_request": acc.get("last_request"), "checked_at": acc.get("checked_at")}
+
+
 # ------------------------------------------------------------------ live progress (what the person sees)
 def sync_progress(ch_id, title="First video"):
     """One honest 0-100 bar for the whole trip: Instagram → phone → clean → Google Drive."""
@@ -337,6 +442,14 @@ def process(m, src, ch, cl, group, progress=None):
     if progress:
         progress("Downloading from Instagram", None)
     item = cl.media(m["ext_id"], handle=src["handle"])
+    dur = item.get("duration") or m["duration"]
+    if dur and not m["duration"]:
+        db.run("UPDATE media SET duration=? WHERE id=?", (dur, m["id"]))
+    twin = twin_of(ch["id"], dur, item.get("caption") or m["caption"], m["id"])
+    if twin:
+        skip_twin(m, twin)
+        sync_clear(ch["id"])
+        return False
     used = [r["title"] for r in db.all("SELECT title FROM media WHERE channel_id=? AND title IS NOT NULL", (ch["id"],))]
     title = titles.choose(caption=item["caption"], channel_title=ch["title"],
                           bank=db.jload(ch.get("titles_json"), []), used=used, seed=ref)
@@ -494,7 +607,7 @@ def account_pass(acc, now=None, serve=None):
     # 3/4. older posts, only while the channel's ready buffer is low
     for s in sorted(sources, key=lambda s: ready_count(s["channel_id"])):
         ch = store.channel(s["channel_id"])
-        if not s["include_old"] or _publishing(ch["id"]) or ready_count(ch["id"]) >= _ready_target(ch):
+        if not s["include_old"] or _publishing(ch["id"]) or ready_count(ch["id"]) >= _ready_target(ch, s):
             continue
         s = _bump_day("sources", s)
         if s["day_count"] >= s["daily_cap"]:

@@ -332,6 +332,7 @@ def _group_out(g):
     out["readiness"] = {"steps": [{"name": k, "ok": v} for k, v in steps], "score": sum(1 for _, v in steps if v), "of": len(steps)}
     acc = db.one("SELECT * FROM ig_accounts WHERE group_id=?", (g["id"],))
     out["instagram"] = None if not acc else {
+        "health": igsync.health(acc),
         "username": acc["username"] or f"ID {acc['ig_user_id']}", "status": acc["status"], "error_code": acc["error_code"],
         "proxy_mode": acc.get("proxy_mode") or "group",
         "checked_at": acc["checked_at"], "paused_until": acc["paused_until"], "today": acc["day_count"] if acc["day"] == time.strftime("%Y-%m-%d", time.gmtime()) else 0,
@@ -1216,6 +1217,20 @@ def set_ig_account(req, gid):
             "group": _group_out(store.group(g["id"]))}
 
 
+@route("POST", "/api/groups/(\\d+)/instagram/test")
+def test_ig_account(req, gid):
+    g = _own_group(req, gid)
+    acc = db.one("SELECT * FROM ig_accounts WHERE group_id=?", (g["id"],))
+    if not acc:
+        raise HttpError(404, "No Instagram test account on this Pool yet")
+    r = igsync.test_account(acc, g)
+    acc = db.one("SELECT * FROM ig_accounts WHERE id=?", (acc["id"],))
+    r["health"] = igsync.health(acc)
+    if r["code"]:
+        r["message"] = _errors.info(r["code"]).get("message")
+    return r
+
+
 @route("POST", "/api/groups/(\\d+)/instagram/proxy")
 def set_ig_proxy_mode(req, gid):
     g = _own_group(req, gid)
@@ -1328,8 +1343,24 @@ def _configure_video_source(c, b, kind):
     return db.one("SELECT * FROM sources WHERE id=?", (sid,))
 
 
+KEEP_DAYS = (7, 14, 30, 90, 0)  # 0 = the whole account, a few a day
+
+
 def configure_source(c, b):
     """Add / change / pause / remove one source (Instagram, YouTube or TikTok). The ledger is never deleted."""
+    out = _configure_source(c, b)
+    if "keep_days" in b:
+        try:
+            kd = int(b["keep_days"])
+        except (TypeError, ValueError):
+            kd = 7
+        kd = kd if kd in KEEP_DAYS else 7
+        db.run("UPDATE sources SET keep_days=? WHERE channel_id=? AND kind=? AND state!='removed'",
+               (kd, c["id"], b.get("kind") or "instagram"))
+    return out
+
+
+def _configure_source(c, b):
     kind = b.get("kind") or "instagram"
     if kind in ("youtube", "tiktok"):
         return _configure_video_source(c, b, kind)
@@ -1403,14 +1434,41 @@ def source_links(req, cid, sid):
     """Paste-a-link fallback: video links typed by hand join the ledger as fresh."""
     from . import vidsync
     c = _own_channel(req, cid)
-    src = db.one("SELECT * FROM sources WHERE id=? AND channel_id=?", (int(sid), c["id"]))
-    if not src or src["kind"] not in ("youtube", "tiktok"):
+    here = db.one("SELECT * FROM sources WHERE id=? AND channel_id=? AND state!='removed'", (int(sid), c["id"]))
+    if not here:
         raise HttpError(404, "Source not found")
     links = req.json.get("links")
     links = links if isinstance(links, list) else str(links or "").split()
-    n = vidsync.add_links(src, c, links)
-    vidsync._next.pop(src["id"], None)
-    return {"added": n}
+    links = [str(x).strip() for x in links if str(x).strip()]
+    # each link goes to the client's source for that site (the box works from any of them)
+    mine = {r["kind"]: r for r in db.all("SELECT * FROM sources WHERE channel_id=? AND state!='removed'", (c["id"],))}
+    buckets = {"instagram": [], "tiktok": [], "youtube": []}
+    for x in links:
+        low = x.lower()
+        k = "instagram" if "instagram.com" in low else "tiktok" if "tiktok.com" in low else "youtube" if ("youtu" in low) else None
+        if k:
+            buckets[k].append(x)
+    added = known = 0
+    missing = []
+    for k, group in buckets.items():
+        if not group:
+            continue
+        src = mine.get(k)
+        if not src:
+            missing.append(k)
+            continue
+        if k == "instagram":
+            a, kn = igsync.add_links(src, c, group)
+            added += a
+            known += kn
+            igsync.kick(c["id"])
+        else:
+            a = vidsync.add_links(src, c, group)
+            added += a
+            known += len(group) - a
+            vidsync._next.pop(src["id"], None)
+            vidsync.kick(c["id"])
+    return {"added": added, "already": known, "missing": missing}
 
 
 @route("POST", "/api/channels/(\\d+)/inbox")
@@ -1437,6 +1495,38 @@ def channel_settings(req, cid):
         lines = [t.strip()[:95] for t in (b["titles"] if isinstance(b["titles"], list) else str(b["titles"]).splitlines()) if t.strip()]
         db.run("UPDATE channels SET titles_json=? WHERE id=?", (json.dumps(lines[:200]), c["id"]))
     return channel_detail(req, cid)
+
+
+def _queue_row(c, now):
+    """One client's download queue, for the dashboard and the client page: how far ahead it is, what is
+    happening right now, and a plain reason when it is cooling down."""
+    from . import vidsync, worker
+    srcs = db.all("SELECT * FROM sources WHERE channel_id=? AND state='active'", (c["id"],))
+    if not srcs:
+        return None
+    ppd = max(1, int((db.jload(c.get("plan_json"), {}) or {}).get("posts_per_day") or 2))
+    n = {r["state"]: r["k"] for r in db.all("SELECT state, COUNT(*) k FROM media WHERE channel_id=? AND kind='video' GROUP BY state", (c["id"],))}
+    ready = n.get("in_drive", 0) + n.get("cleaned", 0) + n.get("downloading", 0)
+    waiting = n.get("found", 0)
+    until = 0
+    for s_ in srcs:
+        if s_["kind"] == "instagram":
+            acc = db.one("SELECT * FROM ig_accounts WHERE group_id=?", (c["group_id"],))
+            if acc:
+                until = max(until, float(db.meta_get("ig_route_rest:" + igsync.route_of(acc)) or 0), acc.get("paused_until") or 0)
+        elif s_["error_code"] and (s_["next_check"] or 0) > now:
+            until = max(until, s_["next_check"])
+    prog = worker.PROGRESS.get(c["id"]) or {}
+    scanning = any(s_["include_old"] and not s_["backfill_done"] for s_ in srcs)
+    cap = sum(min(s_["daily_cap"] or vidsync.SOURCE_DAILY, vidsync.SOURCE_DAILY) for s_ in srcs if s_["include_old"])
+    done_today = sum(s_["day_count"] for s_ in srcs if s_["include_old"] and s_["day"] == time.strftime("%Y-%m-%d", time.gmtime()))
+    targets = [igsync._ready_target(c, s_) for s_ in srcs]
+    state = "cooling" if until > now else "downloading" if prog.get("by") == "sync" else "scanning" if scanning else \
+        "full" if ready >= min(targets) else "queued"
+    return {"id": c["id"], "title": c["title"], "ready": ready, "waiting": waiting, "state": state, "until": until if until > now else None,
+            "stage": prog.get("stage") if prog.get("by") == "sync" else None, "pct": prog.get("pct") if prog.get("by") == "sync" else None,
+            "runway_days": round((ready + waiting) / ppd), "ready_days": round(ready / ppd), "scan_done": not scanning,
+            "today": done_today, "daily": cap, "ppd": ppd}
 
 
 @route("POST", "/api/media/(\\d+)/retry")
@@ -1479,7 +1569,7 @@ def channel_detail(req, cid):
     sources_out = []
     for sx in db.all("SELECT * FROM sources WHERE channel_id=? AND state!='removed' ORDER BY id", (c["id"],)):
         site = {"youtube": "YouTube", "tiktok": "TikTok"}.get(sx["kind"], "Instagram")
-        o = {k: sx.get(k) for k in ("id", "kind", "handle", "url", "full_name", "picture", "content_type", "include_old", "daily_cap",
+        o = {k: sx.get(k) for k in ("id", "kind", "handle", "url", "full_name", "picture", "content_type", "include_old", "daily_cap", "keep_days",
                                      "state", "last_check", "next_check", "error_code", "total_found", "backfill_done", "started_at")}
         o["proxy_mode"] = sx.get("proxy_mode") or ("phone" if sx["kind"] != "instagram" else "group")
         o["has_cookies"] = bool(sx.get("cookies_enc"))
@@ -1490,7 +1580,7 @@ def channel_detail(req, cid):
     src = _active_source(c["id"], "instagram")
     srco = None
     if src:
-        srco = {k: src[k] for k in ("id", "handle", "full_name", "picture", "content_type", "include_old", "daily_cap", "state",
+        srco = {k: src[k] for k in ("id", "handle", "full_name", "picture", "content_type", "include_old", "daily_cap", "keep_days", "state",
                                      "last_check", "next_check", "error_code", "total_found", "backfill_done", "started_at")}
         srco["today"] = src["day_count"] if src["day"] == time.strftime("%Y-%m-%d", time.gmtime()) else 0
         if src["error_code"]:
@@ -1530,7 +1620,7 @@ def channel_detail(req, cid):
                          "skipped": counts.get("skipped", 0) + counts.get("failed", 0), "photos": counts.get("waiting_facebook", 0),
                          "lanes": lanes},
             "queue": ready, "ai": _ai_channel(c), "upnext": db.jload(c.get("queue_json"), None), "upnext_at": c.get("queue_at"), "slots": slots, "encore": enc, "skipped": skipped, "events": events,
-            "has_inbox": bool(c.get("inbox_id")), "ready_target": igsync._ready_target(c)}
+            "has_inbox": bool(c.get("inbox_id")), "ready_target": igsync._ready_target(c), "runway": _queue_row(c, time.time())}
 
 
 @route("GET", "/api/settings/advanced", auth="owner")
@@ -1960,13 +2050,15 @@ def live(req):
     last = db.one("SELECT MAX(id) id FROM events WHERE workspace_id=? OR workspace_id IS NULL", (req.ws,))["id"]
     pub = db.one("SELECT MAX(id) id FROM uploads WHERE workspace_id=?", (req.ws,))["id"]
     ws = store.workspace(req.ws)
-    return {"now": now, "up": round(now - _STARTED), "version": VERSION, "running": running,
+    queue = [q for q in (_queue_row(c, now) for c in db.all(
+        "SELECT * FROM channels WHERE workspace_id=? AND state='live'", (req.ws,))) if q]
+    return {"now": now, "up": round(now - _STARTED), "version": VERSION, "running": running, "queue": queue,
             "services": services, "healthy": not stale, "stale": stale,
             "paused": bool((ws.get("paused_until") or 0) > now),
             "replaced": bool(db.meta_get("superseded_by")),
             "attention": db.one("""SELECT COUNT(*) n FROM events WHERE workspace_id=? AND resolved=0 AND level='error' AND at>?""",
                                 (ws["id"], now - 86400))["n"],
-            "mark": f"{last or 0}.{pub or 0}.{len(running)}",
+            "mark": f"{last or 0}.{pub or 0}.{len(running)}.{sum(q['ready'] for q in queue)}.{sum(q['waiting'] for q in queue)}",
             "device": _device_for(req)}
 
 

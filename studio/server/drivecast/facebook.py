@@ -24,7 +24,7 @@ DIALOG = "https://www.facebook.com/{v}/dialog/oauth"
 GRAPH = "https://graph.facebook.com/{v}"
 # Minimum to list pages and publish posts/photos/videos on a Page you administer.
 SCOPES = ["pages_show_list", "pages_read_engagement", "pages_manage_posts", "pages_manage_engagement",
-          "pages_read_user_content", "publish_video", "business_management",
+          "pages_read_user_content", "business_management",
           # the Instagram Professional account linked to the page (Instagram destination "via Facebook")
           "instagram_basic", "instagram_content_publish"]
 IMG = {".jpg", ".jpeg", ".png", ".gif", ".webp"}

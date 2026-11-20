@@ -40,7 +40,8 @@ SITES = {"youtube": "YouTube", "tiktok": "TikTok"}
 CHECK = {"youtube": (40 * 60, 80 * 60), "tiktok": (60 * 60, 120 * 60)}
 GAP = {"youtube": (40, 120), "tiktok": (90, 240)}
 PAGE = 30                      # older videos listed per discovery step
-SOURCE_DAILY = 12              # older-video downloads per source per day
+SOURCE_DAILY = 12              # older-video downloads per source per day (the safe pace)
+SCAN_FIRST = 300               # list the account's videos first, up to this many; beyond that only when idle
 _next = {}                     # source id -> next action time
 _pass_lock = threading.Lock()
 _lock = threading.Lock()
@@ -296,13 +297,14 @@ def rss_latest(cid, session=None):
     return out
 
 
-def _insert(src, ch, vid, lane, taken_at, title=None, caption=None):
+def _insert(src, ch, vid, lane, taken_at, title=None, caption=None, duration=None):
     now = time.time()
     try:
         with db.tx() as c:
             c.execute("""INSERT INTO media(workspace_id,channel_id,source_id,origin,ext_id,code,kind,lane,taken_at,caption,title,
-                         state,created_at,updated_at) VALUES(?,?,?,?,?,NULL,'video',?,?,?,NULL,'found',?,?)""",
-                      (ch["workspace_id"], ch["id"], src["id"], src["kind"], vid, lane, taken_at, caption or title, now, now))
+                         duration,state,created_at,updated_at) VALUES(?,?,?,?,?,NULL,'video',?,?,?,NULL,?,'found',?,?)""",
+                      (ch["workspace_id"], ch["id"], src["id"], src["kind"], vid, lane, taken_at, caption or title,
+                       float(duration) if duration else None, now, now))
         return True
     except Exception:
         return False
@@ -337,7 +339,7 @@ def check_source(src, ch, tmpdir):
         if not src.get("full_name"):
             db.run("UPDATE sources SET full_name=?, ig_user_id=? WHERE id=?",
                    (info.get("uploader") or info.get("title"), info.get("uploader_id") or info.get("id"), src["id"]))
-        items = [{"id": e.get("id"), "taken_at": _ts(e), "title": e.get("title"), "caption": e.get("description")}
+        items = [{"id": e.get("id"), "taken_at": _ts(e), "title": e.get("title"), "caption": e.get("description"), "duration": e.get("duration")}
                  for e in info.get("entries") or []]
     first = not db.one("SELECT 1 FROM media WHERE source_id=?", (src["id"],))
     for it in items:
@@ -345,16 +347,16 @@ def check_source(src, ch, tmpdir):
             continue
         t = it.get("taken_at")
         if t and t > src["started_at"]:
-            fresh += _insert(src, ch, it["id"], "fresh", t, it.get("title"), it.get("caption"))
+            fresh += _insert(src, ch, it["id"], "fresh", t, it.get("title"), it.get("caption"), it.get("duration"))
         elif src["include_old"]:
-            _insert(src, ch, it["id"], "backfill", t, it.get("title"), it.get("caption"))
+            _insert(src, ch, it["id"], "backfill", t, it.get("title"), it.get("caption"), it.get("duration"))
         newest = max(newest, t or 0)
     if first and not fresh and not src["include_old"]:
         # "only new" still starts with the latest video, so Drive is never empty on day one
         dated = [it for it in items if it.get("id")]
         if dated:
             top = max(dated, key=lambda it: it.get("taken_at") or 0)
-            _insert(src, ch, top["id"], "fresh", top.get("taken_at"), top.get("title"), top.get("caption"))
+            _insert(src, ch, top["id"], "fresh", top.get("taken_at"), top.get("title"), top.get("caption"), top.get("duration"))
             db.run("UPDATE media SET lane='fresh' WHERE source_id=? AND ext_id=? AND state='found'", (src["id"], top["id"]))
             fresh += 1
     db.run("""UPDATE sources SET newest_seen=?, last_check=?, error_code=NULL, error_detail=NULL, next_check=?,
@@ -393,7 +395,7 @@ def discover_older(src, ch, tmpdir):
         lane = "fresh" if t and t > src["started_at"] else "backfill"
         # listings often hide dates; keep the list order (newest first) with a synthetic, descending time
         _insert(src, ch, e["id"], lane, t or (base - 86400 - (start + i) * 60 - (10 ** 6 if tab == "shorts" else 0)),
-                e.get("title"), e.get("description"))
+                e.get("title"), e.get("description"), e.get("duration"))
     done = 1 if not nxt else 0
     db.run("""UPDATE sources SET backfill_cursor=?, backfill_done=?, total_found=(SELECT COUNT(*) FROM media WHERE source_id=?),
               updated_at=? WHERE id=?""", (nxt or "", done, src["id"], time.time(), src["id"]))
@@ -457,6 +459,10 @@ def process(m, src, ch, group, progress=None):
     db.run("UPDATE media SET ref=? WHERE id=?", (ref, m["id"]))
     tmpdir = tempfile.mkdtemp(prefix=".work-" + ref, dir=folder)
     try:
+        pre = igsync.twin_of(ch["id"], m.get("duration"), m.get("caption"), m["id"])
+        if pre:  # known from the listing already: no download at all
+            igsync.skip_twin(m, pre)
+            return False
         dsess, dbox = igsync._drive_ctx(ch, group)
         url = _video_url(src["kind"], m["ext_id"], src["handle"])
         vfmt, afmt = _formats(src["kind"])
@@ -466,6 +472,13 @@ def process(m, src, ch, group, progress=None):
             apath, _ = _download_one(src, url, afmt, os.path.join(tmpdir, "a"), tmpdir)
             raw = cleaner.merge(vpath, apath, os.path.join(tmpdir, "m.mp4"))
         caption = info.get("description") or m.get("caption")
+        dur = info.get("duration") or m.get("duration")
+        if dur and not m.get("duration"):
+            db.run("UPDATE media SET duration=? WHERE id=?", (float(dur), m["id"]))
+        twin = igsync.twin_of(ch["id"], dur, caption or info.get("title"), m["id"])
+        if twin:  # the same video was already taken from another site: do not put it in Drive twice
+            igsync.skip_twin(m, twin)
+            return False
         used = [r["title"] for r in db.all("SELECT title FROM media WHERE channel_id=? AND title IS NOT NULL", (ch["id"],))]
         title = titles.choose(name=info.get("title"), caption=caption, channel_title=ch["title"],
                               bank=db.jload(ch.get("titles_json"), []), used=used, seed=ref)
@@ -495,10 +508,10 @@ def process(m, src, ch, group, progress=None):
 
 
 # ------------------------------------------------------------------ the pass
-def _ready_target(ch):
-    """About one week of posts kept ready in Drive (≥4, ≤42)."""
-    plan = db.jload(ch["plan_json"], {})
-    return min(42, max(4, int(plan.get("posts_per_day") or 2) * 7))
+def _ready_target(ch, src=None):
+    """Posts kept ready in Drive: posts/day × the source's "keep ahead" days (default a week; 0 = whole account)."""
+    from . import igsync
+    return igsync._ready_target(ch, src)
 
 
 def _problem(src, ch, e):
@@ -550,7 +563,10 @@ def _source_pass(src, now=None, fast=False):
             if m:
                 kind = "fresh"
                 process(m, src, ch, g, igsync.sync_progress(ch["id"], "First video" if fast else "New video"))
-            elif src["include_old"] and igsync.ready_count(ch["id"]) < _ready_target(ch):
+            elif src["include_old"] and not src["backfill_done"] and (src["total_found"] or 0) < SCAN_FIRST:
+                kind = "discover"  # listing the whole account is cheap: do it first, so the runway is known
+                discover_older(src, ch, tmpdir)
+            elif src["include_old"] and igsync.ready_count(ch["id"]) < _ready_target(ch, src):
                 src = igsync._bump_day("sources", src)
                 m = igsync._next_item(src, "backfill")
                 if m and (fast or src["day_count"] < min(src["daily_cap"] or SOURCE_DAILY, SOURCE_DAILY)):
