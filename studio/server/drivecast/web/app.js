@@ -99,10 +99,16 @@ const tFull = ts => ts ? `${tDay(ts)} · ${tTime(ts)}` : '—';
 function rel(ts) {
   if (!ts) return '—';
   const d = ts - Date.now() / 1000, a = Math.abs(d);
-  const s = a < 60 ? 'less than a minute' : a < 3600 ? `${Math.round(a / 60)} min` : a < 86400 ? `${Math.floor(a / 3600)} h ${Math.round((a % 3600) / 60)} min` : `${Math.floor(a / 86400)} d ${Math.floor((a % 86400) / 3600)} h`;
+  const m = Math.round(a / 60), h = Math.floor(m / 60), hm = m % 60, dd = Math.floor(h / 24), dh = h % 24;
+  const s = a < 60 ? 'less than a minute' : m < 60 ? `${m} min` : h < 24 ? (hm ? `${h} h ${hm} min` : `${h} h`) : (dh ? `${dd} d ${dh} h` : `${dd} d`);
   return d >= 0 ? `in ${s}` : `${s} ago`;
 }
 const flag = cc => cc && /^[A-Za-z]{2}$/.test(cc) ? String.fromCodePoint(...[...cc.toUpperCase()].map(c => 127397 + c.charCodeAt(0))) : '';
+// what "Post now" will publish — shown in the confirmation (title and destinations come from the page already loaded)
+function postWhat(id) {
+  const q = (S.postInfo || {})[id];
+  return q ? `Post now for ${q.client}?\n\nNext video: ${q.title || 'the next ready file'}\nTo: ${q.where || 'the client destinations'}\n\nIt starts within a few minutes.` : 'Post the next ready video for this client now?\n\nIt starts within a few minutes.';
+}
 const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
 function where(g) { const parts = [g.city, g.country_name || g.country].filter(Boolean); return parts.length ? `${flag(g.country)} ${parts.join(', ')}` : ''; }
 function countdown(ts) {
@@ -213,7 +219,7 @@ function mount(active, title, sub, kick, actions, content) {
   const tbar = `<div class="tbar"><nav class="crumbs" aria-label="Breadcrumb"><a href="#/dashboard">Studio</a>${ic('chev', 12)}<span>${esc(kick || title)}</span></nav>
     <div class="tbar-r"><a class="up-pill hidden" id="uppill" href="#/server" title="A new version is ready">${ic('down', 14)}<span></span></a><button class="cmdk" data-act="palette" aria-label="Search">${ic('search', 15)}<span>Search or jump to…</span><kbd>${mac ? '⌘' : 'Ctrl'} K</kbd></button>
     <button class="tb-btn" data-act="theme" title="Theme: ${th}" aria-label="Change theme">${ic(th === 'dark' ? 'moon' : th === 'light' ? 'sun' : 'auto', 17)}</button>
-    <a class="tb-btn" href="#/dashboard" title="Needs you" aria-label="Needs you">${ic('bell', 17)}<i class="tb-n hidden" id="tbn"></i></a></div></div>`;
+    <a class="tb-btn" href="#/dashboard" title="Open the Dashboard — the Needs you list is there" aria-label="Open the Dashboard — Needs you list">${ic('bell', 17)}<i class="tb-n hidden" id="tbn"></i></a></div></div>`;
   document.getElementById('app').innerHTML = `<div class="app ${railMini() ? 'mini' : ''}">
     <header class="mtop"><a class="brand" href="#/dashboard" aria-label="DriveCast home" style="text-decoration:none;padding:0">${BRAND()}</a><span class="pill" id="mdev"><span class="beat" id="mbeat"></span><span id="mlive">Live</span></span></header>
     <nav class="rail" aria-label="Main">
@@ -524,6 +530,7 @@ function queueCard() {
 async function pageDashboard() {
   let last = 0; try { last = +localStorage.getItem('dc_seen') || 0; } catch (e) { /* private mode */ }
   const d = await api('GET', `/api/dashboard${last ? '?since=' + last : ''}`);
+  S.postInfo = S.postInfo || {}; (d.upnext || []).forEach(s => { S.postInfo[s.channel_id] = { client: s.title }; });
   if (!S.awayShown) { S.away = d.away; S.awayShown = true; try { localStorage.setItem('dc_seen', String(Math.floor(Date.now() / 1000))); } catch (e) { /* */ } }
   const hasChannels = d.today.channels.length || d.pulse.length;
   const nxt = d.today.next;
@@ -543,7 +550,7 @@ async function pageDashboard() {
   every(1000, () => document.querySelectorAll('[data-count]').forEach(el => { el.textContent = countdown(+el.dataset.count); }));
   const liveNow = (d.today.live || []).length > 0;
   every(liveNow ? 4000 : 60000, () => { if (!document.getElementById('modal') && !document.querySelector('.sheet.open')) render(); });
-  S.acts['post-now'] = async x => { const r = await api('POST', `/api/channels/${x.id}/post-now`); toast(r.waiting ? 'Getting the video first — it posts as soon as it is ready' : 'Queued — it will post in a moment'); render(); };
+  S.acts['post-now'] = async x => { if (!confirm(postWhat(x.id))) return; const r = await api('POST', `/api/channels/${x.id}/post-now`); toast(r.waiting ? 'Getting the video first — it posts as soon as it is ready' : 'Queued — it will post in a moment'); render(); };
   S.acts.dismiss = async x => { await api('POST', `/api/events/${x.id}/dismiss`); render(); };
   S.acts.fixit = x => runFix(S.attention[+x.i]);
   S.acts.pausemodal = () => pauseModal();
@@ -583,7 +590,7 @@ function todayCard(d) {
   const nx = t.next ? `<strong data-count="${t.next.due_at}">${countdown(t.next.due_at)}</strong><em class="ell">${esc(tTime(t.next.due_at))} · ${esc(t.next.title)}</em>${t.next.item ? `<em class="ell" style="color:#C9CDD6">${originChip(t.next.item.origin, true)} ${esc(t.next.item.name)}</em>` : ''}` : '<strong>—</strong><em>Nothing planned</em>';
   const live = (t.live || []);
   const rows = t.channels.map(c => `<div><span class="ell" style="color:#fff">${esc(c.title)}</span><span style="display:flex;align-items:center;gap:10px">${dotsHtml(c.states)}<span class="mono" style="font-size:11px;color:#8E94A0;min-width:52px;text-align:right">${c.next ? esc(tTime(c.next)) : 'done'}</span></span></div>`).join('');
-  return `<section class="today"><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><span class="onair"><i></i>${live.length ? 'POSTING' : 'ON AIR'}</span><h2 style="font-size:17px">Today</h2><span class="mono" style="font-size:11px;color:#8E94A0">Times in ${esc(S.tz)}</span>${S.tz !== browserTz() ? `<a href="#/settings" style="font-size:11px;color:#FF9B85;margin-left:auto">Your device is in ${esc(browserTz())} — change?</a>` : ''}</div>
+  return `<section class="today"><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><span class="onair"><i></i>${live.length ? 'POSTING' : 'ON AIR'}</span><h2 style="font-size:17px">Today</h2><b style="font-size:13px;color:${t.total && t.done >= t.total ? '#3DDC97' : t.held ? '#F2B54A' : '#fff'}">${!t.total ? 'Nothing planned today' : t.done >= t.total ? `Today's work is done — ${t.done} of ${t.total} published${t.next ? ', next ready ' + esc(tTime(t.next.due_at)) : ''}` : `${t.done} of ${t.total} published · ${t.total - t.done - (t.held || 0)} still to go${t.held ? ' · ' + t.held + ' held or missed (see Needs you for why)' : ''}`}</b><span class="mono" style="font-size:11px;color:#8E94A0">Times in ${esc(S.tz)}</span>${S.tz !== browserTz() ? `<a href="#/settings" style="font-size:11px;color:#FF9B85;margin-left:auto">Your device is in ${esc(browserTz())} — change?</a>` : ''}</div>
     <div class="strip">
       <div><span>Published</span><div style="display:flex;align-items:center;gap:10px">${ringSvg(t.done, t.total, 34)}<strong>${t.done}<span style="color:#5B606B"> / ${t.total}</span></strong></div></div>
       <div><span>Next post</span>${nx}</div>
@@ -926,7 +933,7 @@ const wNav = (nextOk, label = 'Continue') => `<div style="display:flex;justify-c
 function wGroup() {
   const cards = W.groups.map(g => {
     const pct = Math.min(100, Math.round(100 * g.channel_count / g.max_channels));
-    const note = g.status === 'down' ? ['Not responding', 'var(--bad)'] : g.channel_count >= g.max_channels ? [`Full — above ${g.max_channels} is not recommended`, 'var(--warn)'] : [`Healthy · ${g.latency_ms ?? '—'} ms`, 'var(--ok)'];
+    const note = g.status === 'down' ? ['Not responding', 'var(--bad)'] : g.channel_count >= g.max_channels ? [`Full — above ${g.max_channels} is not recommended`, 'var(--warn)'] : g.health && g.health.state !== 'healthy' ? [`${g.health.state === 'slow' ? 'Slow' : 'Stale'} · ${g.health.why}`, 'var(--warn)'] : [`Healthy · ${g.latency_ms ?? '—'} ms`, 'var(--ok)'];
     return `<button class="pick ${W.group && W.group.id === g.id ? 'sel' : ''}" data-act="wgroup" data-id="${g.id}" ${g.status === 'down' ? 'disabled' : ''}>
       <span style="display:flex;justify-content:space-between;width:100%"><strong style="font-family:var(--disp);font-size:17px">Pool ${g.number}</strong><span class="mono" style="font-size:12px">${g.channel_count}/${g.max_channels}</span></span>
       ${poolName(g) ? `<span style="font-size:12.5px;font-weight:600">${esc(poolName(g))}</span>` : ''}<span class="mono muted" style="font-size:12px">${esc(g.outgoing_ip || g.host)}${g.readiness ? ` · ready ${g.readiness.score}/${g.readiness.of}` : ''}${g.apps && g.apps.google ? ' · own Google app' : ''}</span><span class="meter" style="width:100%"><span style="width:${pct}%;background:${g.channel_count > g.max_channels ? '#C27A12' : '#0E1116'}"></span></span>
@@ -1129,7 +1136,7 @@ function groupForm(g) {
       <label class="f">Priority<select class="i" name="priority">${['high', 'normal', 'low'].map(p => `<option ${p === v.priority ? 'selected' : ''}>${p}</option>`).join('')}</select></label>`
       : `<label class="f">Channels on this IP<select class="i" name="max_channels"><option value="1">1 · dedicated</option><option>2</option><option>3</option><option>4</option><option value="5" selected>5 · recommended max</option><option value="8">8 · not recommended</option><option value="10">10 · not recommended</option></select></label>
       <label class="f">Priority<select class="i" name="priority"><option value="high">High</option><option value="normal" selected>Normal</option><option value="low">Low</option></select></label>`}
-  </div><div id="gtest" style="margin-top:14px"></div><div class="actions" style="margin-top:14px"><button class="btn" type="button" data-act="testgroup">${ic('bolt', 16)}Test connection</button>${g ? '<button class="btn" type="button" data-act="close">Cancel</button>' : ''}<button class="btn primary" type="submit">${g ? 'Save changes' : 'Save group'}</button></div></form>`;
+  </div><div id="gtest" style="margin-top:14px"></div><div class="actions" style="margin-top:14px"><button class="btn" type="button" data-act="testgroup">${ic('bolt', 16)}Test connection</button>${g ? '<button class="btn" type="button" data-act="close">Cancel</button>' : ''}<button class="btn primary" type="submit">${g ? 'Save changes' : 'Save pool'}</button></div></form>`;
 }
 function proxyFromForm(f) {
   const v = Object.fromEntries(new FormData(f).entries());
@@ -1172,6 +1179,7 @@ function igCard(g) {
   const st = !a ? ['Not added', 'neutral', 'No Instagram account yet — needed only for clients with an Instagram source.']
     : a.status === 'needs_cookies' ? ['Sign-in expired', 'bad', 'Paste fresh cookies to continue pulling posts.']
       : a.status === 'resting' && a.paused_until > Date.now() / 1000 ? ['Resting', 'warn', `Instagram asked this account to slow down · resumes ${rel(a.paused_until)} · meanwhile another test account reads for this pool`]
+        : a.checked_at && Date.now() / 1000 - a.checked_at > 86400 ? ['Stale', 'warn', `Last checked ${rel(a.checked_at)} (healthy needs a check in the last 24 h) · press Test`]
         : ['Healthy', 'ok', `${a.sources} Instagram source(s) · ${a.today}/${(a.health && a.health.daily) || 160} used today · reads via ${a.proxy_mode === 'phone' ? 'phone internet' : 'group IP'}${a.checked_at ? ' · checked ' + rel(a.checked_at) : ''}`];
   if (a && a.health && a.health.state === 'resting' && a.health.rest_until) { st[0] = 'Cooling down'; st[1] = 'warn'; st[2] = `Instagram asked for a short pause — safe, nothing is lost. Back ${rel(a.health.rest_until)}. Today ${a.today}/${a.health.daily} used.`; }
   return `<div class="igbox"><span style="width:34px;height:34px;border-radius:10px;background:#FDEBE6;color:#B83A1F;display:inline-flex;align-items:center;justify-content:center">${ic('ig', 18)}</span>
@@ -1268,7 +1276,7 @@ async function pageGroups() {
     const chans = g.channels.map((c, i) => `<div style="display:flex;align-items:center;gap:10px;padding:9px 0;border-top:1px solid var(--line)">${avatar(c.title, hashI(c.title), c.thumbnail, 28)}<div style="display:flex;flex-direction:column;min-width:0;flex:1"><span class="ell" style="font-weight:600;font-size:13px">${esc(c.title)}</span>${handle(c.handle)}</div>${chip(c.state, c.state === 'live' ? 'ok' : 'neutral', false)}</div>`).join('');
     const ipChanged = down && (g.last_error || '').includes('changed');
     return `<section class="card" id="grp-${g.id}"><div style="display:flex;flex-direction:column;gap:14px">
-      <div style="display:flex;align-items:center;gap:16px">${ring(g.channel_count, g.max_channels, color)}<div style="display:flex;flex-direction:column;gap:6px;flex:1;min-width:0"><div style="display:flex;justify-content:space-between;gap:8px;align-items:center"><strong style="font-family:var(--disp);font-size:22px">Pool ${g.number}${poolName(g) ? `<span class="muted" style="font:600 14px var(--font)"> · ${esc(poolName(g))}</span>` : ''}</strong>${g.moved_to ? chip('Moved to ' + g.moved_to, 'neutral') : down ? chip('Not responding', 'bad') : chip('Healthy', 'ok')}</div><span class="mono" style="font-size:13px;font-weight:500">${esc(g.outgoing_ip || '—')}</span>${where(g) ? `<span style="font-size:13px;font-weight:600">${esc(where(g))}${g.isp ? `<span class="muted" style="font-weight:400"> · ${esc(g.isp)}</span>` : ''}</span>` : ''}<span class="muted" style="font-size:12px">SOCKS5 · ${esc(g.host)}:${g.port} · ${esc(g.priority)} priority</span></div></div>
+      <div style="display:flex;align-items:center;gap:16px">${ring(g.channel_count, g.max_channels, color)}<div style="display:flex;flex-direction:column;gap:6px;flex:1;min-width:0"><div style="display:flex;justify-content:space-between;gap:8px;align-items:center"><strong style="font-family:var(--disp);font-size:22px">Pool ${g.number}${poolName(g) ? `<span class="muted" style="font:600 14px var(--font)"> · ${esc(poolName(g))}</span>` : ''}</strong>${g.moved_to ? chip('Moved to ' + g.moved_to, 'neutral') : down ? chip('Not responding', 'bad') : g.health && g.health.state !== 'healthy' ? `<span title="${esc(g.health.why)}">${chip(g.health.state === 'slow' ? 'Slow' : 'Stale', 'warn')}</span>` : chip('Healthy', 'ok')}</div><span class="mono" style="font-size:13px;font-weight:500">${esc(g.outgoing_ip || '—')}</span>${where(g) ? `<span style="font-size:13px;font-weight:600">${esc(where(g))}${g.isp ? `<span class="muted" style="font-weight:400"> · ${esc(g.isp)}</span>` : ''}</span>` : ''}<span class="muted" style="font-size:12px">SOCKS5 · ${esc(g.host)}:${g.port} · ${esc(g.priority)} priority</span></div></div>
       <div><div style="display:flex;justify-content:space-between;font-size:12px" class="muted"><span>Latency · last checks</span><span class="mono" style="color:var(--ink)">${down ? 'timeout' : (g.latency_ms ?? '—') + ' ms'}</span></div><div style="display:flex;align-items:flex-end;gap:3px;height:34px;margin-top:6px">${lat.map(v => `<span style="flex:1;height:${Math.max(3, Math.round(v / mx * 34))}px;border-radius:2px;background:${v ? '#0E1116' : '#F2B8AD'}"></span>`).join('')}</div></div>
       ${down ? `<div class="note bad">${ic('alert', 16)}<span>${esc(g.last_error || 'Proxy is not responding')}. Posts wait — never sent from another IP. Still testing every 5 minutes; it resumes by itself when the proxy answers.</span><button class="btn sm" data-act="gtest" data-id="${g.id}">${ic('bolt', 14)}Test now</button></div>` : ''}
       ${g.status === 'unstable' ? `<div class="note warn">${ic('refresh', 16)}<span><b>Retrying.</b> The proxy missed ${g.fail_count || 1} check(s) — DriveCast keeps trying and only calls it down after 10 minutes without an answer. Posts still go when it answers.</span></div>` : ''}
@@ -1358,6 +1366,7 @@ async function connectFacebook(groupId) {
 // ------------------------------------------------------------------ channels
 async function pageChannels() {
   const { channels } = await api('GET', '/api/channels');
+  S.postInfo = S.postInfo || {}; channels.forEach(c => { if (!S.postInfo[c.id]) S.postInfo[c.id] = { client: c.title }; });
   const dr = await api('GET', '/api/drive').catch(() => ({ folders: [] }));
   const routed = channels.filter(c => c.state !== 'setup'), pending = channels.filter(c => c.state === 'setup');
   const filter = S.chFilter || 'all';
@@ -1387,7 +1396,7 @@ async function pageChannels() {
   every(1000, () => document.querySelectorAll('[data-count]').forEach(el => { el.textContent = countdown(+el.dataset.count); }));
   every(channels.some(c => c.live) ? 4000 : 60000, () => { if (!document.getElementById('modal')) render(); });
   S.acts.chf = d => { S.chFilter = d.f; render(); };
-  S.acts.cact = async d => { closeModal(); const r = await api('POST', `/api/channels/${d.id}/${d.a}`); toast(r && r.waiting ? 'Getting the video first — it posts as soon as it is ready' : { 'post-now': 'Queued — posting now', pause: 'Paused', resume: 'Live again' }[d.a]); render(); };
+  S.acts.cact = async d => { if (d.a === 'post-now' && !confirm(postWhat(d.id))) return; closeModal(); const r = await api('POST', `/api/channels/${d.id}/${d.a}`); toast(r && r.waiting ? 'Getting the video first — it posts as soon as it is ready' : { 'post-now': 'Queued — posting now', pause: 'Paused', resume: 'Live again' }[d.a]); render(); };
   S.acts.cdel = async d => { if (!confirm('Remove this channel from DriveCast? Videos on YouTube and files in Drive stay untouched.')) return; await api('POST', `/api/channels/${d.id}/delete`); render(); };
   S.acts.cmore = d => {
     const c = channels.find(x => x.id === +d.id), p = c.plan;
@@ -1450,6 +1459,7 @@ function routeMap(c, d) {
 }
 async function pageChannel(id) {
   const d = await api('GET', `/api/channels/${id}/detail`);
+  S.postInfo = S.postInfo || {}; S.postInfo[id] = { client: d.channel.title, title: ((d.upnext || [])[0] || {}).name, where: (d.destinations || []).join(' + ') };
   const c = d.channel, acc = d.ig_account, p = d.pipeline;
   const pp = c.plan.posts_per_day || 2;
   const stage = (k, n, sub, col) => `<div class="stg"><span>${k}</span><strong style="color:${col}">${num(n)}</strong><em>${sub}</em></div>`;
@@ -1489,7 +1499,7 @@ async function pageChannel(id) {
   const head = `<div style="display:flex;align-items:center;gap:12px">${avatar(c.title, hashI(c.title), c.thumbnail, 44)}<span>${esc(c.title)}</span></div>`;
   const warn = d.sources.filter(s => s.error && s.error.fix).map(s => `<div class="note warn" style="margin-bottom:12px">${ic('alert', 16)}<span><b>${esc(SRC[s.kind][1])}: ${esc(s.error.title)}.</b> ${esc(s.error.message)} <button class="btn sm" data-act="srcopen" data-id="${s.id}">Open</button></span></div>`).join('');
   mount('channels', c.title, `${d.sources.map(s => SRC[s.kind][1]).concat(c.folder_id ? ['Drive'] : []).join(' + ') || 'No source yet'} → ${d.destinations.map(x => DST[x][1]).join(' + ') || 'no destination yet'} · Pool ${c.group ? c.group.number : '—'} · ${pp}/day${c.auth_email ? ' · authorized by ' + esc(c.auth_email) : ''}`, 'Client', actions,
-    `${acc && acc.error ? `<div class="note bad" style="margin-bottom:12px">${ic('alert', 16)}<span><b>${esc(acc.error.title)}.</b> ${esc(acc.error.message)} <button class="btn sm" data-act="cookies" data-id="${c.group.id}">Replace cookies</button></span></div>` : ''}${warn}
+    `${acc && acc.error ? `<div class="note bad" style="margin-bottom:12px">${ic('alert', 16)}<span><b>${esc(acc.error.title)}.</b> ${esc(acc.error.message)} ${acc.status === 'needs_cookies' ? `<button class="btn sm" data-act="cookies" data-id="${c.group.id}">Replace cookies</button>` : ''}</span></div>` : ''}${warn}
      ${routeMap(c, d)}${pipe}
      <div class="dgrid"><div class="s7">${queue}</div><div class="s5" style="display:flex;flex-direction:column;gap:12px">${encCard}${skCard}</div></div>
      <div class="dgrid"><div class="s7">${safe(() => aiCard(c, d.ai), 'AI captions')}</div><div class="s5">${titlesCard}</div></div>
@@ -1665,6 +1675,7 @@ function igDestModal(c, d) {
 async function pageSchedule() {
   const days = S.schedDays || 3;
   const { slots, live } = await api('GET', `/api/schedule?days=${days}`);
+  S.postInfo = S.postInfo || {}; slots.forEach(s => { if (s.status === 'planned' && !S.postInfo[s.channel_id]) S.postInfo[s.channel_id] = { client: s.title, title: s.next_title }; });
   const now = Date.now() / 1000;
   const ST = {
     planned: ['Planned', 'neutral', 'cal'], queued: ['Starting', 'info', 'bolt'], running: ['Posting', 'info', 'bolt'],
@@ -1690,7 +1701,7 @@ async function pageSchedule() {
       : s.status === 'planned' && s.due_at > now ? `<b class="mono" data-count="${s.due_at}" style="font-size:13px">${countdown(s.due_at)}</b>` : '';
     return `<div class="slot ${past ? 'past' : ''} ${s.status}">
       <div class="slot-time"><b class="mono">${esc(tTime(s.due_at))}</b>${tChip(s)}</div>
-      <div class="slot-body"><div class="who">${avatar(s.title, hashI(s.title), s.thumbnail, 34)}<div><b class="ell">${esc(s.title)}</b><span class="muted" style="font-size:12px">Pool ${esc(s.group_number ?? '—')}${s.group_country ? ' · ' + flag(s.group_country) + ' ' + esc(s.group_country) : ''}${s.video_title ? ' · “' + esc(s.video_title) + '”' : s.note && s.status !== 'planned' ? ' · ' + esc(s.note) : ''}</span></div></div>
+      <div class="slot-body"><div class="who">${avatar(s.title, hashI(s.title), s.thumbnail, 34)}<div><b class="ell">${esc(s.title)}</b><span class="muted" style="font-size:12px">Pool ${esc(s.group_number ?? '—')}${s.group_country ? ' · ' + flag(s.group_country) + ' ' + esc(s.group_country) : ''}${s.video_title ? ' · “' + esc(s.video_title) + '”' : s.next_title ? ' · next: “' + esc(s.next_title) + '”' : s.note && s.status !== 'planned' ? ' · ' + esc(s.note) : ''}</span></div></div>
         ${lv ? liveBar(lv) : ''}</div>
       <div class="slot-side"><span class="chip ${st[1]}">${ic(st[2], 13)}${st[0]}</span>${right}</div></div>`;
   };
@@ -1720,7 +1731,7 @@ async function pageSchedule() {
   every(1000, () => document.querySelectorAll('[data-count]').forEach(el => { el.textContent = countdown(+el.dataset.count); }));
   every(liveRows.length ? 4000 : 60000, () => { if (!document.getElementById('modal')) render(); });
   S.acts.sdays = d => { S.schedDays = +d.n; render(); };
-  S.acts.spost = async d => { await api('POST', `/api/channels/${d.id}/post-now`); toast('Posting now'); render(); };
+  S.acts.spost = async d => { if (!confirm(postWhat(d.id))) return; await api('POST', `/api/channels/${d.id}/post-now`); toast('Posting now'); render(); };
 }
 async function pageVideos() {
   const { videos } = await api('GET', '/api/videos?limit=200');
@@ -1732,7 +1743,7 @@ async function pageVideos() {
     return `<div class="tr vrow" style="${VC}"><div class="vt">${dstIcon(w.kind, 14)}<div style="min-width:0"><b class="ell" style="display:block">${esc(v.title)}</b><span class="muted ell" style="display:block;font-size:11.5px">${esc(v.file_name)}</span></div></div>
     <div style="min-width:0"><b class="ell" style="display:block;font-weight:550">${esc(v.channel_title)}</b><span class="mini ell" style="display:block" title="The IP ${esc(w.name)} saw for this post">${v.outgoing_ip ? `${esc(v.outgoing_ip)} · Pool ${esc(v.group_number ?? '?')}${v.group_ip && v.group_ip !== v.outgoing_ip ? ' (old IP)' : ''}` : 'not sent'}</span></div>
     <div style="min-width:0;display:flex;flex-direction:column;gap:3px;align-items:flex-start">${v.yt_state === 'rejected' ? chip('Rejected by YouTube', 'bad') : v.yt_state === 'removed' ? chip('Not on YouTube any more', 'bad') : v.status === 'failed' && /Duplicate/.test(v.error || '') ? chip('Skipped · duplicate', 'warn') : chip(v.status === 'published' ? (v.yt_state === 'processing' ? 'processing' : v.visibility || 'public') : v.status, tone[v.status] || 'neutral')}<span class="mini">${esc(tFull(v.published_at || v.reserved_at))}</span>${v.yt_reason ? `<span class="mini" style="color:var(--bad)">${esc({ duplicate: 'same video already on the channel', copyright: 'copyright', inappropriate: 'content rules', termsOfUse: 'terms of use' }[v.yt_reason] || v.yt_reason)}</span>` : v.status === 'failed' && v.error ? `<span class="mini ell" title="${esc(v.error)}">${esc(v.error)}</span>` : ''}</div>
-    <div style="text-align:right"><b class="mono">${v.yt_state === 'rejected' || v.yt_state === 'removed' ? '—' : v.views == null ? (w.kind === 'youtube' && v.status === 'published' ? '<span class="mini" title="Views arrive with the next stats round (every 20 min)">soon</span>' : '—') : num(v.views)}</b>${v.likes != null ? `<span class="mini" style="display:block">${num(v.likes)} likes</span>` : ''}</div>
+    <div style="text-align:right"><b class="mono">${v.yt_state === 'rejected' || v.yt_state === 'removed' ? '—' : v.views == null ? (w.kind === 'youtube' && v.status === 'published' ? '<span class="mini" title="Views arrive with the next stats round (every 20 min)">soon</span>' : '—') : num(v.views)}</b>${v.likes != null ? `<span class="mini" style="display:block">${plural(v.likes, 'like')}</span>` : ''}</div>
     <div class="actions" style="justify-content:flex-end">${href ? `<a class="tb-btn" style="width:32px;height:32px" href="${esc(href)}" target="_blank" rel="noopener" title="Open on ${esc(w.name)}" aria-label="Open on ${esc(w.name)}">${ic('ext', 14)}</a>` : ''}${v.status === 'uncertain' ? `<button class="btn sm" data-act="unc" data-id="${v.id}">Resolve</button>` : ''}</div></div>`; }).join('');
   const tot = videos.filter(v => v.status === 'published' && v.yt_state !== 'rejected' && v.yt_state !== 'removed');
   const sum = tot.reduce((n, v) => n + (v.views || 0), 0);
@@ -1754,9 +1765,9 @@ async function pageDrive() {
     : `<button class="btn primary" data-act="dconnect" ${d.app_ready ? '' : 'disabled'}>${ic('drive', 16)}Connect Google Drive</button>${d.app_ready ? '' : '<p class="help">Add your Google API app in Settings first.</p>'}`;
   const folders = d.folders.map(f => `<div class="tr" style="grid-template-columns:minmax(0,1fr) 160px">${`<div style="display:flex;gap:10px;align-items:center;min-width:0">${ic('folder', 18)}<div style="min-width:0"><b class="ell" style="display:block">${esc(f.name)}</b><span class="muted" style="font-size:12px">${esc(f.path)}</span></div></div>`}<span style="text-align:right">${f.used ? chip('Linked', 'ok') : '<a class="btn sm" href="#/add">Use for a channel</a>'}</span></div>`).join('');
   mount('drive', 'Google Drive', 'One main folder · one subfolder per channel', 'Workspace', d.root_id ? `<button class="btn" data-act="drefresh">${ic('refresh', 16)}Refresh folders</button>` : '',
-    `<div class="note info" style="margin-bottom:16px">${ic('folder', 18)}<span><b>One project folder → one subfolder per channel → YouTube.</b> Videos move to Processing, Done or Failed inside each subfolder. Title = file name.</span></div>
+    `<div class="note info" style="margin-bottom:16px">${ic('folder', 18)}<span><b>Two Google accounts are normal:</b> you sign in to the panel with one, while Drive (and each client's YouTube) is authorised by the Google account that owns those files. They do not have to match. <b>One project folder → one subfolder per channel → YouTube.</b> Videos move to Processing, Done or Failed inside each subfolder. Title = file name.</span></div>
      <section class="card" style="margin-bottom:16px">${hd('1. Connect your Drive account', 'Authorize once. Use the Google account that can edit your main folder.')}${conn}</section>
-     <section class="card" style="margin-bottom:16px">${hd('2. Main folder', d.root_name ? `Current: <b>${esc(d.root_name)}</b>` : 'Paste the link of the folder that holds every channel folder.')}
+     <section class="card" style="margin-bottom:16px">${hd('2. Main folder', d.root_name ? `Current:&nbsp;<b>${esc(d.root_name)}</b>` : 'Paste the link of the folder that holds every channel folder.')}
        <form data-form="droot" class="actions"><input class="i" name="folder" style="flex:1 1 320px" placeholder="https://drive.google.com/drive/folders/…" value="${esc(d.root_id || '')}" ${d.connected ? '' : 'disabled'}><button class="btn primary" type="submit" ${d.connected ? '' : 'disabled'}>Save</button></form></section>
      <section class="card">${hd('3. Channel folders', d.scanned_at ? `${d.folders.length} folders · scanned ${esc(rel(d.scanned_at))}${d.error ? ` · <span style="color:var(--bad)">last scan failed: ${esc(d.error)}</span>` : ''}` : 'Appear here after the main folder is saved.')}${folders || '<div class="empty">No folders yet.</div>'}</section>`);
   S.acts.drefresh = async () => { await api('POST', '/api/drive/refresh'); render(); };
@@ -1892,7 +1903,7 @@ async function pageUserReport(id) {
   S.acts.rlink = async () => {
     const r = await api('POST', `/api/admin/users/${id}/reset-link`);
     modal(`<h2>Reset link · ${esc(r.email)}</h2><p class="muted" style="margin:0">${r.emailed ? 'Emailed to them. You can also send this link yourself (WhatsApp, etc.).' : 'Send this link to them (WhatsApp, email…). Set up Settings → Email to send it automatically next time.'} It works once, for 24 hours.</p>
-      <div class="linkbox"><span class="kicker">Reset link</span><div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><span class="mono" style="flex:1 1 260px;word-break:break-all">${esc(r.url)}</span><button class="btn coral" data-act="copy" data-text="${esc(r.url)}">${ic('copy', 16)}Copy</button></div></div>
+      <div class="linkbox"><span class="kicker">Password reset link (works once, 24 h)</span><div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><span class="mono" style="flex:1 1 260px;word-break:break-all">${esc(r.url)}</span><button class="btn coral" data-act="copy" data-text="${esc(r.url)}">${ic('copy', 16)}Copy</button></div></div>
       <div class="actions" style="justify-content:flex-end"><button class="btn" data-act="close">Done</button></div>`);
   };
   S.acts.rpw = async () => {
@@ -2117,7 +2128,7 @@ async function drawBoard() {
     const card = u => `<div class="ub-card ${u.status === 'suspended' ? 'off' : ''}" draggable="${d.hub ? 'true' : 'false'}" data-email="${esc(u.email)}" data-host="${esc(sv.host)}">
         <div class="who">${avatar(u.name, hashI(u.name), null, 30)}<div style="min-width:0"><b class="ell">${esc(u.name)}</b><span class="mini ell">${esc(u.email)}</span></div>${u.status === 'suspended' ? chip('Suspended', 'bad') : u.pools_down ? chip('Proxy down', 'warn') : ''}</div>
         <div class="ub-stats"><span><b>${u.live}</b>/${u.clients} live</span><span><b>${u.pools}</b> pools</span><span><b>${u.posts_7d}</b> posts</span><span><b>${num(u.views_7d)}</b> views</span>${u.failed_7d ? `<span style="color:var(--bad)"><b>${u.failed_7d}</b> failed</span>` : ''}</div>
-        <div class="ub-act"><button class="linkbtn" data-act="uba" data-a="${u.status === 'suspended' ? 'activate' : 'suspend'}" data-email="${esc(u.email)}" data-host="${esc(sv.host)}">${u.status === 'suspended' ? 'Activate' : 'Suspend'}</button><button class="linkbtn" data-act="uba" data-a="reset_link" data-email="${esc(u.email)}" data-host="${esc(sv.host)}">Reset link</button><button class="linkbtn" style="color:var(--bad)" data-act="uba" data-a="delete" data-email="${esc(u.email)}" data-host="${esc(sv.host)}">Delete</button>${sv.snapshots && sv.snapshots[''] ? '' : ''}</div></div>`;
+        <div class="ub-act"><button class="linkbtn" data-act="uba" data-a="${u.status === 'suspended' ? 'activate' : 'suspend'}" data-email="${esc(u.email)}" data-host="${esc(sv.host)}">${u.status === 'suspended' ? 'Activate' : 'Suspend'}</button><button class="linkbtn" data-act="uba" data-a="reset_link" data-email="${esc(u.email)}" data-host="${esc(sv.host)}">Reset password link</button><button class="linkbtn" style="color:var(--bad)" data-act="uba" data-a="delete" data-email="${esc(u.email)}" data-host="${esc(sv.host)}">Delete</button>${sv.snapshots && sv.snapshots[''] ? '' : ''}</div></div>`;
     return `<section class="ub-col ${hl}" data-drop="${esc(sv.host)}"><div class="ub-h"><span class="beat ${sv.online ? (hl === 'warn' ? 'warn' : '') : 'off'}"></span><div style="min-width:0;flex:1"><b class="mono ell">${esc(sv.label || sv.host)}</b><span class="mini ell">${esc(sv.host)}</span></div><span class="mono mini">${sv.users}/${sv.max_users || '∞'}</span></div>
       <div class="ub-m">${sv.online ? 'online' : 'offline'}${st.battery != null ? ` · ${st.battery}%${st.charging ? '⚡' : ''}` : ''}${st.temp ? ` · ${st.temp}°C` : ''}${st.posts_24h != null ? ` · ${st.posts_24h} posts 24h` : ''}${st.failed_24h ? ` · <span style="color:var(--bad)">${st.failed_24h} failed</span>` : ''}</div>
       <div class="ub-list">${people.map(card).join('') || '<div class="ub-empty">Drop a user here</div>'}</div></section>`;
@@ -2140,7 +2151,7 @@ async function drawBoard() {
     if (x.a === 'suspend' && !confirm(`Suspend ${x.email}? Their posting pauses and they cannot sign in.`)) return;
     const r = await api('POST', '/api/fleet/users/action', { host: x.host, email: x.email, action: x.a });
     if (x.a === 'reset_link') {
-      modal(`<h2>Reset link · ${esc(x.email)}</h2><p class="muted" style="margin:0">Send this link to them. It works once, for 24 hours.</p><div class="linkbox"><span class="kicker">Reset link</span><div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><span class="mono" style="flex:1 1 260px;word-break:break-all">${esc(r.url)}</span><button class="btn coral" data-act="copy" data-text="${esc(r.url)}">${ic('copy', 16)}Copy</button></div></div><div class="actions" style="justify-content:flex-end"><button class="btn" data-act="close">Done</button></div>`);
+      modal(`<h2>Reset link · ${esc(x.email)}</h2><p class="muted" style="margin:0">Send this link to them. It works once, for 24 hours.</p><div class="linkbox"><span class="kicker">Password reset link (works once, 24 h)</span><div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><span class="mono" style="flex:1 1 260px;word-break:break-all">${esc(r.url)}</span><button class="btn coral" data-act="copy" data-text="${esc(r.url)}">${ic('copy', 16)}Copy</button></div></div><div class="actions" style="justify-content:flex-end"><button class="btn" data-act="close">Done</button></div>`);
       return;
     }
     toast({ suspend: 'Suspended', activate: 'Active again', delete: 'Deleted' }[x.a]); setTimeout(drawBoard, 1500);
@@ -2236,7 +2247,7 @@ async function openPalette() {
   const bg = document.createElement('div');
   bg.className = 'pal-bg'; bg.id = 'pal';
   bg.innerHTML = `<div class="pal" role="dialog" aria-label="Search"><div class="pal-in">${ic('search', 17)}<input id="palq" placeholder="Search clients, groups, pages or actions…" autocomplete="off" spellcheck="false"><kbd>Esc</kbd></div><div class="pal-list" id="pall"><div class="pal-empty"><span class="spinner"></span></div></div>
-    <div class="pal-ft"><span><kbd>↑</kbd><kbd>↓</kbd> move</span><span><kbd>↵</kbd> open</span><span><kbd>G</kbd> then <kbd>D</kbd> <kbd>C</kbd> <kbd>I</kbd> <kbd>S</kbd> <kbd>A</kbd> jump</span></div></div>`;
+    <div class="pal-ft"><span><kbd>↑</kbd><kbd>↓</kbd> move</span><span><kbd>↵</kbd> open</span><span>jump pages: <kbd>G</kbd> then <kbd>D</kbd>ashboard · <kbd>C</kbd>lients · <kbd>I</kbd> pools · <kbd>S</kbd>chedule · <kbd>A</kbd>I</span></div></div>`;
   bg.addEventListener('click', e => { if (e.target === bg) closePalette(); });
   document.body.appendChild(bg);
   const q = bg.querySelector('#palq'); q.focus();
@@ -2360,14 +2371,15 @@ async function pageAI() {
     return `<div class="tr" style="grid-template-columns:minmax(200px,1.4fr) minmax(130px,1fr) minmax(250px,1.6fr) 120px 30px"><a class="who" href="#/channel/${c.id}" style="text-decoration:none;color:inherit">${avatar(c.title, hashI(c.title), c.thumbnail, 30)}<div><b class="ell">${esc(c.title)}</b></div></a>
       <span class="mini">${c.key ? 'key · ' + esc(c.key) : '<span style="color:var(--warn)">no key</span>'}</span>
       <span style="display:flex;gap:6px;flex-wrap:wrap">${mini('captions', 'Captions')}${mini('subtitles', 'Subtitles')}${mini('check', 'Check')}${mini('pick', 'Picks')}${s.subtitles && !c.subtitles_allowed ? '<span class="mini" title="Needs one more Allow on the client page" style="color:var(--warn)">needs Allow</span>' : ''}</span>
-      <span class="mini">${s.language === 'auto' ? 'same as post' : esc(s.language)}</span><a href="#/channel/${c.id}" class="muted" aria-label="Open">${ic('chev', 16)}</a></div>`;
+      <span class="mini" title="Language of the captions: same language as the video">${s.language === 'auto' ? 'language: same as the video' : esc(s.language)}</span><a href="#/channel/${c.id}" class="muted" aria-label="Open">${ic('chev', 16)}</a></div>`;
   }).join('');
   const how = `<section class="card">${hd('How it stays safe')}<div class="ai-how">
     <div>${ic('check', 16)}<span><b>Never stops a post.</b> No key, a refused key, the daily limit or a Groq problem → the post goes out with its normal text.</span></div>
+    <div>${ic('spark', 16)}<span><b>What the four switches do.</b> Captions: writes the title and caption. Subtitles: adds speech subtitles to YouTube. Check: holds a post that looks unsafe or duplicated. Picks: lets AI choose which ready video goes next. Language “same as the video” keeps each video’s own language. “Try it” only tests — it never changes live settings or posts.</span></div>
     <div>${ic('users', 16)}<span><b>Each client’s own key.</b> Put the client’s key on its Pool: their own free daily limit, separate from everyone else.</span></div>
     <div>${ic('mic', 16)}<span><b>Only the sound leaves the phone</b> — a small audio file, never the video.</span></div>
     <div>${ic('shield', 16)}<span><b>The check only holds when it is sure.</b> A held post waits in Failed; move it back to the folder and it posts without asking again.</span></div></div></section>`;
-  mount('ai', 'AI captions', `Groq · ${d.keys.length ? plural(d.keys.length, 'key') + ' active' : 'no key yet'} · ${d.channels.filter(c => c.settings.captions || c.settings.subtitles || c.settings.check || c.settings.pick).length} of ${d.channels.length} clients on`, 'Studio intelligence', '',
+  mount('ai', 'AI captions', `Groq · ${d.keys.length ? plural(d.keys.length, 'key') + ' active' : 'no key yet'} · ${d.channels.filter(c => c.settings.captions || c.settings.subtitles || c.settings.check || c.settings.pick).length} of ${d.channels.length} clients on${(() => { const off = d.channels.filter(c => !(c.settings.captions || c.settings.subtitles || c.settings.check || c.settings.pick)).map(c => c.title); return off.length ? ' · off: ' + off.join(', ') : ''; })()}`, 'AI captions', '',
     `${kp}<div class="dgrid"><div class="s7" style="display:flex;flex-direction:column;gap:12px">${owner}<section class="card">${hd('Keys and today’s free limit', 'Groq’s free plan resets every day at midnight UTC.')}${keys || '<div class="empty" style="padding:14px">No key yet — add yours above, or a client’s on its Pool (Apps).</div>'}</section></div><div class="s5">${how}</div></div>
      <section class="card">${hd('Clients', 'Tap to switch. Language, brand voice and subtitles permission are on each client page.')}<div class="tbl"><div style="min-width:760px">${rows || '<div class="empty">No clients yet.</div>'}</div></div></section>`);
   Object.assign(S.acts, {

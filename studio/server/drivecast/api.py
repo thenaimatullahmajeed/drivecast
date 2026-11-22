@@ -311,10 +311,27 @@ def dismiss(req, eid):
 
 
 # ---------------------------------------------------------------- IP groups
+SLOW_MS, STALE_S = 2000, 6 * 3600
+
+
+def pool_health(g, now=None):
+    """Healthy only when the proxy answers fast AND was checked recently; thresholds are shown in the panel."""
+    now = now or time.time()
+    if g.get("status") == "down":
+        return {"state": "down", "why": "Not responding"}
+    ms, last = g.get("latency_ms"), g.get("last_check") or 0
+    if last and now - last > STALE_S:
+        return {"state": "stale", "why": f"Last checked {int((now - last) // 3600)} h ago (limit {STALE_S // 3600} h)"}
+    if ms and ms > SLOW_MS:
+        return {"state": "slow", "why": f"Answers in {ms} ms (slow above {SLOW_MS} ms)"}
+    return {"state": "healthy", "why": f"{ms} ms" if ms else "OK"}
+
+
 def _group_out(g):
     n = db.one("SELECT COUNT(*) n FROM channels WHERE group_id=?", (g["id"],))["n"]
     chans = db.all("SELECT id,title,handle,thumbnail,state FROM channels WHERE group_id=? ORDER BY title", (g["id"],))
     out = store.public(g)
+    out["health"] = pool_health(g)
     out.update({"channel_count": n, "channels": chans, "over_recommended": n > g["max_channels"],
                 "latency": db.jload(g["latency_json"], []), "has_password": bool(g["password_enc"]),
                 "apps": {"google": bool(g.get("google_client_id") and g.get("google_client_secret_enc")),
@@ -894,6 +911,16 @@ def schedule(req):
                      WHERE c.workspace_id=? AND s.due_at BETWEEN ? AND ? ORDER BY s.due_at""",
                   (req.ws, now - 86400, now + days * 86400))
     live = {cid: p for cid, p in worker.PROGRESS.items()}
+    nxt, taken = {}, {}
+    for r in rows:
+        if r["status"] in ("planned", "queued") and not r.get("video_title"):
+            cid = r["channel_id"]
+            if cid not in nxt:
+                q = db.one("SELECT queue_json FROM channels WHERE id=?", (cid,))
+                nxt[cid] = db.jload((q or {}).get("queue_json"), None) or []
+            i = taken.get(cid, 0); taken[cid] = i + 1
+            if i < len(nxt[cid]):
+                r["next_title"] = nxt[cid][i].get("name")
     return {"slots": rows, "live": live, "now": now}
 
 
@@ -903,6 +930,8 @@ def videos(req):
     rows = db.all("""SELECT u.*, c.title channel_title, g.number group_number, g.outgoing_ip group_ip FROM uploads u
                      JOIN channels c ON c.id=u.channel_id LEFT JOIN ip_groups g ON g.id=c.group_id
                      WHERE u.workspace_id=? ORDER BY u.reserved_at DESC LIMIT ?""", (req.ws, lim))
+    live = {(r["channel_id"], r.get("file_id") or r["title"]) for r in rows if r.get("yt_state") not in ("removed", "rejected") and r["status"] == "published"}
+    rows = [r for r in rows if not (r.get("yt_state") in ("removed", "rejected") and (r["channel_id"], r.get("file_id") or r["title"]) in live)]
     return {"videos": rows}
 
 
@@ -1588,9 +1617,11 @@ def channel_detail(req, cid):
     acco = None
     if acc:
         acco = {"username": acc["username"], "status": acc["status"], "paused_until": acc["paused_until"], "error_code": acc["error_code"]}
-        if acc["error_code"] and acc["status"] != "ok":
+        still = not (acc["status"] == "resting" and (acc["paused_until"] or 0) <= now)  # rest is over: no banner
+        if acc["error_code"] and acc["status"] != "ok" and still:
             g = store.group(c["group_id"])
-            acco["error"] = _errors.info(acc["error_code"], group=g["number"] if g else "?")
+            until = time.strftime("%H:%M UTC", time.gmtime(acc["paused_until"])) if (acc["paused_until"] or 0) > now else "a little later"
+            acco["error"] = _errors.info(acc["error_code"], group=g["number"] if g else "?", until=until)
     fb = None
     if c["group_id"]:
         fa = db.one("SELECT * FROM fb_accounts WHERE group_id=?", (c["group_id"],))
@@ -1616,7 +1647,7 @@ def channel_detail(req, cid):
             "instagram_dest": igd, "destinations": [d["kind"] for d in _w.destinations(store.channel(c["id"]))],
             "titles": db.jload(c.get("titles_json"), []), "encore_on": bool(c.get("encore", 1)),
             "pipeline": {"found": sum(counts.values()), "waiting": counts.get("found", 0), "downloading": counts.get("downloading", 0),
-                         "ready": counts.get("in_drive", 0), "published": counts.get("published", 0),
+                         "ready": max(counts.get("in_drive", 0), c.get("queue_count") or 0), "published": counts.get("published", 0),
                          "skipped": counts.get("skipped", 0) + counts.get("failed", 0), "photos": counts.get("waiting_facebook", 0),
                          "lanes": lanes},
             "queue": ready, "ai": _ai_channel(c), "upnext": db.jload(c.get("queue_json"), None), "upnext_at": c.get("queue_at"), "slots": slots, "encore": enc, "skipped": skipped, "events": events,

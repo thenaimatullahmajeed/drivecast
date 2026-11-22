@@ -137,7 +137,7 @@ def _send(path, payload):
         r = session_for(None).post(hub + path, data=body, timeout=(10, 20),
                                    headers={"Content-Type": "application/json", "X-DC-Fleet": sign(body)})
         if r.status_code >= 400:
-            db.meta_set("fleet_error", f"Hub answered {r.status_code}: {r.text[:120]}")
+            db.meta_set("fleet_error", f"Hub not reachable (HTTP {r.status_code}). Check the hub address in Server → Studios and that the hub phone is on.")
             return False
         db.meta_set("fleet_error", "")
         db.meta_set("fleet_seen", str(time.time()))

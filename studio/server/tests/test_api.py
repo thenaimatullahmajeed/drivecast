@@ -255,3 +255,17 @@ class SourceApiTests(unittest.TestCase):
             st, r = c.call("POST", "/api/settings/advanced", {"public_url_override": "https://studio.example.com"})
             self.assertEqual(r["public_url_override"], "https://studio.example.com")
             c.call("POST", "/api/settings/advanced", {"public_url_override": ""})
+
+
+class AuditFixTests(unittest.TestCase):
+    def test_pool_health_thresholds(self):
+        from drivecast import api
+        now = 1_000_000
+        self.assertEqual(api.pool_health({"status": "ok", "latency_ms": 300, "last_check": now - 60}, now)["state"], "healthy")
+        self.assertEqual(api.pool_health({"status": "ok", "latency_ms": 3000, "last_check": now - 60}, now)["state"], "slow")
+        self.assertEqual(api.pool_health({"status": "ok", "latency_ms": 300, "last_check": now - 9 * 3600}, now)["state"], "stale")
+        self.assertEqual(api.pool_health({"status": "down"}, now)["state"], "down")
+
+    def test_error_message_never_shows_question_mark(self):
+        from drivecast import errors
+        self.assertNotIn("?", errors.info("IG_RATE_LIMIT", group=2)["message"].split("until")[1])

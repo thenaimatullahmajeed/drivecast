@@ -236,7 +236,9 @@ def dashboard(ws_id, tz_name, now=None, since=None):
     for s0, e0, d0 in bounds[-14:]:
         pl = db.one("""SELECT COUNT(*) n FROM slots s JOIN channels c ON c.id=s.channel_id
                        WHERE c.workspace_id=? AND s.due_at>=? AND s.due_at<? AND s.status!='skipped'""", (ws_id, s0, e0))["n"]
-        pb = sum(1 for u in ups if s0 <= u["published_at"] < e0)
+        # same ledger as the Schedule page: a slot is "published" when its status is done, so published can never exceed planned
+        pb = db.one("""SELECT COUNT(*) n FROM slots s JOIN channels c ON c.id=s.channel_id
+                       WHERE c.workspace_id=? AND s.due_at>=? AND s.due_at<? AND s.status='done'""", (ws_id, s0, e0))["n"]
         cons.append({"day": d0, "planned": pl, "published": pb, "today": s0 <= now < e0})
 
     upnext = db.all("""SELECT s.id, s.due_at, s.status, s.market, c.id channel_id, c.title, c.thumbnail, g.number group_number, g.status group_status

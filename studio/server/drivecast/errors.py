@@ -106,7 +106,7 @@ def info(code, **ctx):
 
 class _Default(dict):
     def __missing__(self, key):
-        return "?"
+        return "a little later"
 
 
 class CodedError(Exception):
