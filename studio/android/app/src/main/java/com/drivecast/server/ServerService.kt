@@ -1,5 +1,6 @@
 package com.drivecast.server
 
+import android.app.AlarmManager
 import android.app.Notification
 import android.app.PendingIntent
 import android.app.Service
@@ -21,6 +22,8 @@ import com.chaquo.python.Python
 import com.chaquo.python.android.AndroidPlatform
 import org.json.JSONObject
 import java.io.File
+import java.net.HttpURLConnection
+import java.net.URL
 import kotlin.concurrent.thread
 
 /** Foreground service in its own process: runs the Python server and the tunnel. */
@@ -38,6 +41,7 @@ class ServerService : Service() {
         when (intent?.action) {
             ACTION_STOP -> {
                 Store.setPref(this, "running", false)
+                disarm(this)
                 tunnel.stop()
                 cf.stop()
                 stopForeground(STOP_FOREGROUND_REMOVE)
@@ -58,6 +62,7 @@ class ServerService : Service() {
             cf.start()
             main.postDelayed(reporter, 15_000)
         }
+        arm(this, KEEPALIVE_MS)
         return START_STICKY
     }
 
@@ -120,10 +125,62 @@ class ServerService : Service() {
             val url = Store.tunnelState(this@ServerService).optString("url", "")
             if (url.isNotBlank()) thread(isDaemon = true) { Local.post(this@ServerService, "/local/public-url", JSONObject().put("url", url)) }
             if (++ticks % 5 == 0) thread(isDaemon = true) { notifyAlerts() }
+            arm(this@ServerService, KEEPALIVE_MS) // if this process ever dies, the alarm brings the server back within minutes
+            thread(isDaemon = true) { watchdog() }
             main.postDelayed(this, 60_000L)
         }
     }
     private var ticks = 0
+    private var localFails = 0
+    private var publicFails = 0
+    private val bornAt = System.currentTimeMillis()
+
+    private fun probe(url: String, ms: Int): Boolean = try {
+        val c = URL(url).openConnection() as HttpURLConnection
+        c.connectTimeout = ms
+        c.readTimeout = ms
+        val ok = c.responseCode in 200..299
+        c.disconnect()
+        ok
+    } catch (e: Exception) {
+        false
+    }
+
+    private fun note(msg: String) {
+        try { File(filesDir, "watchdog.txt").appendText("${java.util.Date()} $msg\n") } catch (_: Exception) {}
+    }
+
+    /** Every minute: is the server answering on the phone, and does the public address really answer? Fix what is not. */
+    private fun watchdog() {
+        if (System.currentTimeMillis() - bornAt < 180_000) return // give a fresh start time to boot
+        if (probe("${Local.BASE}/healthz", 4000)) localFails = 0
+        else if (++localFails >= 3) {
+            note("local server did not answer 3 times — restarting the whole server process")
+            arm(this, 3_000)
+            Process.killProcess(Process.myPid())
+            return
+        }
+        val host = Store.prefs(this).optString("cf_host", "")
+        if (host.isNotBlank() && Store.prefs(this).optString("cf_token", "").isNotBlank()) {
+            if (probe("https://$host/healthz", 8000)) publicFails = 0
+            else {
+                publicFails++
+                if (publicFails == 2 || publicFails % 5 == 0) {
+                    note("public address $host did not answer $publicFails times — restarting the Cloudflare tunnel")
+                    cf.restart()
+                }
+                if (publicFails == 4 || publicFails % 10 == 4) {
+                    note("still not answering — restarting the Tailscale link too (a stuck VPN is the usual cause)")
+                    tunnel.restart()
+                }
+            }
+        }
+    }
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        if (Store.running(this)) arm(this, 2_000)
+        super.onTaskRemoved(rootIntent)
+    }
 
     /** Owner alerts from the server (phone off, battery, replaced, quota…) as phone notifications, once per problem. */
     private fun notifyAlerts() {
@@ -163,6 +220,25 @@ class ServerService : Service() {
 
     companion object {
         const val ACTION_STOP = "com.drivecast.server.STOP"
+        const val ACTION_KEEPALIVE = "com.drivecast.server.KEEPALIVE"
+        const val KEEPALIVE_MS = 5 * 60_000L
+
+        private fun alarmIntent(ctx: Context) = PendingIntent.getBroadcast(
+            ctx, 9, Intent(ctx, BootReceiver::class.java).setAction(ACTION_KEEPALIVE),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+
+        /** One alarm that restarts the server if it is not running when it fires; every healthy cycle pushes it forward. */
+        fun arm(ctx: Context, delayMs: Long) {
+            try {
+                val am = ctx.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+                am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, System.currentTimeMillis() + delayMs, alarmIntent(ctx))
+            } catch (_: Exception) {}
+        }
+
+        fun disarm(ctx: Context) {
+            try { (ctx.getSystemService(Context.ALARM_SERVICE) as AlarmManager).cancel(alarmIntent(ctx)) } catch (_: Exception) {}
+        }
         const val ACTION_TUNNEL = "com.drivecast.server.TUNNEL"
         const val ACTION_CF = "com.drivecast.server.CF"
         /** Bump when the Android shell changes in a way server updates depend on (hot updates check it). */

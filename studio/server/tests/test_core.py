@@ -220,9 +220,36 @@ class SchedulerTests(unittest.TestCase):
     def test_missed_window_is_not_posted(self):
         now = time.time()
         db.run("INSERT INTO slots(channel_id,day,idx,due_at,window_end,market,status) VALUES(?,?,0,?,?,'UK','planned')",
-               (self.ch, "2000-01-01", now - 7200, now - 3600))
+               (self.ch, "2000-01-01", now - 4 * 86400, now - 4 * 86400 + 3600))  # off for 4 days: too old to catch up
         scheduler.tick(now)
         self.assertEqual(db.one("SELECT status FROM slots WHERE day='2000-01-01'")["status"], "missed")
+
+    def _missed(self, n, hours_ago):
+        now = time.time()
+        for i in range(n):
+            db.run("INSERT INTO slots(channel_id,day,idx,due_at,window_end,market,status) VALUES(?,?,?,?,?,'UK','planned')",
+                   (self.ch, "2099-01-0%d" % (i + 1), i, now - hours_ago * 3600 - i * 60, now - hours_ago * 3600 + 600))
+        return now
+
+    def test_short_outage_posts_catch_up_spaced_apart(self):
+        now = self._missed(3, 5)
+        scheduler.tick(now)
+        rows = db.all("SELECT status, due_at FROM slots WHERE day LIKE '2099-%' ORDER BY due_at")
+        self.assertEqual(sorted(r["status"] for r in rows), ["planned", "planned", "queued"])  # first now, rest later
+        dues = sorted(r["due_at"] for r in rows)
+        self.assertGreaterEqual(dues[1] - dues[0], scheduler.CATCHUP_GAP - 1)
+        self.assertGreaterEqual(dues[2] - dues[1], scheduler.CATCHUP_GAP - 1)
+
+    def test_long_outage_is_skipped_not_caught_up(self):
+        now = self._missed(2, 24 * 4)
+        scheduler.tick(now)
+        self.assertEqual({r["status"] for r in db.all("SELECT status FROM slots WHERE day LIKE '2099-%'")}, {"missed"})
+
+    def test_catch_up_never_exceeds_daily_cap(self):
+        now = self._missed(scheduler.CATCHUP_DAY_CAP + 3, 5)
+        scheduler.tick(now)
+        kept = db.one("SELECT COUNT(*) n FROM slots WHERE day LIKE '2099-%' AND status!='missed'")["n"]
+        self.assertLessEqual(kept, scheduler.CATCHUP_DAY_CAP)
 
     def test_post_now_brings_slot_forward(self):
         now = time.time()

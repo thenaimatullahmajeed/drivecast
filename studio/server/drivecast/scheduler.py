@@ -59,6 +59,32 @@ def replan_future(ch, now=None):
     ensure_slots(ch, now)
 
 
+# After the server was off: posts that were due still go out, spaced safely apart, as long as the outage was short.
+CATCHUP_MAX_AGE = 3 * 86400      # older than this: skip it, the normal queue simply carries on
+CATCHUP_GAP = 45 * 60            # minimum gap between catch-up posts of one client
+CATCHUP_DAY_CAP = 5              # never more than this many posts per client in 24 h (catch-up included)
+
+
+def catch_up(s, now, c, state):
+    """Decide what happens to a planned slot whose window passed while the server was off.
+    Returns the new due time (the slot is moved there), or None when it must be skipped."""
+    ch = s["channel_id"]
+    if now - s["due_at"] > CATCHUP_MAX_AGE:
+        return None, f"Server was off for more than {CATCHUP_MAX_AGE // 86400} days — skipped, the queue carries on"
+    if ch not in state:
+        last = db.one("SELECT MAX(published_at) t FROM uploads WHERE channel_id=? AND status='published'", (ch,))
+        n24 = db.one("""SELECT COUNT(*) n FROM slots WHERE channel_id=? AND status IN ('queued','running','done') AND updated_at>?""",
+                     (ch, now - 86400))["n"]
+        state[ch] = {"next": max(now, (last["t"] or 0) + CATCHUP_GAP), "n24": n24}
+    st = state[ch]
+    if st["n24"] >= CATCHUP_DAY_CAP:
+        return None, f"Skipped: {CATCHUP_DAY_CAP} posts already went out in 24 h for this client"
+    due = st["next"]
+    st["next"] = due + CATCHUP_GAP
+    st["n24"] += 1
+    return due, None
+
+
 def tick(now=None):
     """Plan missing days and queue every slot that is due."""
     now = now or time.time()
@@ -77,8 +103,20 @@ def tick(now=None):
     due = db.all("""SELECT s.*, c.state, c.workspace_id FROM slots s JOIN channels c ON c.id=s.channel_id
                     WHERE s.status='planned' AND s.due_at<=?""", (now,))
     queued = 0
+    state, caught = {}, 0
     for s in due:
         with db.tx() as c:
+            if s["window_end"] < now and s["state"] in ("live", "attention") and s["workspace_id"] not in paused:
+                new_due, why = catch_up(s, now, c, state)
+                if new_due is None:
+                    c.execute("UPDATE slots SET status='missed', note=?, updated_at=? WHERE id=?", (why, now, s["id"]))
+                    continue
+                caught += 1
+                c.execute("UPDATE slots SET due_at=?, window_end=?, note='Catch-up after the server was off', updated_at=? WHERE id=?",
+                          (new_due, new_due + 3 * 3600, now, s["id"]))
+                if new_due > now:
+                    continue  # it will be queued by a later tick when its safe time comes
+                s = {**s, "due_at": new_due, "window_end": new_due + 3 * 3600}
             if s["window_end"] < now:
                 c.execute("UPDATE slots SET status='missed', note='Server was offline during the peak window', updated_at=? WHERE id=?",
                           (now, s["id"]))
@@ -92,6 +130,9 @@ def tick(now=None):
             c.execute("UPDATE slots SET status='queued', updated_at=? WHERE id=? AND status='planned'", (now, s["id"]))
             c.execute("INSERT INTO jobs(channel_id,slot_id,created_at) VALUES(?,?,?)", (s["channel_id"], s["id"], now))
             queued += 1
+    if caught:
+        db.event("info", "catchup", f"Server was off for a while — {caught} missed post(s) are going out now, "
+                 f"at least {CATCHUP_GAP // 60} min apart per client (older than {CATCHUP_MAX_AGE // 86400} days are skipped).")
     return queued
 
 
