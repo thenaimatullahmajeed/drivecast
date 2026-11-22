@@ -201,7 +201,8 @@ async function render() {
   if (!S.user) return authPage(r0 === 'register' ? 'register' : (S.session.needs_setup ? 'setup' : 'login'));
   const navd = S.lastHash !== location.hash; S.lastHash = location.hash; S.anim = navd;
   const cont = document.getElementById('content');
-  if (navd && cont) { cont.className = ''; cont.innerHTML = SKELETON; window.scrollTo({ top: 0 }); }
+  clearTimeout(S.skT);
+  if (navd && cont) { window.scrollTo({ top: 0 }); S.skT = setTimeout(() => { const c = document.getElementById('content'); if (c) { c.className = ''; c.innerHTML = SKELETON; } }, 400); }
   const page = PAGES[r0] || PAGES.dashboard;
   if (['users', 'server', 'devices'].includes(r0) && S.user.role !== 'owner') return go('dashboard');
   try { await page(...rest); } catch (e) { mount(r0, 'Something went wrong', '', '', '', `<div class="card err-card"><h2>Could not load this page</h2><p class="muted">${esc(e.message)}</p><button class="btn" data-act="reload">Try again</button></div>`); }
@@ -210,6 +211,7 @@ function fatal(e) { document.getElementById('app').innerHTML = `<div style="padd
 
 const MTABS = [['grid', 'Home', 'dashboard'], ['cal', 'Schedule', 'schedule'], ['tv', 'Clients', 'channels'], ['film', 'Videos', 'videos']];
 function mount(active, title, sub, kick, actions, content) {
+  clearTimeout(S.skT);
   const groups = NAV.filter(([g]) => g !== 'Admin' || S.user.role === 'owner');
   const nav = groups.map(([g, items]) => `<div class="nav"><span class="kicker">${g}</span>${items.map(([i, l, r]) => `<a href="#/${r}" class="${r === active ? 'on' : ''}" data-tip="${l}">${ic(i)}<span class="nl">${l}</span>${r === 'ai' ? '<em class="nbadge">New</em>' : ''}</a>`).join('')}</div>`).join('');
   const inTabs = MTABS.some(t => t[2] === active);
@@ -812,7 +814,7 @@ function srcActs(X, redraw, getGroup) {
       } catch (e) { X.err = e.message; }
       X.checking = false; redraw();
     },
-    cookies: d => cookiesModal(+d.id, async () => { const g = (await api('GET', '/api/groups')).groups; if (W.groups) W.groups = g; const gg = g.find(x => x.id === +d.id); if (getGroup() && gg) Object.assign(getGroup(), gg); redraw(); }),
+    cookies: d => confirm('Replace cookies? Old sessions will stop working.') && cookiesModal(+d.id, async () => { const g = (await api('GET', '/api/groups')).groups; if (W.groups) W.groups = g; const gg = g.find(x => x.id === +d.id); if (getGroup() && gg) Object.assign(getGroup(), gg); redraw(); }),
   };
 }
 document.addEventListener('input', e => {
@@ -1183,7 +1185,7 @@ function igCard(g) {
         : ['Healthy', 'ok', `${a.sources} Instagram source(s) · ${a.today}/${(a.health && a.health.daily) || 160} used today · reads via ${a.proxy_mode === 'phone' ? 'phone internet' : 'group IP'}${a.checked_at ? ' · checked ' + rel(a.checked_at) : ''}`];
   if (a && a.health && a.health.state === 'resting' && a.health.rest_until) { st[0] = 'Cooling down'; st[1] = 'warn'; st[2] = `Instagram asked for a short pause — safe, nothing is lost. Back ${rel(a.health.rest_until)}. Today ${a.today}/${a.health.daily} used.`; }
   return `<div class="igbox"><span style="width:34px;height:34px;border-radius:10px;background:#FDEBE6;color:#B83A1F;display:inline-flex;align-items:center;justify-content:center">${ic('ig', 18)}</span>
-    <div style="flex:1;min-width:160px;display:flex;flex-direction:column;gap:2px"><span style="display:flex;align-items:center;gap:8px"><b style="font-size:13px">Instagram ${a && a.username ? '· @' + esc(a.username) : ''}</b>${chip(st[0], st[1])}</span><span class="muted" style="font-size:12px">${esc(st[2])}</span></div>
+    <div style="flex:1;min-width:160px;display:flex;flex-direction:column;gap:2px"><span style="display:flex;align-items:center;gap:8px"><b style="font-size:13px">Instagram ${a && a.username ? '· reads with @' + esc(a.username) : ''}</b>${chip(st[0], st[1])}</span><span class="muted" style="font-size:12px">${esc(st[2])}</span></div>
     ${a ? `<button class="btn sm" data-act="igtest" data-id="${g.id}">${ic('check', 14)}Test</button>` : ''}
     <button class="btn sm ${!a || a.status === 'needs_cookies' ? 'primary' : ''}" data-act="cookies" data-id="${g.id}">${ic('cookie', 14)}${a ? 'Replace cookies' : 'Add cookies'}</button></div>
     ${a && a.shared_with && a.shared_with.length ? `<div class="note warn" style="margin-top:-4px">${ic('alert', 16)}<span><b>@${esc(a.username)} is also used by Pool ${a.shared_with.join(', ')}.</b> Instagram counts one account’s requests together, so these pools slow each other down. Give each pool its own test account (vault → Use).</span></div>` : ''}`;
@@ -1300,7 +1302,7 @@ async function pageGroups() {
   if (S.testGroup) { const gid = S.testGroup; S.testGroup = null; setTimeout(() => S.acts.gtest({ id: gid }), 400); }
   if (S.openIgLogin) { const gid = S.openIgLogin; S.openIgLogin = null; setTimeout(() => connectIgLogin(gid, render), 120); }
   Object.assign(S.acts, GROUP_FORM_ACTS, {
-    cookies: d => cookiesModal(+d.id, render),
+    cookies: d => confirm('Replace cookies? Old sessions will stop working.') && cookiesModal(+d.id, render),
     gapps: d => groupAppsModal(+d.id),
     igtest: async d => {
       toast('Testing the Instagram cookies…');
@@ -1667,7 +1669,7 @@ function igDestModal(c, d) {
   Object.assign(S.acts, {
     igfind: async () => { try { const r = await api('POST', `/api/instagram/destinations/discover/${c.group.id}`); toast(r.found ? `${r.found} account(s) found` : 'No Instagram account is linked to these pages', !r.found); } catch (e) { toast(e.message, true); } closeModal(); const nd = await api('GET', `/api/channels/${c.id}/detail`); igDestModal(c, nd); },
     iglogin: () => connectIgLogin(c.group.id, async () => { const nd = await api('GET', `/api/channels/${c.id}/detail`); igDestModal(c, nd); }),
-    igunlink: async () => { await api('POST', `/api/instagram/destinations/${x.linked.id}/assign`, { channel_id: null }); closeModal(); render(); },
+    igunlink: async () => { if (!confirm('Unlink this Instagram account from the client? Posts to it stop until you link it again.')) return; await api('POST', `/api/instagram/destinations/${x.linked.id}/assign`, { channel_id: null }); closeModal(); render(); },
   });
 }
 
@@ -1734,11 +1736,11 @@ async function pageSchedule() {
   S.acts.spost = async d => { if (!confirm(postWhat(d.id))) return; await api('POST', `/api/channels/${d.id}/post-now`); toast('Posting now'); render(); };
 }
 async function pageVideos() {
-  const { videos } = await api('GET', '/api/videos?limit=200');
+  const vres = await api('GET', '/api/videos?limit=200'), videos = vres.videos;
   const tone = { published: 'ok', uploading: 'info', reserved: 'info', failed: 'bad', uncertain: 'bad' };
   const VC = 'grid-template-columns:minmax(0,2.2fr) minmax(0,1.2fr) minmax(0,1fr) 96px 44px';
   const where = v => { const k = (v.destination || 'youtube').split(':')[0]; const kk = DST[k] ? k : 'youtube'; return { kind: kk, name: { youtube: 'YouTube', facebook: 'Facebook', instagram: 'Instagram' }[kk] }; };
-  const link = v => { const w = where(v).kind, id = v.external_video_id; if (!id) return ''; if (w === 'youtube') return `https://youtu.be/${id}`; if (w === 'facebook') return `https://www.facebook.com/${id}`; return ''; };
+  const link = v => { const w = where(v).kind, id = v.external_video_id; if (!id || v.yt_state === 'removed' || v.yt_state === 'rejected') return ''; if (w === 'youtube') return `https://youtu.be/${id}`; if (w === 'facebook') return `https://www.facebook.com/${id}`; return ''; };
   const rows = videos.map(v => { const w = where(v), href = link(v);
     return `<div class="tr vrow" style="${VC}"><div class="vt">${dstIcon(w.kind, 14)}<div style="min-width:0"><b class="ell" style="display:block">${esc(v.title)}</b><span class="muted ell" style="display:block;font-size:11.5px">${esc(v.file_name)}</span></div></div>
     <div style="min-width:0"><b class="ell" style="display:block;font-weight:550">${esc(v.channel_title)}</b><span class="mini ell" style="display:block" title="The IP ${esc(w.name)} saw for this post">${v.outgoing_ip ? `${esc(v.outgoing_ip)} · Pool ${esc(v.group_number ?? '?')}${v.group_ip && v.group_ip !== v.outgoing_ip ? ' (old IP)' : ''}` : 'not sent'}</span></div>
@@ -1746,8 +1748,9 @@ async function pageVideos() {
     <div style="text-align:right"><b class="mono">${v.yt_state === 'rejected' || v.yt_state === 'removed' ? '—' : v.views == null ? (w.kind === 'youtube' && v.status === 'published' ? '<span class="mini" title="Views arrive with the next stats round (every 20 min)">soon</span>' : '—') : num(v.views)}</b>${v.likes != null ? `<span class="mini" style="display:block">${plural(v.likes, 'like')}</span>` : ''}</div>
     <div class="actions" style="justify-content:flex-end">${href ? `<a class="tb-btn" style="width:32px;height:32px" href="${esc(href)}" target="_blank" rel="noopener" title="Open on ${esc(w.name)}" aria-label="Open on ${esc(w.name)}">${ic('ext', 14)}</a>` : ''}${v.status === 'uncertain' ? `<button class="btn sm" data-act="unc" data-id="${v.id}">Resolve</button>` : ''}</div></div>`; }).join('');
   const tot = videos.filter(v => v.status === 'published' && v.yt_state !== 'rejected' && v.yt_state !== 'removed');
-  const sum = tot.reduce((n, v) => n + (v.views || 0), 0);
-  mount('videos', 'Videos', `${plural(tot.length, 'post')} published · ${num(sum)} views on them · every post leaves only from its pool’s proxy IP`, 'Workspace', '',
+  const pubN = vres.published_count != null ? vres.published_count : tot.length;  // the server counts all of them, not just the rows loaded
+  const sum = vres.published_views != null ? vres.published_views : tot.reduce((n, v) => n + (v.views || 0), 0);
+  mount('videos', 'Videos', `${plural(pubN, 'post')} published · ${num(sum)} views on them · every post leaves only from its pool’s proxy IP`, 'Workspace', '',
     `<section class="card">${videos.length ? `<div class="tbl"><div style="min-width:680px"><div class="tr th" style="${VC}"><span>Video</span><span>Client · sent from</span><span>Status</span><span style="text-align:right">Views</span><span></span></div>${rows}</div></div>` : '<div class="empty"><h3>No videos yet</h3>Published posts will appear here with their views.</div>'}</section>`);
   S.acts.unc = d => {
     modal(`<h2>Was it published?</h2><p class="muted">The upload ended without a clear answer, so DriveCast did not retry it. Check YouTube Studio for this channel.</p>
@@ -1788,8 +1791,11 @@ async function pageSettings() {
   const s = await api('GET', '/api/settings');
   const meta = (path, label) => deep(s.fb_app_id ? `https://developers.facebook.com/apps/${encodeURIComponent(s.fb_app_id)}/${path}` : 'https://developers.facebook.com/apps/', label);
   const tzs = [...new Set([s.timezone, browserTz(), ...TZS])];
+  // quick links to the sections below — everything stays on this one page, nothing else changes
+  S.acts.setjump = d => { const re = new RegExp(d.re, 'i'); const h = [...document.querySelectorAll('#content .hd h2')].find(x => re.test(x.textContent)); if (h && h.closest('section')) h.closest('section').scrollIntoView({ behavior: 'smooth', block: 'start' }); };
+  const jumps = [['Google', '^Google'], ['Meta / Instagram', '^(Meta app|Instagram login)'], ['Notifications', 'Telegram|e-?mail|SMTP'], ['Account', 'timezone|password|domain|Your link']];
   mount('settings', 'Settings', 'Your apps (Google, Meta), timezone and password', 'Workspace', '',
-    `<div class="row"><div class="f3"><section class="card">${hd('Google API app', 'Each account uses its own Google Cloud OAuth app. This keeps quotas and limits separate.')}
+    `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px">${jumps.map(([l, re]) => `<button type="button" class="btn sm" data-act="setjump" data-re="${esc(re)}">${l}</button>`).join('')}</div><div class="row"><div class="f3"><section class="card">${hd('Google API app', 'Each account uses its own Google Cloud OAuth app. This keeps quotas and limits separate.')}
       <ol class="muted" style="font-size:13px;line-height:1.8;margin:0 0 16px;padding-left:18px">
         <li>${deep('https://console.cloud.google.com/projectcreate', 'Create a project')} (or pick yours).</li>
         <li>Enable ${deep('https://console.cloud.google.com/apis/library/youtube.googleapis.com', 'YouTube Data API v3')} and ${deep('https://console.cloud.google.com/apis/library/drive.googleapis.com', 'Google Drive API')}.</li>
@@ -2399,7 +2405,7 @@ async function pageAccounts() {
   const stat = (l, v) => `<div><span class="mini">${l}</span><b class="mono">${v}</b></div>`;
   const card = a => `<a class="acc-card" href="/#/account/${tab}/${a.id}" target="_blank" rel="noopener" title="Open deep stats in a new tab">
       <div class="acc-top">${avatar(a.name, hashI(a.name), a.picture, 44)}<div style="min-width:0;flex:1"><b class="ell" style="display:block;font-size:14px">${esc(a.name)}</b>
-        <span class="mini ell" style="display:block">${a.pool ? `Pool ${esc(a.pool)}` : 'no pool'}${a.client ? ' · ' + esc(a.client) : a.handle ? ' · ' + esc(a.handle) : ''}</span>${a.auth_email || a.authorized_by ? `<span class="mini ell" style="display:block">${ic('key', 11)} ${esc(a.auth_email || a.authorized_by)}</span>` : ''}</div>
+        <span class="mini ell" style="display:block">${a.pool ? `${tab === 'instagram' ? 'posts from ' : ''}Pool ${esc(a.pool)}` : 'no pool'}${a.client ? ' · ' + esc(a.client) : a.handle ? ' · ' + esc(a.handle) : ''}</span>${a.auth_email || a.authorized_by ? `<span class="mini ell" style="display:block">${ic('key', 11)} ${esc(a.auth_email || a.authorized_by)}</span>` : ''}</div>
         ${tab === 'youtube' ? chip(a.state === 'live' ? 'Live' : a.state, a.state === 'live' ? 'ok' : a.state === 'attention' ? 'bad' : 'neutral') : tab === 'instagram' && a.status !== 'ok' ? chip('Reconnect', 'bad') : chip('Linked', 'ok')}</div>
       <div class="acc-stats">${tab === 'youtube' ? stat('Subscribers', num(a.subscribers)) + stat('All-time views', num(a.total_views)) + stat('Videos', num(a.videos)) : stat('Posts', num(a.posts)) + stat('Posts · 7 d', num(a.posts_7d)) + stat('Last post', a.last_post ? esc(rel(a.last_post)) : '—')}</div>
       <div class="acc-foot"><span>${tab === 'youtube' ? `${num(a.posts)} posts by DriveCast · ${num(a.views)} views` : a.failed_7d ? `<span style="color:var(--bad)">${a.failed_7d} failed this week</span>` : 'all fine this week'}</span><span class="acc-open">Deep stats ${ic('ext', 13)}</span></div></a>`;

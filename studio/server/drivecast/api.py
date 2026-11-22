@@ -932,7 +932,9 @@ def videos(req):
                      WHERE u.workspace_id=? ORDER BY u.reserved_at DESC LIMIT ?""", (req.ws, lim))
     live = {(r["channel_id"], r.get("file_id") or r["title"]) for r in rows if r.get("yt_state") not in ("removed", "rejected") and r["status"] == "published"}
     rows = [r for r in rows if not (r.get("yt_state") in ("removed", "rejected") and (r["channel_id"], r.get("file_id") or r["title"]) in live)]
-    return {"videos": rows}
+    tot = db.one("""SELECT COUNT(*) n, COALESCE(SUM(views),0) v FROM uploads WHERE workspace_id=? AND status='published'
+                    AND IFNULL(yt_state,'') NOT IN ('removed','rejected')""", (req.ws,))
+    return {"videos": rows, "published_count": tot["n"], "published_views": tot["v"]}
 
 
 @route("POST", "/api/uploads/(\\d+)/resolve")
@@ -1647,7 +1649,7 @@ def channel_detail(req, cid):
             "instagram_dest": igd, "destinations": [d["kind"] for d in _w.destinations(store.channel(c["id"]))],
             "titles": db.jload(c.get("titles_json"), []), "encore_on": bool(c.get("encore", 1)),
             "pipeline": {"found": sum(counts.values()), "waiting": counts.get("found", 0), "downloading": counts.get("downloading", 0),
-                         "ready": max(counts.get("in_drive", 0), c.get("queue_count") or 0), "published": counts.get("published", 0),
+                         "ready": max(counts.get("in_drive", 0), c.get("queue_count") or 0), "published": db.one("SELECT COUNT(*) n FROM uploads WHERE channel_id=? AND status='published'", (c["id"],))["n"],
                          "skipped": counts.get("skipped", 0) + counts.get("failed", 0), "photos": counts.get("waiting_facebook", 0),
                          "lanes": lanes},
             "queue": ready, "ai": _ai_channel(c), "upnext": db.jload(c.get("queue_json"), None), "upnext_at": c.get("queue_at"), "slots": slots, "encore": enc, "skipped": skipped, "events": events,

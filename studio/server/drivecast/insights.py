@@ -201,7 +201,7 @@ def dashboard(ws_id, tz_name, now=None, since=None):
 
     allpub = db.one("""SELECT COUNT(*) n, COALESCE(SUM(views),0) v, COALESCE(SUM(likes),0) l,
                               COALESCE(SUM(CASE WHEN destination IS NULL OR destination LIKE 'youtube%' THEN 1 ELSE 0 END),0) yt
-                       FROM uploads WHERE workspace_id=? AND status='published'""", (ws_id,))
+                       FROM uploads WHERE workspace_id=? AND status='published' AND IFNULL(yt_state,'') NOT IN ('removed','rejected')""", (ws_id,))
     best = db.one("""SELECT u.title, u.views, u.external_video_id, c.title channel FROM uploads u JOIN channels c ON c.id=u.channel_id
                      WHERE u.workspace_id=? AND u.status='published' AND u.views IS NOT NULL ORDER BY u.views DESC LIMIT 1""", (ws_id,))
     since7 = now - 7 * 86400
