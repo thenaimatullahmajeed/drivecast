@@ -176,7 +176,7 @@ function liveBar(p, dark) {
 
 // ------------------------------------------------------------------ router
 const NAV = [
-  ['Workspace', [['grid', 'Dashboard', 'dashboard'], ['cal', 'Schedule', 'schedule'], ['tv', 'Clients', 'channels'], ['net', 'Pools', 'groups'], ['film', 'Videos', 'videos'], ['users', 'Accounts', 'accounts'], ['spark', 'AI captions', 'ai'], ['drive', 'Google Drive', 'drive'], ['gear', 'Settings', 'settings']]],
+  ['Workspace', [['refresh', 'Today', 'pipeline'], ['grid', 'Dashboard', 'dashboard'], ['cal', 'Schedule', 'schedule'], ['tv', 'Clients', 'channels'], ['plus', 'New client', 'new'], ['net', 'Pools', 'groups'], ['film', 'Videos', 'videos'], ['users', 'Accounts', 'accounts'], ['spark', 'AI captions', 'ai'], ['drive', 'Google Drive', 'drive'], ['gear', 'Settings', 'settings']]],
   ['Admin', [['users', 'Users', 'users'], ['batt', 'Devices', 'devices'], ['phone', 'Server', 'server']]],
 ];
 function go(r) { if (location.hash !== '#/' + r) location.hash = '#/' + r; else render(); }
@@ -259,7 +259,7 @@ function liveStart() {
       paintLive();
       // something happened (new post, new event, a post started or ended): refresh the page you are on
       const r0 = (location.hash.replace(/^#\/?/, '') || 'dashboard').split('/')[0];
-      if (changed && ['dashboard', 'channel', 'channels', 'videos', 'schedule'].includes(r0) && !document.getElementById('modal')
+      if (changed && ['dashboard', 'pipeline', 'channel', 'channels', 'videos', 'schedule'].includes(r0) && !document.getElementById('modal')
           && !(document.activeElement && ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName))) render();
     } catch (e) { S.liveFail = (S.liveFail || 0) + 1; paintLive(); }
   };
@@ -2453,5 +2453,185 @@ async function pageAccount(kind, id) {
   };
 }
 
-const PAGES = { accounts: pageAccounts, account: () => { const [, k, i] = location.hash.replace(/^#\/?/, '').split('?')[0].split('/'); return pageAccount(k, i); }, ai: pageAI, devices: pageDevices, channel: pageChannel, dashboard: pageDashboard, add: pageAdd, channels: pageChannels, groups: pageGroups, schedule: pageSchedule, videos: pageVideos, drive: pageDrive, settings: pageSettings, users: pageUsers, server: pageServer, login: () => authPage('login'), register: () => authPage('register') };
+// ------------------------------------------------------------------ Today: one-screen daily pipeline (read-only; uses what the scheduler already records)
+async function pagePipeline() {
+  const d = await api('GET', '/api/pipeline');
+  const t = d.today;
+  const dot = c => `<span style="width:11px;height:11px;border-radius:50%;flex:none;background:${c === 'red' ? '#FF6B57' : '#3DDC97'}"></span>`;
+  const stat = (k, v, col, sub) => `<div style="flex:1 1 150px;padding:14px 16px;border-radius:14px;background:var(--paper)"><span class="kicker">${k}</span><div style="font-size:30px;font-weight:700;color:${col || 'inherit'}">${v}</div><span class="muted" style="font-size:12px">${sub || ''}</span></div>`;
+  const done = t.total && !t.left && !t.missed;
+  const head = `<section class="card"><div style="display:flex;gap:12px;flex-wrap:wrap">
+    ${stat('Posted today', `${t.done}<span class="muted" style="font-size:16px"> of ${t.total}</span>`, t.total && t.done >= t.total ? '#1F9D55' : '', done ? 'Today’s work is done' : `${t.left} still to go`)}
+    ${stat('Missed', t.missed, t.missed ? '#B42318' : '#1F9D55', t.missed ? 'reason shown below' : 'nothing missed')}
+    ${stat('Next post', t.next_at ? tTime(t.next_at) : '—', '', t.next_at ? rel(t.next_at) : (t.total ? 'nothing left today' : 'nothing planned today'))}</div></section>`;
+  const col = (title, items, tint) => `<div style="flex:1 1 240px;min-width:0"><div style="display:flex;justify-content:space-between;margin-bottom:8px"><b>${title}</b><span class="mono muted">${items.length}</span></div>
+    <div style="display:flex;flex-direction:column;gap:6px">${items.slice(0, 8).map(i => `<a href="#/channel/${i.channel_id}" style="text-decoration:none;color:inherit;padding:9px 11px;border-radius:10px;background:var(--paper);border-left:3px solid ${tint};display:flex;justify-content:space-between;gap:8px"><span class="ell">${esc(i.client)}</span><span class="mono muted" style="font-size:12px">${tTime(i.at)}</span></a>`).join('') || '<span class="muted" style="font-size:13px">Nothing here</span>'}${items.length > 8 ? `<span class="muted" style="font-size:12px">+${items.length - 8} more</span>` : ''}</div></div>`;
+  const cols = `<section class="card"><div style="display:flex;gap:18px;flex-wrap:wrap">${col('Ready', d.columns.ready, '#C9CDD6')}${col('Posting', d.columns.posting, '#FF9B85')}${col('Done', d.columns.done, '#3DDC97')}</div></section>`;
+  const rows = d.clients.map(c => `<a href="#/channel/${c.id}" style="text-decoration:none;color:inherit;display:block;padding:12px 0;border-top:1px solid var(--line)">
+      <div style="display:flex;align-items:center;gap:12px">${dot(c.dot)}<b class="ell" style="flex:1">${esc(c.title)}</b><span class="mono">${c.done}/${c.total} today</span><span class="muted" style="min-width:110px;text-align:right">${c.next_at ? 'next ' + tTime(c.next_at) : 'no more today'}</span></div>
+      ${c.problems.map(p => `<div style="margin:4px 0 0 23px;font-size:13px;color:#B42318">${p.at ? tTime(p.at) + ' · ' : ''}${esc(p.why)}</div>`).join('')}</a>`).join('');
+  const clients = `<section class="card">${hd('Clients', 'One row each. Red means something needs a look — the reason is written under it.')}${rows || '<div class="empty">No client is posting today.</div>'}</section>`;
+  const pools = `<section class="card">${hd('Pools')}${d.pools.map(p => `<details style="padding:8px 0;border-top:1px solid var(--line)"><summary style="cursor:pointer">${dot(p.ok ? 'green' : 'red')} <b style="margin-left:6px">${esc(p.line)}</b></summary><div class="muted" style="font-size:13px;margin:6px 0 0 23px">${esc(p.why)} · <a href="#/groups">open Pools for details</a></div></details>`).join('') || '<div class="empty">No pool yet.</div>'}</section>`;
+  mount('pipeline', 'Today', 'Posted, missed and next — at a glance', 'Workspace', '<a class="btn primary" href="#/new">New client</a>', `${head}<div style="height:12px"></div>${cols}<div style="height:12px"></div>${clients}<div style="height:12px"></div>${pools}`);
+}
+
+// ------------------------------------------------------------------ New client: 3 steps (name + source, destinations, plan). Uses the same API calls as the long wizard.
+const N = { step: 1, name: '', link: '', kind: '', err: '', group: null, channel: null, conn: null, want: { youtube: true, fb: false, ig: false }, dest: { fb: null, ig: null },
+  plan: { posts_per_day: 2, audience: 'US+UK', min_gap_min: 240, jitter_min: 30 } };
+function nKind(l) {
+  l = (l || '').trim();
+  if (/instagram\.com|^@[\w.]+$/i.test(l)) return 'instagram';
+  if (/tiktok\.com/i.test(l)) return 'tiktok';
+  if (/youtu\.?be/i.test(l)) return 'youtube';
+  if (/drive\.google\.com/i.test(l)) return 'drive';
+  return '';
+}
+function nPick(groups, fbInfo, wantFb) {
+  const hasFb = g => !!((fbInfo.groups || []).find(x => x.group_id === g.id) || {}).account;
+  return groups.filter(g => g.status !== 'down' && g.channel_count < g.max_channels)
+    .sort((a, b) => ((wantFb && hasFb(a) ? 0 : 1) - (wantFb && hasFb(b) ? 0 : 1)) || a.channel_count - b.channel_count || a.number - b.number)[0] || null;
+}
+async function pageStart() {
+  const [g, fb, igd, dr] = await Promise.all([api('GET', '/api/groups'), api('GET', '/api/facebook').catch(() => ({ groups: [], app_ready: false })),
+    api('GET', '/api/instagram/destinations').catch(() => ({ destinations: [] })), api('GET', '/api/drive').catch(() => ({ folders: [] }))]);
+  N.groups = g.groups; N.fb = fb; N.igd = igd.destinations; N.drive = dr;
+  if (!N.channel && !N.conn) N.group = nPick(N.groups, fb, N.want.fb) || N.group;
+  drawStart();
+}
+function drawStart() {
+  const steps = ['Client + source', 'Where it posts', 'Plan'].map((t, i) => `<span style="flex:1;padding:10px 12px;border-radius:12px;font-weight:600;background:${N.step === i + 1 ? 'var(--ink,#0B0F14)' : 'var(--paper)'};color:${N.step === i + 1 ? '#fff' : 'inherit'}">${i + 1} · ${t}</span>`).join('');
+  const body = [nStep1, nStep2, nStep3][N.step - 1]();
+  mount('new', 'New client', 'Three steps — name and source, where it posts, then the plan', 'Client', '<a class="btn" href="#/channels">Cancel</a>',
+    `<div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap">${steps}</div><section class="card" style="padding:26px">${body}</section>`);
+  Object.assign(S.acts, NEW_ACTS);
+  if (N.conn && !N.channel) nPoll();
+}
+const nErr = () => N.err ? `<div class="note bad" style="margin-top:12px">${ic('alert', 16)}<span>${esc(N.err)}</span></div>` : '';
+function nStep1() {
+  const k = nKind(N.link);
+  return `<h2 style="font-size:24px">Who is the client, and where do the videos come from?</h2>
+    <label class="f" style="margin-top:16px">Client name<input class="i" id="nname" value="${esc(N.name)}" placeholder="e.g. Art by Zara" autocomplete="off"><span class="help">It also names the client’s Google Drive folder.</span></label>
+    <label class="f" style="margin-top:14px">Source link<input class="i" id="nlink" value="${esc(N.link)}" placeholder="TikTok, Instagram or YouTube link — or a Google Drive folder link" autocomplete="off"><span class="help" id="nkind">${k ? 'Detected: ' + { instagram: 'Instagram', tiktok: 'TikTok', youtube: 'YouTube', drive: 'Google Drive folder' }[k] : 'Paste the client’s profile or channel link.'}</span></label>${nErr()}
+    <div style="display:flex;justify-content:flex-end;margin-top:22px"><button class="btn primary big" data-act="n1">Continue</button></div>`;
+}
+function nStep2() {
+  const g = N.group, ch = N.channel, yt = ch && ch.platform === 'youtube';
+  const fbG = g ? (N.fb.groups || []).find(x => x.group_id === g.id) || { account: null, pages: [] } : { account: null, pages: [] };
+  const pages = fbG.pages.filter(pg => pg.can_post && (!pg.channel || (ch && pg.channel.id === ch.id)));
+  const igs = g ? (N.igd || []).filter(d => d.group_id === g.id && (!d.channel_id || (ch && d.channel_id === ch.id))) : [];
+  if (!N.dest.fb && pages.length === 1 && N.want.fb) N.dest.fb = pages[0].id;
+  if (!N.dest.ig && igs.length === 1 && N.want.ig) N.dest.ig = igs[0].id;
+  const row = (k, title, on, body) => `<div style="display:flex;gap:14px;align-items:flex-start;padding:16px 0;border-top:1px solid var(--line)"><label style="display:flex;gap:10px;align-items:center;min-width:150px"><input type="checkbox" data-act="nwant" data-k="${k}" ${on ? 'checked' : ''}> ${dstIcon(k === 'fb' ? 'facebook' : k === 'ig' ? 'instagram' : 'youtube', 18)}<b>${title}</b></label><div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:8px">${on ? body : '<span class="muted" style="font-size:13px">Off</span>'}</div></div>`;
+  const ok = t => `<span style="color:#1F9D55;font-weight:600">✓ ${esc(t)}</span>`;
+  const needYt = N.want.youtube && !yt;  // Facebook / Instagram need the client to exist first
+  const ytBody = yt ? ok('Connected · ' + ch.title)
+    : N.conn ? `<div class="linkbox"><span class="kicker">Send this link to the channel owner — they sign in with Google and press Allow</span><div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center"><span class="mono" style="font-size:13px;flex:1 1 240px;word-break:break-all">${esc(N.conn.url)}</span><button class="btn coral" data-act="copy" data-text="${esc(N.conn.url)}">Copy</button></div><div style="display:flex;gap:10px;align-items:center;margin-top:10px"><span class="pulse"></span><span class="muted">Waiting for Allow… this updates by itself.</span></div></div>`
+      : ch ? '<span class="muted" style="font-size:13px">This client was created without YouTube. Start again to add YouTube.</span>'
+        : `<button class="btn primary" data-act="nyt">${ic('key', 14)}Connect YouTube — Allow</button>`;
+  const fbBody = !N.fb.app_ready ? '<span class="muted" style="font-size:13px">Facebook is not set up on this server yet — ask the owner (Settings).</span>'
+    : needYt ? '<span class="muted" style="font-size:13px">Connect YouTube first.</span>'
+      : !fbG.account ? `<button class="btn primary" data-act="nfb">${ic('fb', 14)}Connect Facebook — Allow</button>`
+        : pages.length ? `<select class="i" id="nfbp"><option value="">— choose the page —</option>${pages.map(pg => `<option value="${pg.id}" ${N.dest.fb === pg.id ? 'selected' : ''}>${esc(pg.name)}</option>`).join('')}</select>`
+          : '<span class="muted" style="font-size:13px">Facebook is connected but has no free page. Add one in Pools.</span>';
+  const igBody = needYt ? '<span class="muted" style="font-size:13px">Connect YouTube first.</span>'
+    : igs.length ? `<select class="i" id="nigp"><option value="">— choose the account —</option>${igs.map(d => `<option value="${d.id}" ${N.dest.ig === d.id ? 'selected' : ''}>@${esc(d.username || d.ig_user_id)}</option>`).join('')}</select>`
+      : `<div class="actions">${fbG.account ? `<button class="btn sm" data-act="nigfind">${ic('search', 14)}Find through Facebook</button>` : ''}<button class="btn sm primary" data-act="nig">${ic('ig', 14)}Connect Instagram — Allow</button></div>`;
+  const poolLine = g ? `<details style="margin-top:14px"><summary class="muted" style="cursor:pointer;font-size:13px">Pool ${g.number} is used for this client${ch || N.conn ? '' : ' — change'}</summary>${ch || N.conn ? '' : `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">${N.groups.map(x => `<button class="btn sm ${x.id === g.id ? 'primary' : ''}" data-act="npool" data-id="${x.id}" ${x.status === 'down' ? 'disabled' : ''}>Pool ${x.number}</button>`).join('')}</div>`}</details>`
+    : '<div class="note bad" style="margin-top:14px">No pool is available. Add one on the Pools page first.</div>';
+  return `<h2 style="font-size:24px">Where should the posts go?</h2><p class="muted">Tick each place and press Allow. Any mix works.</p>
+    ${row('youtube', 'YouTube', N.want.youtube, ytBody)}${row('fb', 'Facebook', N.want.fb, fbBody)}${row('ig', 'Instagram', N.want.ig, igBody)}${poolLine}${nErr()}
+    <div style="display:flex;justify-content:space-between;margin-top:22px"><button class="btn" data-act="nback">Back</button><button class="btn primary big" data-act="n2">Continue</button></div>`;
+}
+function nStep3() {
+  const p = N.plan, sel = (id, l, o, v) => `<label class="f">${l}<select class="i" id="${id}">${o.map(([a, b]) => `<option value="${a}" ${String(a) === String(v) ? 'selected' : ''}>${b}</option>`).join('')}</select></label>`;
+  return `<h2 style="font-size:24px">How often should it post?</h2>
+    <div class="form" style="grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;margin-top:14px">
+      <div style="display:flex;flex-direction:column;gap:8px"><b style="font-size:13px">Posts per day</b><div class="stepper"><button data-act="nppd" data-d="-1" aria-label="Fewer">−</button><strong>${p.posts_per_day}</strong><button data-act="nppd" data-d="1" aria-label="More">+</button></div></div>
+      ${sel('naud', 'Audience', [['US+UK', 'USA + UK'], ['US', 'USA'], ['UK', 'United Kingdom'], ['CA', 'Canada'], ['AU', 'Australia']], p.audience)}
+      ${sel('ngap', 'Gap between posts', [[120, '2 hours'], [180, '3 hours'], [240, '4 hours'], [360, '6 hours']], p.min_gap_min)}</div>${nErr()}
+    <div style="display:flex;justify-content:space-between;margin-top:24px"><button class="btn" data-act="nback">Back</button><button class="btn coral big" data-act="nstart" ${N.busy ? 'disabled' : ''}>Start</button></div>`;
+}
+function nRead() {
+  const v = id => { const e = document.getElementById(id); return e ? e.value : null; };
+  if (v('nname') !== null) N.name = v('nname').trim();
+  if (v('nlink') !== null) N.link = v('nlink').trim();
+  if (v('nfbp') !== null) N.dest.fb = v('nfbp') ? +v('nfbp') : null;
+  if (v('nigp') !== null) N.dest.ig = v('nigp') ? +v('nigp') : null;
+  if (v('naud')) N.plan.audience = v('naud');
+  if (v('ngap')) N.plan.min_gap_min = +v('ngap');
+}
+async function nEnsureClient() {
+  if (N.channel) return N.channel;
+  if (!N.group) throw new Error('No pool is available. Add one on the Pools page first.');
+  const r = await api('POST', '/api/channels', { title: N.name, group_id: N.group.id });
+  N.channel = r.channel;
+  return N.channel;
+}
+function nPoll() {
+  clearTimers();
+  every(3000, async () => {
+    if (!N.conn || N.channel) return;
+    try {
+      const s = await api('GET', `/api/connect/${N.conn.code}`);
+      if (s.status === 'done' && s.channel) { N.channel = s.channel; N.conn = null; clearTimers(); toast('YouTube connected'); drawStart(); }
+      else if (s.status === 'error' || s.status === 'expired') { N.err = s.error || 'The link expired — press Connect YouTube again.'; N.conn = null; clearTimers(); drawStart(); }
+    } catch (e) { /* keep waiting */ }
+  });
+}
+const NEW_ACTS = {
+  n1: () => {
+    nRead(); N.err = ''; N.kind = nKind(N.link);
+    if (!N.name) N.err = 'Type the client’s name.';
+    else if (!N.kind) N.err = 'Paste a TikTok, Instagram or YouTube link, or a Google Drive folder link.';
+    else if (N.kind === 'drive') {
+      const id = (N.link.match(/folders\/([\w-]+)/) || [])[1];
+      N.folder = id && (N.drive.folders || []).find(f => f.id === id);
+      if (!N.folder) N.err = 'That Drive folder is not inside your DriveCast folder. Open Google Drive in the menu and pick one of the listed folders.';
+    }
+    if (!N.err) N.step = 2;
+    drawStart();
+  },
+  nback: () => { nRead(); N.err = ''; N.step = Math.max(1, N.step - 1); drawStart(); },
+  nwant: d => { nRead(); N.want[d.k] = !N.want[d.k]; if (!N.channel && !N.conn) N.group = nPick(N.groups, N.fb, N.want.fb) || N.group; drawStart(); },
+  npool: d => { nRead(); N.group = N.groups.find(g => g.id === +d.id); N.dest.fb = null; N.dest.ig = null; drawStart(); },
+  nyt: async () => {
+    nRead(); N.err = '';
+    try { N.conn = await api('POST', '/api/connect', { purpose: 'youtube', group_id: N.group.id }); } catch (e) { N.err = e.message; }
+    drawStart();
+  },
+  nfb: async () => { nRead(); try { await nEnsureClient(); } catch (e) { N.err = e.message; return drawStart(); } connectFacebook(N.group.id); },
+  nig: async () => { nRead(); try { await nEnsureClient(); } catch (e) { N.err = e.message; return drawStart(); }
+    connectIgLogin(N.group.id, async () => { N.igd = (await api('GET', '/api/instagram/destinations')).destinations; drawStart(); }); },
+  nigfind: async () => { nRead(); try { const r = await api('POST', `/api/instagram/destinations/discover/${N.group.id}`); N.igd = r.destinations; toast(r.found ? `${r.found} Instagram account(s) found` : 'No Instagram account is linked to these pages', !r.found); } catch (e) { toast(e.message, true); } drawStart(); },
+  n2: async () => {
+    nRead(); N.err = '';
+    const ytOn = N.want.youtube && N.channel && N.channel.platform === 'youtube';
+    if (N.want.youtube && !ytOn) N.err = 'Press “Connect YouTube — Allow” and finish it, or untick YouTube.';
+    else if (N.want.fb && !N.dest.fb) N.err = 'Choose the Facebook page, or untick Facebook.';
+    else if (N.want.ig && !N.dest.ig) N.err = 'Choose the Instagram account, or untick Instagram.';
+    else if (!ytOn && !N.want.fb && !N.want.ig) N.err = 'Choose at least one place to post.';
+    if (!N.err) N.step = 3;
+    drawStart();
+  },
+  nppd: d => { nRead(); N.plan.posts_per_day = Math.max(1, Math.min(6, N.plan.posts_per_day + +d.d)); drawStart(); },
+  nstart: async () => {
+    nRead(); N.err = ''; N.busy = true; drawStart();
+    try {
+      const c = await nEnsureClient();
+      const k = N.kind, link = N.link;
+      const X = newSrc({ drive: k === 'drive', ig: k === 'instagram', yt: k === 'youtube', tt: k === 'tiktok', ytLink: k === 'youtube' ? link : '', ttLink: k === 'tiktok' ? link : '', ctype: 'videos', include_old: true, cap: 6, keep_days: 7 });
+      if (k === 'instagram') { const h = link.replace(/^.*instagram\.com\//, '').replace(/[/?#].*$/, '').replace(/^@/, ''); X.handle = h; X.profile = { username: h, unchecked: true, full_name: 'Not checked yet — checked automatically' }; }
+      if (N.want.fb && N.dest.fb) await api('POST', `/api/facebook/pages/${N.dest.fb}/assign`, { channel_id: c.id });
+      if (N.want.ig && N.dest.ig) await api('POST', `/api/instagram/destinations/${N.dest.ig}/assign`, { channel_id: c.id });
+      await api('POST', `/api/channels/${c.id}/route`, { folder_id: k === 'drive' ? N.folder.id : null, group_id: N.group.id, plan: Object.assign({}, N.plan), start: true,
+        instagram: srcPayload(X), sources: vidSources(X), encore: true, inbox: true, youtube_on: c.platform === 'youtube' ? !!N.want.youtube : false });
+      toast(`${c.title} is live`);
+      const id = c.id;
+      Object.assign(N, { step: 1, name: '', link: '', kind: '', err: '', group: null, channel: null, conn: null, busy: false, folder: null, want: { youtube: true, fb: false, ig: false }, dest: { fb: null, ig: null } });
+      go(`channel/${id}`);
+    } catch (e) { N.busy = false; N.err = e.message; drawStart(); }
+  },
+};
+
+const PAGES = { pipeline: pagePipeline, new: pageStart, accounts: pageAccounts, account: () => { const [, k, i] = location.hash.replace(/^#\/?/, '').split('?')[0].split('/'); return pageAccount(k, i); }, ai: pageAI, devices: pageDevices, channel: pageChannel, dashboard: pageDashboard, add: pageAdd, channels: pageChannels, groups: pageGroups, schedule: pageSchedule, videos: pageVideos, drive: pageDrive, settings: pageSettings, users: pageUsers, server: pageServer, login: () => authPage('login'), register: () => authPage('register') };
 render();

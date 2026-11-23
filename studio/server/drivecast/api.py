@@ -8,7 +8,7 @@ from . import VERSION, db, drive, insights, maintenance, scheduler, security, st
 from .google import DRIVE_SCOPES, TokenBox, consent_url, exchange
 from .net import DriveCastError, parse_proxy, probe, session_for
 from .platforms import get as platform
-from .timeplan import AUDIENCES, normalize_plan
+from .timeplan import AUDIENCES, local_day_bounds, normalize_plan
 
 ROUTES = []
 SESSION_DAYS = 30
@@ -922,6 +922,82 @@ def schedule(req):
             if i < len(nxt[cid]):
                 r["next_title"] = nxt[cid][i].get("name")
     return {"slots": rows, "live": live, "now": now}
+
+
+def _why(r):
+    """One plain line for a slot that did not go out. Reads only what the scheduler already recorded."""
+    st, note = r["status"], (r.get("note") or "").strip()
+    low = note.lower()
+    if st == "missed":
+        if "offline" in low:
+            return "Missed — server was down"
+        if "more than" in low and "days" in low:
+            return "Missed — server was off for days, skipped (the queue carries on)"
+        if "already went out" in low:
+            return "Skipped — the daily safety limit was already reached"
+        return f"Missed — {note}" if note else "Missed — no reason was recorded"
+    if st == "held":
+        return f"Held — {note or r.get('state_reason') or 'client paused'}"
+    if st == "failed":
+        return f"Failed — {note or 'the upload did not finish'}"
+    if st == "uncertain":
+        return "Not sure it went out — check YouTube"
+    return ""
+
+
+@route("GET", "/api/pipeline")
+def pipeline(req):
+    """One daily screen: Today, Ready -> Posting -> Done, one row per client, plain reasons, one line per pool."""
+    now = time.time()
+    s0, e0, _d = local_day_bounds(req.user["timezone"], now)
+    rows = db.all("""SELECT s.id, s.channel_id, s.due_at, s.status, s.note, c.title, c.state channel_state, c.state_reason,
+                     g.number gn, u.title video_title
+                     FROM slots s JOIN channels c ON c.id=s.channel_id LEFT JOIN ip_groups g ON g.id=c.group_id
+                     LEFT JOIN uploads u ON u.id=s.upload_id
+                     WHERE c.workspace_id=? AND s.due_at>=? AND s.due_at<? AND c.state!='setup' ORDER BY s.due_at""", (req.ws, s0, e0))
+    clients, today = {}, {"done": 0, "missed": 0, "left": 0, "total": 0, "next_at": None}
+    cols = {"ready": [], "posting": [], "done": []}
+    for r in rows:
+        if r["status"] == "skipped":
+            continue
+        c = clients.setdefault(r["channel_id"], {"id": r["channel_id"], "title": r["title"], "pool": r["gn"], "done": 0, "total": 0,
+                                                "next_at": None, "problems": [], "channel_state": r["channel_state"],
+                                                "channel_reason": r["state_reason"]})
+        c["total"] += 1
+        today["total"] += 1
+        item = {"channel_id": r["channel_id"], "client": r["title"], "at": r["due_at"], "title": r["video_title"]}
+        if r["status"] == "done":
+            c["done"] += 1
+            today["done"] += 1
+            cols["done"].append(item)
+        elif r["status"] in ("queued", "running"):
+            cols["posting"].append(item)
+            today["left"] += 1
+        elif r["status"] == "planned":
+            cols["ready"].append(item)
+            today["left"] += 1
+            if r["due_at"] >= now - 600 and (c["next_at"] is None or r["due_at"] < c["next_at"]):
+                c["next_at"] = r["due_at"]
+            if r["due_at"] >= now - 600 and (today["next_at"] is None or r["due_at"] < today["next_at"]):
+                today["next_at"] = r["due_at"]
+        else:
+            why = _why({**r})
+            if r["status"] == "missed":
+                today["missed"] += 1
+            c["problems"].append({"at": r["due_at"], "why": why})
+    for c in clients.values():
+        bad = bool(c["problems"]) or c["channel_state"] in ("attention", "paused")
+        c["dot"] = "red" if bad else "green"
+        if not c["problems"] and c["channel_state"] != "live":
+            c["problems"].append({"at": None, "why": (c["channel_reason"] or "Client is paused")})
+    pools = []
+    for g in db.all("SELECT * FROM ip_groups WHERE workspace_id=? ORDER BY number", (req.ws,)):
+        h = pool_health(g)
+        pools.append({"id": g["id"], "number": g["number"], "ok": h["state"] == "healthy",
+                      "line": f"Pool {g['number']} — {'OK' if h['state'] == 'healthy' else {'down': 'Not responding', 'slow': 'Slow', 'stale': 'Not checked lately'}.get(h['state'], h['state'])}",
+                      "why": h["why"]})
+    return {"today": today, "clients": sorted(clients.values(), key=lambda x: (x["dot"] != "red", x["title"].lower())),
+            "columns": cols, "pools": pools, "now": now}
 
 
 @route("GET", "/api/videos")

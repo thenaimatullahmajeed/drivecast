@@ -269,3 +269,34 @@ class AuditFixTests(unittest.TestCase):
     def test_error_message_never_shows_question_mark(self):
         from drivecast import errors
         self.assertNotIn("?", errors.info("IG_RATE_LIMIT", group=2)["message"].split("until")[1])
+
+
+class PipelineApiTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        ApiTests.setUpClass.__func__(cls)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        shutil.rmtree(cls.dir, ignore_errors=True)
+
+    def test_pipeline_today_screen(self):
+        import time as _t
+        c = Client(self.base)
+        st, r = c.call("POST", "/api/setup", {"setup_code": "SETUP-AAAA-BBBB", "name": "Admin", "email": "p@x.com", "password": "password1"})
+        self.assertEqual(st, 200, r)
+        ws = r["user"]["workspace_id"]
+        now = _t.time()
+        g = db.run("INSERT INTO ip_groups(workspace_id,number,host,port,status,created_at) VALUES(?,7,'h',1,'ok',?)", (ws, now))
+        ch = db.run("INSERT INTO channels(workspace_id,external_id,title,group_id,state,created_at) VALUES(?,?,?,?,'live',?)", (ws, "UCP", "Pipe Client", g, now))
+        for i, (status, note) in enumerate([("done", None), ("missed", "Server was offline during the peak window"), ("planned", None)]):
+            db.run("INSERT INTO slots(channel_id,day,idx,due_at,window_end,market,status,note) VALUES(?,?,?,?,?,'UK',?,?)",
+                   (ch, "2098-01-01", i, now + (i - 1) * 5, now + 3600, status, note))
+        st, d = c.call("GET", "/api/pipeline")
+        self.assertEqual(st, 200, d)
+        row = [x for x in d["clients"] if x["title"] == "Pipe Client"][0]
+        self.assertEqual((row["done"], row["total"], row["dot"]), (1, 3, "red"))
+        self.assertIn("Missed — server was down", [p["why"] for p in row["problems"]])
+        self.assertEqual((d["today"]["missed"], len(d["columns"]["ready"]) >= 1), (1, True))
+        self.assertTrue(any(p["line"].startswith("Pool 7 — ") for p in d["pools"]))
