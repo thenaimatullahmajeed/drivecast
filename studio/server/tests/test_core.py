@@ -286,3 +286,44 @@ class ViewsTest(unittest.TestCase):
         d = insights.dashboard(ws, "UTC", now=now)
         self.assertEqual(d["today"]["views_today"], 1200)
         self.assertEqual(d["kpis"]["subs_7d"], 10)
+
+
+class ProxyFormatTests(unittest.TestCase):
+    def test_gateway_style_paste(self):
+        from drivecast import net
+        p = net.parse_proxy("dc.example.com:10001:user-abc123-country-us:pa+ss:word")
+        self.assertEqual((p["host"], p["port"], p["username"], p["password"], p["scheme"]),
+                         ("dc.example.com", 10001, "user-abc123-country-us", "pa+ss:word", None))
+        self.assertEqual(net._bare_username(p["username"]), "abc123")
+        self.assertIsNone(net._bare_username("abc123"))
+
+    def test_special_characters_in_password_are_encoded(self):
+        from drivecast import net, security
+        g = {"host": "dc.example.com", "port": 10001, "username": "u", "password_enc": security.seal("a+b/c@d"), "scheme": "http"}
+        self.assertEqual(net.proxy_url(g), "http://u:a%2Bb%2Fc%40d@dc.example.com:10001")
+        g["scheme"] = "socks5"
+        self.assertTrue(net.proxy_url(g).startswith("socks5h://"))
+
+    def test_finds_plain_username_and_other_scheme(self):
+        from drivecast import net
+        calls = []
+
+        class R:
+            def raise_for_status(self):
+                pass
+
+        def fake_session(g):
+            class S:
+                def get(self, *a, **k):
+                    calls.append((g["scheme"], g["username"]))
+                    if (g["scheme"], g["username"]) == ("http", "abc123"):
+                        return R()
+                    raise OSError("Connection refused")
+            return S()
+        p = net.parse_proxy("dc.example.com:10001:user-abc123-country-us:pw")
+        with mock.patch.object(net, "session_for", fake_session), \
+             mock.patch.object(net, "probe", lambda g: {"ip": "1.2.3.4", "ms": 90, "country": "DE", "country_name": None, "city": None, "isp": None}):
+            fixed, r, note = net.find_working(p)
+        self.assertEqual((fixed["scheme"], fixed["username"]), ("http", "abc123"))
+        self.assertIn("abc123", note)
+        self.assertEqual(len(calls), 4)

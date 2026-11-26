@@ -341,6 +341,10 @@ SCHEMA = [
     """
     ALTER TABLE sources ADD COLUMN keep_days INTEGER NOT NULL DEFAULT 7;
     """,
+    # version 18: which kind of proxy a pool uses (socks5 or http); found automatically when the proxy is tested
+    """
+    ALTER TABLE ip_groups ADD COLUMN scheme TEXT NOT NULL DEFAULT 'socks5';
+    """,
 ]
 
 

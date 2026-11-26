@@ -6,7 +6,7 @@ import time
 
 from . import VERSION, db, drive, insights, maintenance, scheduler, security, store, supervisor
 from .google import DRIVE_SCOPES, TokenBox, consent_url, exchange
-from .net import DriveCastError, parse_proxy, probe, session_for
+from .net import DriveCastError, find_working, parse_proxy, probe, session_for
 from .platforms import get as platform
 from .timeplan import AUDIENCES, local_day_bounds, normalize_plan
 
@@ -386,12 +386,15 @@ def _proxy_fields(b, partial=False):
 
 
 def _probe(p):
-    g = {"host": p["host"], "port": p["port"], "username": p["username"],
-         "password_enc": security.seal(p["password"]) if p.get("password") else None}
+    """Test the proxy; if only another proxy type or the plain username works, p is updated in place and r['note'] says so."""
     try:
-        return probe(g)
+        fixed, r, note = find_working(p)
     except DriveCastError as e:
-        raise HttpError(400, f"Proxy test failed: {e.user_message}. Check host, port and login.")
+        raise HttpError(400, f"Proxy test failed — {e.user_message}. Tried SOCKS5 and HTTP"
+                             f"{', with and without the “user-…-country” part of the username' if str(e).count(';') or 'user-' in (p.get('username') or '') else ''}.")
+    p.update(scheme=fixed["scheme"], username=fixed["username"])
+    r["note"] = note
+    return r
 
 
 def _save_probe(gid, r):
@@ -416,13 +419,13 @@ def add_group(req):
     p = _proxy_fields(b)
     r = _probe(p)
     num = db.one("SELECT COALESCE(MAX(number),0)+1 n FROM ip_groups WHERE workspace_id=?", (req.ws,))["n"]
-    gid = db.run("""INSERT INTO ip_groups(workspace_id,number,host,port,username,password_enc,max_channels,priority,status,
+    gid = db.run("""INSERT INTO ip_groups(workspace_id,number,host,port,username,password_enc,scheme,max_channels,priority,status,
                     outgoing_ip,latency_ms,last_check,latency_json,created_at,country,country_name,city,isp)
-                    VALUES(?,?,?,?,?,?,?,?,'ok',?,?,?,?,?,?,?,?,?)""",
-                 (req.ws, num, p["host"], p["port"], p["username"], security.seal(p["password"]) if p.get("password") else None,
+                    VALUES(?,?,?,?,?,?,?,?,?,'ok',?,?,?,?,?,?,?,?,?)""",
+                 (req.ws, num, p["host"], p["port"], p["username"], security.seal(p["password"]) if p.get("password") else None, p.get("scheme") or "socks5",
                   max(1, int(b.get("max_channels") or 5)), b.get("priority") or "normal", r["ip"], r["ms"], time.time(),
                   json.dumps([r["ms"]]), time.time(), r["country"], r["country_name"], r["city"], r["isp"]))
-    return {"group": _group_out(store.group(gid))}
+    return {"group": _group_out(store.group(gid)), "note": r.get("note", "")}
 
 
 @route("POST", "/api/groups/test", auth="user")
@@ -431,7 +434,7 @@ def test_group_form(req):
         p = _proxy_fields(req.json)
         r = _probe(p)
         return {"ok": True, "ip": r["ip"], "latency_ms": r["ms"], "country": r["country"], "country_name": r["country_name"],
-                "city": r["city"], "isp": r["isp"], "parsed": {k: v for k, v in p.items() if k != "password"}}
+                "city": r["city"], "isp": r["isp"], "note": r.get("note", ""), "parsed": {k: v for k, v in p.items() if k != "password"}}
     except HttpError as e:
         return {"ok": False, "error": e.message}
 
@@ -481,6 +484,7 @@ def edit_group(req, gid):
     g = _own_group(req, gid)
     b = req.json
     p = _proxy_fields(b, partial=True)
+    note = ""
     if p:
         if not p.get("password") and g["password_enc"] and p.get("username") == g["username"]:
             p["password"] = security.unseal(g["password_enc"])  # keep the saved password
@@ -490,9 +494,10 @@ def edit_group(req, gid):
             loc = ", ".join(x for x in (r["city"], r["country"]) if x)
             raise HttpError(409, f"The new proxy leaves from {r['ip']}{' (' + loc + ')' if loc else ''}, not {g['outgoing_ip']}. "
                                  f"The {n} channel(s) in this pool will post from the new IP. Confirm to continue.")
-        db.run("UPDATE ip_groups SET host=?, port=?, username=?, password_enc=?, outgoing_ip=? WHERE id=?",
-               (p["host"], p["port"], p["username"], security.seal(p["password"]) if p.get("password") else None, r["ip"], g["id"]))
+        db.run("UPDATE ip_groups SET host=?, port=?, username=?, password_enc=?, scheme=?, outgoing_ip=? WHERE id=?",
+               (p["host"], p["port"], p["username"], security.seal(p["password"]) if p.get("password") else None, p.get("scheme") or "socks5", r["ip"], g["id"]))
         _save_probe(g["id"], r)
+        note = r.get("note", "")
     if "max_channels" in b:
         db.run("UPDATE ip_groups SET max_channels=? WHERE id=?", (max(1, int(b["max_channels"])), g["id"]))
     if b.get("priority") in ("high", "normal", "low"):
@@ -501,7 +506,7 @@ def edit_group(req, gid):
         db.run("UPDATE ip_groups SET label=? WHERE id=?", ((b["label"] or "").strip()[:40] or None, g["id"]))
     if b.get("password"):
         db.run("UPDATE ip_groups SET password_enc=? WHERE id=?", (security.seal(b["password"]), g["id"]))
-    return {"group": _group_out(store.group(g["id"]))}
+    return {"group": _group_out(store.group(g["id"])), "note": note}
 
 
 @route("DELETE", "/api/groups/(\\d+)")

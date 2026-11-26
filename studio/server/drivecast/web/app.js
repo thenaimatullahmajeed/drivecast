@@ -1160,7 +1160,7 @@ document.addEventListener('input', e => {
 const GROUP_FORM_ACTS = {
   newgroup: async (v, f) => {
     const r = await api('POST', '/api/groups', proxyFromForm(f));
-    toast(`Pool ${r.group.number} saved · ${r.group.outgoing_ip}`);
+    toast(`Pool ${r.group.number} saved · ${r.group.outgoing_ip}${r.note ? ' · ' + r.note : ''}`);
     if (location.hash.startsWith('#/add')) { W.groups = (await api('GET', '/api/groups')).groups; W.group = W.groups.find(g => g.id === r.group.id); drawWizard(); } else render();
   },
   testgroup: async (d, el) => {
@@ -1168,7 +1168,7 @@ const GROUP_FORM_ACTS = {
     if (!v.password && f.dataset.form === 'gsave') v.password = '';
     out.innerHTML = '<div class="note info"><span class="spinner"></span><span>Testing through the proxy…</span></div>';
     const r = await api('POST', '/api/groups/test', v);
-    out.innerHTML = r.ok ? `<div class="note ok">${ic('check', 18)}<span><b>Works.</b> Outgoing IP <b class="mono">${esc(r.ip)}</b> · ${esc(where(r) || 'location unknown')}${r.isp ? ' · ' + esc(r.isp) : ''} · ${r.latency_ms} ms</span></div>` : `<div class="note bad">${ic('alert', 18)}<span>${esc(r.error)}</span></div>`;
+    out.innerHTML = r.ok ? `<div class="note ok">${ic('check', 18)}<span><b>Works.</b> Outgoing IP <b class="mono">${esc(r.ip)}</b> · ${esc(where(r) || 'location unknown')}${r.isp ? ' · ' + esc(r.isp) : ''} · ${r.latency_ms} ms${r.note ? `<br><b>${esc(r.note.replace(/^Saved: /, 'Will be saved: '))}</b>` : ''}</span></div>` : `<div class="note bad">${ic('alert', 18)}<span>${esc(r.error)}</span></div>`;
   },
 };
 Object.assign(WIZ_ACTS, GROUP_FORM_ACTS);
@@ -1332,13 +1332,14 @@ async function pageGroups() {
         if (!body.password) delete body.password;
         const changed = body.host !== g.host || +body.port !== g.port || (body.username || null) !== (g.username || null) || body.password;
         if (!changed) { delete body.host; delete body.port; delete body.username; }
-        try { await api('PATCH', `/api/groups/${g.id}`, body); }
+        let saved = {};
+        try { saved = await api('PATCH', `/api/groups/${g.id}`, body); }
         catch (e) {
           if (!/Confirm to continue/.test(e.message)) throw e;
           if (!confirm(e.message)) return;
-          await api('PATCH', `/api/groups/${g.id}`, { ...body, accept_new_ip: true });
+          saved = await api('PATCH', `/api/groups/${g.id}`, { ...body, accept_new_ip: true });
         }
-        closeModal(); toast(`Pool ${g.number} saved`); render();
+        closeModal(); toast(`Pool ${g.number} saved${saved.note ? ' · ' + saved.note : ''}`); render();
       };
     },
   });

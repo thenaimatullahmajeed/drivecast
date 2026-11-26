@@ -97,7 +97,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(st, 403)
 
         fake = {"ip": "5.6.7.8", "ms": 80, "country": "US", "country_name": "United States", "city": "Dallas", "isp": "Example"}
-        with mock.patch.object(api, "probe", return_value=fake):
+        with mock.patch.object(api, "find_working", side_effect=lambda p: ({**p, "scheme": p.get("scheme") or "socks5"}, dict(fake), "")):
             st, r = student.call("POST", "/api/groups", {"proxy": "p.example:1080:u:pw"})
             self.assertEqual(st, 200, r)
             self.assertEqual((r["group"]["host"], r["group"]["port"], r["group"]["username"], r["group"]["country"]),
